@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import csv
+import io
+from difflib import SequenceMatcher
+
+# Known lead fields for auto-mapping
+LEAD_FIELD_ALIASES: dict[str, list[str]] = {
+    "full_name": ["name", "full name", "fullname", "student name", "student_name", "candidate name"],
+    "email": ["email", "email address", "email_address", "e-mail", "mail"],
+    "phone": ["phone", "phone number", "phone_number", "mobile", "mobile number", "contact", "contact number"],
+    "alternate_phone": ["alternate phone", "alt phone", "alternate_phone", "secondary phone", "parent phone"],
+    "city": ["city", "location"],
+    "state": ["state", "province"],
+    "country": ["country", "nation"],
+    "pincode": ["pincode", "zip", "zipcode", "zip code", "postal code"],
+    "highest_qualification": ["qualification", "highest qualification", "education", "degree"],
+    "stream": ["stream", "branch", "specialization", "major"],
+    "passing_year": ["passing year", "year of passing", "graduation year", "pass_year"],
+    "college_name": ["college", "college name", "institution", "school"],
+    "university": ["university", "university name"],
+    "percentage": ["percentage", "marks", "cgpa", "gpa", "score"],
+    "target_degree": ["target degree", "interested course", "course", "program"],
+    "target_intake": ["intake", "target intake", "session", "batch"],
+    "gender": ["gender", "sex"],
+    "date_of_birth": ["dob", "date of birth", "birth date", "birthday"],
+    "notes": ["notes", "remarks", "comments", "additional info"],
+}
+
+
+def parse_csv_content(content: str | bytes, max_rows: int = 5000) -> tuple[list[str], list[dict]]:
+    if isinstance(content, bytes):
+        content = content.decode("utf-8-sig")
+
+    reader = csv.DictReader(io.StringIO(content))
+    headers = reader.fieldnames or []
+    rows = []
+    for i, row in enumerate(reader):
+        if i >= max_rows:
+            break
+        rows.append(row)
+    return headers, rows
+
+
+def suggest_column_mapping(headers: list[str]) -> dict[str, str]:
+    mapping = {}
+    normalized_headers = {h: h.strip().lower().replace("_", " ") for h in headers}
+
+    for field, aliases in LEAD_FIELD_ALIASES.items():
+        best_match = None
+        best_score = 0.0
+        for header, normalized in normalized_headers.items():
+            for alias in aliases:
+                score = SequenceMatcher(None, normalized, alias).ratio()
+                if score > best_score and score >= 0.7:
+                    best_score = score
+                    best_match = header
+        if best_match:
+            mapping[best_match] = field
+
+    return mapping
+
+
+def normalize_phone(phone: str | None) -> str | None:
+    if not phone:
+        return None
+    digits = "".join(c for c in phone if c.isdigit())
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    if len(digits) == 10:
+        return f"+91{digits}"
+    return phone.strip()

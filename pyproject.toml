@@ -1,0 +1,9 @@
+[project]
+name = "admitverse-crm"
+version = "1.0.0"
+description = "Admitverse CRM Backend — Admission Counselling Lead Management"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

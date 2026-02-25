@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import uuid
+import logging
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.lead import Lead
+from app.models.lead_stage_log import LeadStageLog
+from app.models.profile import Profile
+from app.core.constants import (
+    LeadStage, VALID_TRANSITIONS, STAGES_REQUIRING_NOTES, UserRole,
+)
+from app.core.exceptions import (
+    NotFoundError, ForbiddenError, BadRequestError, InvalidTransitionError,
+)
+from app.utils.date_helpers import now_utc, add_business_days
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+class StageMachine:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+        self.settings = get_settings()
+
+    async def transition(
+        self,
+        lead_id: uuid.UUID,
+        to_stage: str,
+        user: Profile,
+        conversation_notes: str | None = None,
+        agent_agenda: str | None = None,
+        due_date=None,
+        lost_reason: str | None = None,
+    ) -> Lead:
+        result = await self.db.execute(select(Lead).where(Lead.id == lead_id))
+        lead = result.scalar_one_or_none()
+        if not lead:
+            raise NotFoundError("Lead not found")
+
+        if user.role == UserRole.AGENT and lead.assigned_agent_id != user.id:
+            raise ForbiddenError("Not authorized to modify this lead")
+
+        from_stage = LeadStage(lead.current_stage)
+        target = LeadStage(to_stage)
+
+        # Validate transition
+        if target not in VALID_TRANSITIONS.get(from_stage, []):
+            raise InvalidTransitionError(from_stage.value, target.value)
+
+        # Admin-only: reopen from lost
+        if from_stage == LeadStage.LOST and target == LeadStage.LEAD:
+            if user.role != UserRole.ADMIN:
+                raise ForbiddenError("Only admin can reopen a lost lead")
+
+        # Require notes for certain stages
+        if target in STAGES_REQUIRING_NOTES:
+            if not conversation_notes or not agent_agenda:
+                raise BadRequestError(
+                    f"Stage '{target.value}' requires conversation_notes and agent_agenda"
+                )
+
+        # Require lost_reason when moving to lost
+        if target == LeadStage.LOST and not lost_reason:
+            raise BadRequestError("lost_reason is required when moving to 'lost'")
+
+        # Set due date
+        new_due = due_date
+        if target in STAGES_REQUIRING_NOTES and not new_due:
+            new_due = add_business_days(now_utc(), self.settings.default_due_days)
+
+        # Update lead
+        lead.current_stage = target.value
+        lead.due_date = new_due if target not in (LeadStage.WON, LeadStage.LOST) else None
+
+        if target == LeadStage.CONNECTED and not lead.connected_time:
+            lead.connected_time = now_utc()
+        if target == LeadStage.WON:
+            lead.won_time = now_utc()
+        if target == LeadStage.LOST:
+            lead.lost_time = now_utc()
+            lead.lost_reason = lost_reason
+        if target == LeadStage.LEAD and from_stage == LeadStage.LOST:
+            # Reopen — clear lost fields
+            lead.lost_time = None
+            lead.lost_reason = None
+
+        # Create stage log
+        stage_log = LeadStageLog(
+            lead_id=lead.id,
+            from_stage=from_stage.value,
+            to_stage=target.value,
+            changed_by=user.id,
+            conversation_notes=conversation_notes,
+            agent_agenda=agent_agenda,
+            due_date_set=new_due,
+        )
+        self.db.add(stage_log)
+        await self.db.commit()
+        await self.db.refresh(lead)
+
+        logger.info("Lead %s transitioned: %s → %s by %s", lead_id, from_stage.value, target.value, user.id)
+        return lead
+
+    async def get_stage_history(self, lead_id: uuid.UUID, user: Profile) -> list[LeadStageLog]:
+        result = await self.db.execute(select(Lead).where(Lead.id == lead_id))
+        lead = result.scalar_one_or_none()
+        if not lead:
+            raise NotFoundError("Lead not found")
+        if user.role == UserRole.AGENT and lead.assigned_agent_id != user.id:
+            raise ForbiddenError("Not authorized")
+
+        result = await self.db.execute(
+            select(LeadStageLog)
+            .where(LeadStageLog.lead_id == lead_id)
+            .order_by(LeadStageLog.created_at.desc())
+        )
+        return result.scalars().all()
