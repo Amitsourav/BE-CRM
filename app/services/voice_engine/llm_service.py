@@ -23,8 +23,17 @@ class LLMService:
             lang_instruction = get_language_instruction(detected_lang)
             enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
+            # Inject max_response_words constraint from agent config so the
+            # dashboard field actually affects LLM output length.
+            max_words = getattr(agent, "max_response_words", None) or 25
+            length_rule = (
+                f"\n\n[LENGTH RULE: Keep responses to at most {max_words} words. "
+                "Be concise — this is a phone call, not an email.]"
+            )
+            system_content = (agent.system_prompt or "") + length_rule
+
             messages = [
-                {"role": "system", "content": agent.system_prompt},
+                {"role": "system", "content": system_content},
                 *conversation_history,
                 {"role": "user", "content": enhanced_message},
             ]

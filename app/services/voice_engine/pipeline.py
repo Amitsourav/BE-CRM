@@ -19,9 +19,14 @@ class VoicePipeline:
         if not state:
             return {"error": "Call not found"}
 
-        # STEP 1: STT — try streaming first (lower latency), fall back to batch
+        # STEP 1: STT — try streaming first (lower latency), fall back to batch.
+        # Use agent.stt_model from DB so dashboard changes take effect.
+        stt_model = getattr(agent, "stt_model", None) or "saaras:v3"
         stt_result = await retry_async(
-            lambda: sarvam_stt.transcribe_stream(audio_bytes=audio_bytes),
+            lambda: sarvam_stt.transcribe_stream(
+                audio_bytes=audio_bytes,
+                model=stt_model,
+            ),
             attempts=1,  # transcribe_stream already has internal fallback
             fallback={"transcript": "", "language_code": "en-IN", "detected_language": "en"},
             label="sarvam_stt_stream",

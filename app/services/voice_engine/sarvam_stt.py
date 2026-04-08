@@ -19,6 +19,7 @@ class SarvamSTT:
         self,
         audio_bytes: bytes,
         language_code: str = "unknown",
+        model: str = "saaras:v3",
     ) -> dict:
         """Transcribe audio bytes to text."""
         settings = get_settings()
@@ -33,7 +34,7 @@ class SarvamSTT:
                         "file": ("audio.wav", audio_bytes, "audio/wav"),
                     },
                     data={
-                        "model": "saaras:v3",
+                        "model": model,
                         "language_code": language_code,
                         "with_timestamps": "false",
                         "with_diarization": "false",
@@ -84,6 +85,7 @@ class SarvamSTT:
         self,
         audio_bytes: bytes,
         timeout_seconds: float = 8.0,
+        model: str = "saaras:v3",
     ) -> dict:
         """Transcribe via Sarvam streaming WebSocket. Falls back to batch on
         ANY error so callers always get a usable result.
@@ -120,7 +122,7 @@ class SarvamSTT:
                             "type": "config",
                             "data": {
                                 "language_code": "unknown",
-                                "model": "saaras:v3",
+                                "model": model,
                                 "encoding": "LINEAR16",
                                 "sample_rate_hertz": 8000,
                             },
@@ -168,7 +170,7 @@ class SarvamSTT:
             if not full:
                 # Streaming returned nothing — fall back to batch
                 logger.info("streaming STT returned empty, falling back to batch")
-                return await self.transcribe(audio_bytes)
+                return await self.transcribe(audio_bytes, model=model)
 
             from app.services.language_detector import detect_language
             return {
@@ -179,10 +181,10 @@ class SarvamSTT:
 
         except (asyncio.TimeoutError, OSError, websockets.WebSocketException) as e:
             logger.info("streaming STT failed (%s), falling back to batch", e)
-            return await self.transcribe(audio_bytes)
+            return await self.transcribe(audio_bytes, model=model)
         except Exception as e:
             logger.warning("streaming STT unexpected error: %s — fallback to batch", e)
-            return await self.transcribe(audio_bytes)
+            return await self.transcribe(audio_bytes, model=model)
 
 
 sarvam_stt = SarvamSTT()

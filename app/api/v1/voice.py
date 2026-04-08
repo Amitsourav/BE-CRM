@@ -463,6 +463,33 @@ async def voice_stream(
         await websocket.close()
         return
 
+    # Log the FULL agent config being used for this call so we can verify
+    # in Railway logs that dashboard changes actually affect call behavior.
+    logger.info(
+        "AGENT_CONFIG call_id=%s agent_id=%s name=%r | "
+        "llm_model=%s temp=%s max_tokens=%s | "
+        "stt_provider=%s stt_model=%s | "
+        "tts_provider=%s tts_model=%s tts_voice=%s tts_speed=%s | "
+        "tts_en=%s/%s/%s tts_hi=%s/%s/%s | "
+        "endpointing_ms=%s words_before_interrupt=%s max_response_words=%s | "
+        "silence_detection_seconds=%s hangup_on_silence=%s | "
+        "welcome=%r has_system_prompt=%s",
+        call_id, agent.id, agent.name,
+        agent.llm_model, agent.llm_temperature, agent.llm_max_tokens,
+        agent.stt_provider, agent.stt_model,
+        agent.tts_provider, agent.tts_model, agent.tts_voice, agent.tts_speed,
+        agent.tts_provider_english, agent.tts_model_english, agent.tts_voice_english,
+        agent.tts_provider_hindi, agent.tts_model_hindi, agent.tts_voice_hindi,
+        agent.endpointing_ms, agent.words_before_interrupt, agent.max_response_words,
+        agent.silence_detection_seconds, agent.hangup_on_silence_seconds,
+        agent.welcome_message, bool(agent.system_prompt),
+    )
+
+    # Derive silence threshold from agent.endpointing_ms (frames @ 20ms each).
+    # Clamp to reasonable range so a misconfigured agent can't break turn-taking.
+    silence_threshold = max(5, min(50, (agent.endpointing_ms or 300) // 20))
+    min_speech_frames = max(3, MIN_SPEECH_FRAMES)
+
     mulaw_buffer = bytearray()
     silence_frames = 0
     speech_frames = 0
@@ -551,8 +578,8 @@ async def voice_stream(
             # Only trigger pipeline once we've heard real speech AND
             # the user has been silent long enough to indicate end-of-turn
             if (
-                silence_frames >= SILENCE_THRESHOLD
-                and speech_frames >= MIN_SPEECH_FRAMES
+                silence_frames >= silence_threshold
+                and speech_frames >= min_speech_frames
                 and len(mulaw_buffer) >= MIN_BUFFER_SIZE
             ):
                 wav_audio = mulaw_to_wav(bytes(mulaw_buffer))
