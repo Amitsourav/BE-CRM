@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # STT Provider (Sarvam AI)
     sarvam_api_key: str = ""
 
+    # STT Provider (Deepgram) — optional, used when agent.stt_provider=deepgram
+    deepgram_api_key: str = ""
+
+    # STT Provider (OpenAI Whisper) — optional, used when agent.stt_provider=openai
+    openai_api_key: str = ""
+
     # TTS Provider (Smallest AI)
     smallest_api_key: str = ""
 

@@ -128,6 +128,37 @@ class PlivoHandler:
 </Response>"""
         return xml
 
+    async def hangup_call(self, call_id: str) -> bool:
+        """Hang up a live Plivo call by our internal call_id.
+
+        Looks up the CallAttempt to find the external (Plivo) call UUID and
+        issues a delete via the Plivo REST client. Runs the blocking SDK
+        call in a thread so it doesn't freeze the event loop.
+        """
+        import asyncio
+        import uuid as _uuid
+        from sqlalchemy import select
+        from app.db.session import AsyncSessionLocal
+        from app.models.call_attempt import CallAttempt
+
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(CallAttempt).where(CallAttempt.id == _uuid.UUID(call_id))
+                )
+                call = result.scalar_one_or_none()
+                if not call or not call.external_call_id:
+                    logger.warning("hangup_call: no plivo uuid for %s", call_id)
+                    return False
+                plivo_uuid = call.external_call_id
+
+            await asyncio.to_thread(self.client.calls.delete, call_uuid=plivo_uuid)
+            logger.info("hangup_call OK call_id=%s plivo_uuid=%s", call_id, plivo_uuid)
+            return True
+        except Exception as e:
+            logger.warning("hangup_call failed for %s: %s", call_id, e)
+            return False
+
     def verify_signature(
         self,
         url: str,

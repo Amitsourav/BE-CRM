@@ -399,6 +399,37 @@ async def _reset_speaking_flag(state, duration_seconds: float):
         state.is_agent_speaking = False
 
 
+async def _silence_watchdog(
+    call_id: str,
+    get_last_ts,
+    max_silence_seconds: int,
+):
+    """Hang up the Plivo call if no inbound media is seen for N seconds.
+
+    Polls every 2s; calls plivo.hangup_call when exceeded. The WS handler
+    cancels this task in its finally block, so normal hangups never trigger
+    the watchdog path.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        while True:
+            await asyncio.sleep(2.0)
+            idle = loop.time() - get_last_ts()
+            if idle >= max_silence_seconds:
+                logger.info(
+                    "SILENCE_HANGUP call_id=%s idle=%.1fs threshold=%ds",
+                    call_id, idle, max_silence_seconds,
+                )
+                try:
+                    from app.services.voice_engine import plivo_handler
+                    await plivo_handler.hangup_call(call_id)
+                except Exception as e:
+                    logger.warning("silence watchdog hangup failed: %s", e)
+                return
+    except asyncio.CancelledError:
+        pass
+
+
 async def _send_audio_response(websocket: WebSocket, state, wav_bytes: bytes):
     """Convert WAV → mulaw → base64, send playAudio frame, set speaking flag."""
     if not wav_bytes:
@@ -490,9 +521,26 @@ async def voice_stream(
     silence_threshold = max(5, min(50, (agent.endpointing_ms or 300) // 20))
     min_speech_frames = max(3, MIN_SPEECH_FRAMES)
 
+    # Barge-in threshold: convert "words before interrupt" to frames.
+    # One word ≈ 300ms of sustained speech → 15 frames (@ 20ms each).
+    # Clamp to avoid instant interrupt on single noise burst.
+    barge_in_frames = max(10, (agent.words_before_interrupt or 3) * 15)
+
+    # Last time we saw inbound media, for silence-watchdog
+    last_media_ts = asyncio.get_event_loop().time()
+    hangup_silence_sec = max(5, agent.hangup_on_silence_seconds or 10)
+    watchdog_task = asyncio.create_task(
+        _silence_watchdog(
+            call_id=call_id,
+            get_last_ts=lambda: last_media_ts,
+            max_silence_seconds=hangup_silence_sec,
+        )
+    )
+
     mulaw_buffer = bytearray()
     silence_frames = 0
     speech_frames = 0
+    speech_frames_during_playback = 0  # for barge-in
     was_agent_speaking = False
 
     try:
@@ -548,9 +596,41 @@ async def voice_stream(
             if event != "media":
                 continue
 
-            # Echo prevention — drop user-side chunks while agent is talking
+            # Record media timestamp for silence watchdog
+            last_media_ts = asyncio.get_event_loop().time()
+
+            # Barge-in — while agent is speaking, track sustained user speech.
+            # Once enough non-silence frames accumulate, stop agent playback.
             if state.is_agent_speaking:
                 was_agent_speaking = True
+                bi_payload = data.get("media", {}).get("payload", "")
+                if bi_payload:
+                    bi_chunk = decode_plivo_audio(bi_payload)
+                    if not is_silence_mulaw(bi_chunk):
+                        speech_frames_during_playback += 1
+                        if speech_frames_during_playback >= barge_in_frames:
+                            logger.info(
+                                "BARGE_IN call_id=%s frames=%d threshold=%d — stopping agent",
+                                call_id, speech_frames_during_playback, barge_in_frames,
+                            )
+                            try:
+                                await websocket.send_text(
+                                    json.dumps({"event": "clearAudio"})
+                                )
+                            except Exception as e:
+                                logger.warning("clearAudio send failed: %s", e)
+                            state.is_agent_speaking = False
+                            speech_frames_during_playback = 0
+                            mulaw_buffer = bytearray()
+                            silence_frames = 0
+                            speech_frames = 0
+                            was_agent_speaking = False
+                            # Start buffering this frame as the user's turn
+                            mulaw_buffer.extend(bi_chunk)
+                            speech_frames = 1
+                    else:
+                        # Reset streak on silence so a one-off cough doesn't interrupt
+                        speech_frames_during_playback = 0
                 continue
 
             # Just transitioned out of agent-speaking — reset turn counters
@@ -608,6 +688,10 @@ async def voice_stream(
     except Exception as e:
         logger.exception("WS %s unexpected error: %s", call_id, e)
     finally:
+        try:
+            watchdog_task.cancel()
+        except Exception:
+            pass
         try:
             await websocket.close()
         except RuntimeError:

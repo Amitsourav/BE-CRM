@@ -1,9 +1,9 @@
-from app.services.voice_engine.sarvam_stt import sarvam_stt
 from app.services.voice_engine.sarvam_tts import sarvam_tts
 from app.services.voice_engine.smallest_tts import smallest_tts
 from app.services.voice_engine.llm_service import llm_service
 from app.services.voice_engine.call_state import call_state_manager
 from app.services.voice_engine.retry import retry_async
+from app.services.voice_engine.stt_router import get_stt_for_agent
 
 
 class VoicePipeline:
@@ -19,17 +19,17 @@ class VoicePipeline:
         if not state:
             return {"error": "Call not found"}
 
-        # STEP 1: STT — try streaming first (lower latency), fall back to batch.
-        # Use agent.stt_model from DB so dashboard changes take effect.
-        stt_model = getattr(agent, "stt_model", None) or "saaras:v3"
+        # STEP 1: STT — route by agent.stt_provider (sarvam/deepgram/openai).
+        # Each backend exposes the same transcribe_stream() interface.
+        stt_engine, stt_model = get_stt_for_agent(agent)
         stt_result = await retry_async(
-            lambda: sarvam_stt.transcribe_stream(
+            lambda: stt_engine.transcribe_stream(
                 audio_bytes=audio_bytes,
                 model=stt_model,
             ),
-            attempts=1,  # transcribe_stream already has internal fallback
+            attempts=1,  # each backend has its own internal fallback
             fallback={"transcript": "", "language_code": "en-IN", "detected_language": "en"},
-            label="sarvam_stt_stream",
+            label=f"stt_{getattr(agent, 'stt_provider', 'sarvam')}",
         )
         transcript = (stt_result or {}).get("transcript", "").strip()
 
