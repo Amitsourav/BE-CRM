@@ -85,6 +85,129 @@ class VoicePipeline:
             "language": detected_language,
         }
 
+    async def process_audio_streaming(
+        self,
+        call_id: str,
+        audio_bytes: bytes,
+        agent,
+    ):
+        """Streaming variant: yields WAV audio chunks sentence-by-sentence.
+
+        Same STT step, but the LLM runs in streaming mode and each complete
+        sentence is handed to TTS immediately. The user hears the first
+        words while the LLM is still generating — ~2s of perceived latency
+        shaved on average.
+
+        Yields:
+            {"audio": wav_bytes, "text": sentence, "language": lang}
+              — one per sentence, in order
+            {"done": True, "transcript": "...", "response": "...", "language": lang}
+              — once at the end, after state has been updated
+        """
+        state = call_state_manager.get(call_id)
+        if not state:
+            return
+
+        # STEP 1: STT (same as batch path)
+        stt_engine, stt_model = get_stt_for_agent(agent)
+        stt_keywords = getattr(agent, "stt_keywords", None) or ""
+        stt_result = await retry_async(
+            lambda: stt_engine.transcribe_stream(
+                audio_bytes=audio_bytes,
+                model=stt_model,
+                keywords=stt_keywords,
+            ),
+            attempts=1,
+            fallback={"transcript": "", "language_code": "en-IN", "detected_language": "en"},
+            label=f"stt_{getattr(agent, 'stt_provider', 'sarvam')}",
+        )
+        transcript = (stt_result or {}).get("transcript", "").strip()
+        if not transcript:
+            return
+
+        # STEP 2: LLM stream → sentence chunks → TTS immediately
+        current_history = list(state.conversation_history)
+        full_response = ""
+        detected_language = "en"
+        any_audio_sent = False
+
+        try:
+            async for chunk in llm_service.get_response_stream(
+                message=transcript,
+                conversation_history=current_history,
+                agent=agent,
+            ):
+                ctype = chunk.get("type")
+                if ctype == "sentence":
+                    sentence = chunk.get("text", "").strip()
+                    detected_language = chunk.get("language", detected_language)
+                    if not sentence:
+                        continue
+                    # TTS this sentence alone; skip on failure rather than block
+                    try:
+                        wav = await self._get_tts_audio(
+                            text=sentence,
+                            language=detected_language,
+                            agent=agent,
+                        )
+                    except Exception:
+                        wav = b""
+                    if wav:
+                        any_audio_sent = True
+                        yield {
+                            "audio": wav,
+                            "text": sentence,
+                            "language": detected_language,
+                        }
+                elif ctype == "done":
+                    full_response = chunk.get("text", "") or full_response
+                    detected_language = chunk.get("language", detected_language)
+                elif ctype == "error":
+                    # Streaming failed — fall through to batch fallback
+                    raise RuntimeError(chunk.get("text") or "llm stream error")
+        except Exception as e:
+            # Fall back to batch LLM+TTS so the turn still produces output
+            import logging
+            logging.getLogger(__name__).warning(
+                "streaming pipeline failed (%s), falling back to batch", e
+            )
+            llm_result = await llm_service.get_response(
+                message=transcript,
+                conversation_history=current_history,
+                agent=agent,
+            )
+            full_response = (llm_result or {}).get("response", "")
+            detected_language = (llm_result or {}).get("language", "en")
+            if full_response:
+                wav = await self._get_tts_audio(
+                    text=full_response,
+                    language=detected_language,
+                    agent=agent,
+                )
+                if wav:
+                    any_audio_sent = True
+                    yield {
+                        "audio": wav,
+                        "text": full_response,
+                        "language": detected_language,
+                    }
+
+        # STEP 3: state update (single source of truth, once per turn)
+        if full_response:
+            state.add_turn(
+                user_text=transcript,
+                agent_text=full_response,
+                language=detected_language,
+            )
+
+        yield {
+            "done": True,
+            "transcript": transcript,
+            "response": full_response,
+            "language": detected_language,
+            "audio_sent": any_audio_sent,
+        }
+
     async def _get_tts_audio(
         self,
         text: str,

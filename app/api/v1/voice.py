@@ -509,18 +509,27 @@ async def _send_audio_response(
     state,
     wav_bytes: bytes,
     buffer_size: int = 0,
-):
+    auto_reset: bool = True,
+) -> float:
     """Convert WAV → mulaw → base64, send playAudio frame(s), set speaking flag.
 
     If buffer_size > 0, chunk the mulaw payload into buffer_size byte pieces
     and send sequential frames. Smaller buffers give Plivo faster playback
     start at the cost of more frames. 0 = send as one frame.
+
+    If auto_reset is False, caller is responsible for resetting
+    is_agent_speaking after the final chunk in a stream. This avoids
+    prematurely clearing the echo-prevention flag when streaming multiple
+    sentence audio blobs in sequence.
+
+    Returns: playback duration in seconds (caller may accumulate across
+    streaming chunks to schedule a single end-of-turn reset).
     """
     if not wav_bytes:
-        return
+        return 0.0
     mulaw_response = wav_to_mulaw(wav_bytes)
     if not mulaw_response:
-        return
+        return 0.0
 
     total_len = len(mulaw_response)
     if buffer_size and buffer_size > 0 and buffer_size < total_len:
@@ -556,7 +565,9 @@ async def _send_audio_response(
 
     duration = total_len / 8000.0
     state.is_agent_speaking = True
-    asyncio.create_task(_reset_speaking_flag(state, duration))
+    if auto_reset:
+        asyncio.create_task(_reset_speaking_flag(state, duration))
+    return duration
 
 
 @router.websocket("/stream/{call_id}")
@@ -777,16 +788,35 @@ async def voice_stream(
                 silence_frames = 0
                 speech_frames = 0
 
-                result = await voice_pipeline.process_audio(
-                    call_id=call_id,
-                    audio_bytes=wav_audio,
-                    agent=agent,
-                )
+                # Stream LLM → TTS sentence-by-sentence. Each sentence is
+                # synthesized and sent as soon as it's ready, so the user
+                # starts hearing the reply in ~1s instead of waiting for
+                # the full LLM + TTS pipeline (~4s).
+                total_duration = 0.0
+                try:
+                    async for out in voice_pipeline.process_audio_streaming(
+                        call_id=call_id,
+                        audio_bytes=wav_audio,
+                        agent=agent,
+                    ):
+                        if out.get("done"):
+                            continue
+                        audio = out.get("audio")
+                        if not audio:
+                            continue
+                        dur = await _send_audio_response(
+                            websocket, state, audio,
+                            buffer_size=agent.tts_buffer_size or 0,
+                            auto_reset=False,
+                        )
+                        total_duration += dur
+                except Exception as e:
+                    logger.warning("streaming turn failed: %s", e)
 
-                if result.get("audio_response"):
-                    await _send_audio_response(
-                        websocket, state, result["audio_response"],
-                        buffer_size=agent.tts_buffer_size or 0,
+                # Schedule one reset after the full stream finishes playing
+                if total_duration > 0:
+                    asyncio.create_task(
+                        _reset_speaking_flag(state, total_duration)
                     )
 
     except WebSocketDisconnect:
