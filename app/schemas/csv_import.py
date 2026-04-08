@@ -19,6 +19,7 @@ class CSVProcessRequest(BaseModel):
 
 class CSVImportOut(BaseModel):
     id: uuid.UUID
+    company_id: uuid.UUID
     uploaded_by: uuid.UUID
     file_name: str
     status: str

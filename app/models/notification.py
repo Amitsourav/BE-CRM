@@ -13,6 +13,7 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False)
     type: Mapped[str] = mapped_column(ENUM('lead_assigned', 'task_created', 'task_overdue', 'dnp_warning', 'dnp_auto_lost', 'stage_changed', 'csv_import_complete', 'general', name='notification_type', create_type=False), nullable=False, server_default=text("'general'"))
     title: Mapped[str] = mapped_column(String, nullable=False)

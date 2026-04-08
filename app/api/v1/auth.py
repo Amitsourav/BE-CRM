@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from app.schemas.auth import (
     LoginRequest, RegisterRequest, TokenResponse,
     RefreshRequest, ResetPasswordRequest, UpdatePasswordRequest,
@@ -9,15 +11,19 @@ from app.dependencies import get_current_user, get_current_admin
 from app.models.profile import Profile
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(body: LoginRequest, auth: AuthService = Depends(get_auth_service)):
+@limiter.limit("5/minute")
+def login(request: Request, body: LoginRequest, auth: AuthService = Depends(get_auth_service)):
     return auth.login(body.email, body.password)
 
 
 @router.post("/register", response_model=MessageResponse)
+@limiter.limit("3/minute")
 def register(
+    request: Request,
     body: RegisterRequest,
     admin: Profile = Depends(get_current_admin),
     auth: AuthService = Depends(get_auth_service),
@@ -44,7 +50,8 @@ def logout(current_user: Profile = Depends(get_current_user)):
 
 
 @router.post("/reset-password", response_model=MessageResponse)
-def reset_password(body: ResetPasswordRequest, auth: AuthService = Depends(get_auth_service)):
+@limiter.limit("3/minute")
+def reset_password(request: Request, body: ResetPasswordRequest, auth: AuthService = Depends(get_auth_service)):
     auth.reset_password(body.email)
     return MessageResponse(message="If the email exists, a reset link has been sent")
 

@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 class CSVImportService:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
+        self.company_id = company_id
         self.settings = get_settings()
 
     async def upload(self, file_name: str, content: bytes, uploaded_by: uuid.UUID) -> CSVImport:
@@ -34,6 +35,7 @@ class CSVImportService:
         suggested_mapping = suggest_column_mapping(headers)
 
         csv_import = CSVImport(
+            company_id=self.company_id,
             uploaded_by=uploaded_by,
             file_name=file_name,
             status=CSVImportStatus.UPLOADED,
@@ -137,13 +139,13 @@ class CSVImportService:
         if all_phones:
             from sqlalchemy import or_
             result = await self.db.execute(
-                select(Lead.phone).where(Lead.phone.in_(all_phones))
+                select(Lead.phone).where(Lead.phone.in_(all_phones), Lead.company_id == self.company_id)
             )
             existing_phones = {r[0] for r in result.fetchall() if r[0]}
 
         if all_emails:
             result = await self.db.execute(
-                select(Lead.email).where(Lead.email.in_(all_emails))
+                select(Lead.email).where(Lead.email.in_(all_emails), Lead.company_id == self.company_id)
             )
             existing_emails = {r[0] for r in result.fetchall() if r[0]}
 
@@ -173,6 +175,7 @@ class CSVImportService:
                 if email:
                     seen_emails.add(email)
 
+                lead_data["company_id"] = self.company_id
                 lead_data["current_stage"] = LeadStage.LEAD
                 lead_data["assigned_agent_id"] = assigned_agent_id
                 lead_data["lead_source_id"] = lead_source_id
@@ -199,6 +202,7 @@ class CSVImportService:
 
         # Notification
         notif = Notification(
+            company_id=self.company_id,
             user_id=user.id,
             type=NotificationType.CSV_IMPORT_COMPLETE,
             title="CSV Import Complete",
@@ -215,15 +219,20 @@ class CSVImportService:
 
     async def get_history(self) -> list[CSVImport]:
         result = await self.db.execute(
-            select(CSVImport).order_by(CSVImport.created_at.desc()).limit(100)
+            select(CSVImport)
+            .where(CSVImport.company_id == self.company_id)
+            .order_by(CSVImport.created_at.desc())
+            .limit(100)
         )
         return result.scalars().all()
 
     async def _get_import(self, import_id: uuid.UUID, user: Profile) -> CSVImport:
-        result = await self.db.execute(select(CSVImport).where(CSVImport.id == import_id))
+        result = await self.db.execute(
+            select(CSVImport).where(CSVImport.id == import_id, CSVImport.company_id == self.company_id)
+        )
         csv_import = result.scalar_one_or_none()
         if not csv_import:
             raise NotFoundError("CSV import not found")
-        if user.role == UserRole.AGENT and csv_import.uploaded_by != user.id:
+        if user.role == UserRole.TELECALLER and csv_import.uploaded_by != user.id:
             raise ForbiddenError("Not authorized")
         return csv_import

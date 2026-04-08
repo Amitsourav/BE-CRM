@@ -13,6 +13,7 @@ class LeadStageLog(Base):
     __tablename__ = "lead_stage_logs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     lead_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False)
     from_stage: Mapped[Optional[str]] = mapped_column(ENUM('lead', 'called', 'connected', 'qualified_lead', 'won', 'lost', name='lead_stage', create_type=False), nullable=True)
     to_stage: Mapped[str] = mapped_column(ENUM('lead', 'called', 'connected', 'qualified_lead', 'won', 'lost', name='lead_stage', create_type=False), nullable=False)

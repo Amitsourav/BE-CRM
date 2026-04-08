@@ -17,16 +17,18 @@ logger = logging.getLogger(__name__)
 
 
 class TaskService:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
+        self.company_id = company_id
 
     async def create_task(self, data: dict, created_by: uuid.UUID) -> Task:
         assigned_to = data.get("assigned_to") or created_by
+        data["company_id"] = self.company_id
         task = Task(**data, created_by=created_by, assigned_to=assigned_to)
         self.db.add(task)
 
-        # Send notification
         notif = Notification(
+            company_id=self.company_id,
             user_id=assigned_to,
             type=NotificationType.TASK_CREATED,
             title="New Task Assigned",
@@ -41,11 +43,13 @@ class TaskService:
         return task
 
     async def get_task(self, task_id: uuid.UUID, user: Profile) -> Task:
-        result = await self.db.execute(select(Task).where(Task.id == task_id))
+        result = await self.db.execute(
+            select(Task).where(Task.id == task_id, Task.company_id == self.company_id)
+        )
         task = result.scalar_one_or_none()
         if not task:
             raise NotFoundError("Task not found")
-        if user.role == UserRole.AGENT and task.assigned_to != user.id:
+        if user.role == UserRole.TELECALLER and task.assigned_to != user.id:
             raise ForbiddenError("Not authorized")
         return task
 
@@ -74,9 +78,9 @@ class TaskService:
         status: str | None = None,
         assigned_to: uuid.UUID | None = None,
     ) -> dict:
-        query = select(Task).order_by(Task.due_date.asc())
+        query = select(Task).where(Task.company_id == self.company_id).order_by(Task.due_date.asc())
 
-        if user.role == UserRole.AGENT:
+        if user.role == UserRole.TELECALLER:
             query = query.where(Task.assigned_to == user.id)
         elif assigned_to:
             query = query.where(Task.assigned_to == assigned_to)
@@ -90,6 +94,7 @@ class TaskService:
         query = (
             select(Task)
             .where(
+                Task.company_id == self.company_id,
                 Task.assigned_to == user.id,
                 Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
                 Task.due_date <= end_of_today(),
@@ -101,11 +106,12 @@ class TaskService:
 
     async def get_overdue_tasks(self, user: Profile) -> list[Task]:
         query = select(Task).where(
+            Task.company_id == self.company_id,
             Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.OVERDUE]),
             Task.due_date < now_utc(),
         ).order_by(Task.due_date.asc())
 
-        if user.role == UserRole.AGENT:
+        if user.role == UserRole.TELECALLER:
             query = query.where(Task.assigned_to == user.id)
 
         result = await self.db.execute(query)
@@ -115,28 +121,30 @@ class TaskService:
         query = (
             select(Task)
             .where(
+                Task.company_id == self.company_id,
                 Task.status == TaskStatus.COMPLETED,
                 Task.completed_at >= start_of_today(),
                 Task.completed_at <= end_of_today(),
             )
             .order_by(Task.completed_at.desc())
         )
-        if user.role == UserRole.AGENT:
+        if user.role == UserRole.TELECALLER:
             query = query.where(Task.assigned_to == user.id)
 
         result = await self.db.execute(query)
         return result.scalars().all()
 
     async def get_tasks_for_lead(self, lead_id: uuid.UUID, user: Profile) -> list[Task]:
-        # Auth check
-        result = await self.db.execute(select(Lead).where(Lead.id == lead_id))
+        result = await self.db.execute(
+            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+        )
         lead = result.scalar_one_or_none()
         if not lead:
             raise NotFoundError("Lead not found")
-        if user.role == UserRole.AGENT and lead.assigned_agent_id != user.id:
+        if user.role == UserRole.TELECALLER and lead.assigned_agent_id != user.id:
             raise ForbiddenError("Not authorized")
 
         result = await self.db.execute(
-            select(Task).where(Task.lead_id == lead_id).order_by(Task.created_at.desc())
+            select(Task).where(Task.lead_id == lead_id, Task.company_id == self.company_id).order_by(Task.created_at.desc())
         )
         return result.scalars().all()

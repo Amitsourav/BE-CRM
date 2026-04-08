@@ -28,6 +28,7 @@ class TaskComplete(BaseModel):
 
 class TaskOut(BaseModel):
     id: uuid.UUID
+    company_id: uuid.UUID
     lead_id: uuid.UUID | None = None
     assigned_to: uuid.UUID
     created_by: uuid.UUID

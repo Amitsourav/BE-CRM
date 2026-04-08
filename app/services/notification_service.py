@@ -10,14 +10,15 @@ from app.core.exceptions import NotFoundError, ForbiddenError
 
 
 class NotificationService:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
+        self.company_id = company_id
 
     async def get_notifications(self, user_id: uuid.UUID, page: int = 1, page_size: int = 25) -> list[Notification]:
         offset = (page - 1) * page_size
         result = await self.db.execute(
             select(Notification)
-            .where(Notification.user_id == user_id)
+            .where(Notification.user_id == user_id, Notification.company_id == self.company_id)
             .order_by(Notification.created_at.desc())
             .offset(offset)
             .limit(page_size)
@@ -28,7 +29,7 @@ class NotificationService:
         result = await self.db.execute(
             select(func.count())
             .select_from(Notification)
-            .where(Notification.user_id == user_id, Notification.is_read == False)
+            .where(Notification.user_id == user_id, Notification.company_id == self.company_id, Notification.is_read == False)
         )
         return result.scalar() or 0
 
@@ -49,7 +50,7 @@ class NotificationService:
     async def mark_all_read(self, user_id: uuid.UUID) -> int:
         result = await self.db.execute(
             update(Notification)
-            .where(Notification.user_id == user_id, Notification.is_read == False)
+            .where(Notification.user_id == user_id, Notification.company_id == self.company_id, Notification.is_read == False)
             .values(is_read=True)
         )
         await self.db.commit()
@@ -65,6 +66,7 @@ class NotificationService:
         task_id: uuid.UUID | None = None,
     ) -> Notification:
         notif = Notification(
+            company_id=self.company_id,
             user_id=user_id,
             type=type,
             title=title,

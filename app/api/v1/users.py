@@ -6,6 +6,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.dependencies import get_current_user, get_current_admin
+from app.core.tenant import get_current_company_id
 from app.models.profile import Profile
 from app.models.lead import Lead
 from app.models.call_attempt import CallAttempt
@@ -39,11 +40,12 @@ async def update_me(
 @router.get("", response_model=list[UserOut])
 async def list_users(
     admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
     role: str | None = Query(None),
     is_active: bool | None = Query(None),
 ):
-    query = select(Profile).order_by(Profile.created_at.desc())
+    query = select(Profile).where(Profile.company_id == company_id).order_by(Profile.created_at.desc())
     if role:
         query = query.where(Profile.role == role)
     if is_active is not None:
@@ -56,9 +58,12 @@ async def list_users(
 async def get_user(
     user_id: uuid.UUID,
     admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Profile).where(Profile.id == user_id))
+    result = await db.execute(
+        select(Profile).where(Profile.id == user_id, Profile.company_id == company_id)
+    )
     user = result.scalar_one_or_none()
     if not user:
         raise NotFoundError("User not found")
@@ -70,9 +75,12 @@ async def update_user(
     user_id: uuid.UUID,
     body: AdminUserUpdate,
     admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Profile).where(Profile.id == user_id))
+    result = await db.execute(
+        select(Profile).where(Profile.id == user_id, Profile.company_id == company_id)
+    )
     user = result.scalar_one_or_none()
     if not user:
         raise NotFoundError("User not found")
@@ -89,9 +97,12 @@ async def update_user(
 async def deactivate_user(
     user_id: uuid.UUID,
     admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Profile).where(Profile.id == user_id))
+    result = await db.execute(
+        select(Profile).where(Profile.id == user_id, Profile.company_id == company_id)
+    )
     user = result.scalar_one_or_none()
     if not user:
         raise NotFoundError("User not found")
@@ -104,44 +115,45 @@ async def deactivate_user(
 async def get_user_stats(
     user_id: uuid.UUID,
     admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
-    # Verify user exists
-    result = await db.execute(select(Profile).where(Profile.id == user_id))
+    result = await db.execute(
+        select(Profile).where(Profile.id == user_id, Profile.company_id == company_id)
+    )
     if not result.scalar_one_or_none():
         raise NotFoundError("User not found")
 
-    # Total leads
     total_leads = (await db.execute(
-        select(func.count()).select_from(Lead).where(Lead.assigned_agent_id == user_id)
+        select(func.count()).select_from(Lead)
+        .where(Lead.assigned_agent_id == user_id, Lead.company_id == company_id)
     )).scalar() or 0
 
-    # Leads by stage
     stage_counts = (await db.execute(
         select(Lead.current_stage, func.count())
-        .where(Lead.assigned_agent_id == user_id)
+        .where(Lead.assigned_agent_id == user_id, Lead.company_id == company_id)
         .group_by(Lead.current_stage)
     )).all()
     leads_by_stage = {stage: count for stage, count in stage_counts}
 
-    # Calls
     total_calls = (await db.execute(
-        select(func.count()).select_from(CallAttempt).where(CallAttempt.agent_id == user_id)
+        select(func.count()).select_from(CallAttempt)
+        .where(CallAttempt.agent_id == user_id, CallAttempt.company_id == company_id)
     )).scalar() or 0
 
-    # Tasks
     total_tasks = (await db.execute(
-        select(func.count()).select_from(TaskModel).where(TaskModel.assigned_to == user_id)
+        select(func.count()).select_from(TaskModel)
+        .where(TaskModel.assigned_to == user_id, TaskModel.company_id == company_id)
     )).scalar() or 0
 
     completed_tasks = (await db.execute(
         select(func.count()).select_from(TaskModel)
-        .where(TaskModel.assigned_to == user_id, TaskModel.status == TaskStatus.COMPLETED)
+        .where(TaskModel.assigned_to == user_id, TaskModel.company_id == company_id, TaskModel.status == TaskStatus.COMPLETED)
     )).scalar() or 0
 
     overdue_tasks = (await db.execute(
         select(func.count()).select_from(TaskModel)
-        .where(TaskModel.assigned_to == user_id, TaskModel.status == TaskStatus.OVERDUE)
+        .where(TaskModel.assigned_to == user_id, TaskModel.company_id == company_id, TaskModel.status == TaskStatus.OVERDUE)
     )).scalar() or 0
 
     return UserStats(

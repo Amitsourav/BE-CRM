@@ -15,6 +15,7 @@ class StageTransitionRequest(BaseModel):
 
 class StageLogOut(BaseModel):
     id: uuid.UUID
+    company_id: uuid.UUID
     lead_id: uuid.UUID
     from_stage: str | None = None
     to_stage: str

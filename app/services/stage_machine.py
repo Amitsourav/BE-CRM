@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 
 
 class StageMachine:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
+        self.company_id = company_id
         self.settings = get_settings()
 
     async def transition(
@@ -34,12 +35,14 @@ class StageMachine:
         due_date=None,
         lost_reason: str | None = None,
     ) -> Lead:
-        result = await self.db.execute(select(Lead).where(Lead.id == lead_id))
+        result = await self.db.execute(
+            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+        )
         lead = result.scalar_one_or_none()
         if not lead:
             raise NotFoundError("Lead not found")
 
-        if user.role == UserRole.AGENT and lead.assigned_agent_id != user.id:
+        if user.role == UserRole.TELECALLER and lead.assigned_agent_id != user.id:
             raise ForbiddenError("Not authorized to modify this lead")
 
         from_stage = LeadStage(lead.current_stage)
@@ -88,6 +91,7 @@ class StageMachine:
 
         # Create stage log
         stage_log = LeadStageLog(
+            company_id=self.company_id,
             lead_id=lead.id,
             from_stage=from_stage.value,
             to_stage=target.value,
@@ -104,16 +108,18 @@ class StageMachine:
         return lead
 
     async def get_stage_history(self, lead_id: uuid.UUID, user: Profile) -> list[LeadStageLog]:
-        result = await self.db.execute(select(Lead).where(Lead.id == lead_id))
+        result = await self.db.execute(
+            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+        )
         lead = result.scalar_one_or_none()
         if not lead:
             raise NotFoundError("Lead not found")
-        if user.role == UserRole.AGENT and lead.assigned_agent_id != user.id:
+        if user.role == UserRole.TELECALLER and lead.assigned_agent_id != user.id:
             raise ForbiddenError("Not authorized")
 
         result = await self.db.execute(
             select(LeadStageLog)
-            .where(LeadStageLog.lead_id == lead_id)
+            .where(LeadStageLog.lead_id == lead_id, LeadStageLog.company_id == self.company_id)
             .order_by(LeadStageLog.created_at.desc())
         )
         return result.scalars().all()

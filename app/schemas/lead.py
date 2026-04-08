@@ -62,6 +62,7 @@ class LeadUpdate(BaseModel):
 
 class LeadOut(BaseModel):
     id: uuid.UUID
+    company_id: uuid.UUID
     full_name: str
     email: str | None = None
     phone: str | None = None
@@ -130,6 +131,7 @@ class LeadSourceCreate(BaseModel):
 
 class LeadSourceOut(BaseModel):
     id: uuid.UUID
+    company_id: uuid.UUID
     name: str
     source_type: str
     meta_form_id: str | None = None

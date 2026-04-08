@@ -24,6 +24,37 @@ class Settings(BaseSettings):
     meta_access_token: str = ""
     meta_page_id: str = ""
 
+    # Backend URL (for webhook callbacks)
+    backend_url: str = "https://be-crm-production.up.railway.app"
+
+    # Bolna AI
+    bolna_api_key: str = ""
+    bolna_base_url: str = "https://api.bolna.dev"
+    bolna_webhook_secret: str = ""
+
+    # LLM Provider
+    openrouter_api_key: str = ""
+
+    # STT Provider (Sarvam AI)
+    sarvam_api_key: str = ""
+
+    # TTS Provider (Smallest AI)
+    smallest_api_key: str = ""
+
+    # Telephony — Plivo
+    plivo_auth_id: str = ""
+    plivo_auth_token: str = ""
+    plivo_phone_number: str = ""
+
+    # Voice engine — HMAC secret for WebSocket stream tokens
+    voice_stream_secret: str = ""
+
+    # Telephony — Exotel
+    exotel_api_key: str = ""
+    exotel_api_token: str = ""
+    exotel_account_sid: str = ""
+    exotel_subdomain: str = ""
+
     # Defaults
     default_due_days: int = 3
     max_call_attempts: int = 6

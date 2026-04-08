@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 class NotificationOut(BaseModel):
     id: uuid.UUID
+    company_id: uuid.UUID
     user_id: uuid.UUID
     type: str
     title: str

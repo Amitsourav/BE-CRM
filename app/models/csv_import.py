@@ -12,6 +12,7 @@ class CSVImport(Base, TimestampMixin):
     __tablename__ = "csv_imports"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     uploaded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=False)
     file_name: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(ENUM('uploaded', 'previewing', 'processing', 'completed', 'failed', name='csv_import_status', create_type=False), nullable=False, server_default=text("'uploaded'"))

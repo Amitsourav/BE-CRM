@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
-from app.dependencies import get_current_user, get_current_admin
+from app.dependencies import get_current_user, get_current_manager
+from app.core.tenant import get_current_company_id
 from app.models.profile import Profile
 from app.services.csv_import_service import CSVImportService
 from app.schemas.csv_import import CSVProcessRequest, CSVImportOut, CSVPreviewOut
@@ -21,10 +22,11 @@ _upload_cache: dict[str, bytes] = {}
 async def upload_csv(
     file: UploadFile = File(...),
     current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
     content = await file.read()
-    service = CSVImportService(db)
+    service = CSVImportService(db, company_id)
     csv_import = await service.upload(file.filename or "upload.csv", content, current_user.id)
     _upload_cache[str(csv_import.id)] = content
     return csv_import
@@ -34,12 +36,12 @@ async def upload_csv(
 async def preview_csv(
     import_id: uuid.UUID,
     current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
-    service = CSVImportService(db)
+    service = CSVImportService(db, company_id)
     preview = await service.preview(import_id, current_user)
 
-    # Add preview rows from cache
     content = _upload_cache.get(str(import_id))
     if content:
         from app.utils.csv_parser import parse_csv_content
@@ -54,6 +56,7 @@ async def process_csv(
     import_id: uuid.UUID,
     body: CSVProcessRequest,
     current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
     content = _upload_cache.get(str(import_id))
@@ -61,7 +64,7 @@ async def process_csv(
         from app.core.exceptions import BadRequestError
         raise BadRequestError("Upload content expired. Please re-upload the file.")
 
-    service = CSVImportService(db)
+    service = CSVImportService(db, company_id)
     result = await service.process(
         import_id=import_id,
         user=current_user,
@@ -70,7 +73,6 @@ async def process_csv(
         assigned_agent_id=body.assigned_agent_id,
         lead_source_id=body.lead_source_id,
     )
-    # Clean up cache
     _upload_cache.pop(str(import_id), None)
     return result
 
@@ -79,18 +81,20 @@ async def process_csv(
 async def get_status(
     import_id: uuid.UUID,
     current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
-    service = CSVImportService(db)
+    service = CSVImportService(db, company_id)
     return await service.get_status(import_id, current_user)
 
 
 @router.get("/history", response_model=list[CSVImportOut])
 async def get_history(
-    admin: Profile = Depends(get_current_admin),
+    admin: Profile = Depends(get_current_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
-    service = CSVImportService(db)
+    service = CSVImportService(db, company_id)
     return await service.get_history()
 
 

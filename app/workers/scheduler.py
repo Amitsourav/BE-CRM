@@ -52,9 +52,21 @@ async def daily_task_rollover():
     logger.info("Daily task rollover executed")
 
 
+async def cleanup_voice_call_state():
+    """Remove orphaned voice call states older than 30 minutes."""
+    try:
+        from app.services.voice_engine.call_state import call_state_manager
+        removed = call_state_manager.cleanup_stale(max_age_minutes=30)
+        if removed:
+            logger.info("Cleaned up %d orphaned voice call states", removed)
+    except Exception as e:
+        logger.warning("voice call cleanup failed: %s", e)
+
+
 def start_scheduler():
     scheduler.add_job(check_overdue_tasks, "interval", minutes=15, id="overdue_checker", replace_existing=True)
     scheduler.add_job(daily_task_rollover, "cron", hour=0, minute=0, id="daily_rollover", replace_existing=True)
+    scheduler.add_job(cleanup_voice_call_state, "interval", minutes=10, id="voice_call_cleanup", replace_existing=True)
     scheduler.start()
     logger.info("Background scheduler started")
 

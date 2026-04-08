@@ -15,8 +15,9 @@ from app.utils.date_helpers import now_utc, start_of_today, end_of_today
 
 
 class ReportService:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
+        self.company_id = company_id
 
     # ── Dashboard: 9 queries → 3 ──────────────────────────────────────
 
@@ -29,7 +30,7 @@ class ReportService:
                 Lead.current_stage,
                 func.count().label("cnt"),
                 func.count(case((Lead.created_at >= today_start, 1))).label("new_today"),
-            ).group_by(Lead.current_stage)
+            ).where(Lead.company_id == self.company_id).group_by(Lead.current_stage)
         )).all()
 
         leads_by_stage = {}
@@ -48,7 +49,7 @@ class ReportService:
                 func.count(case((
                     (Task.status == TaskStatus.COMPLETED) & (Task.completed_at >= today_start), 1
                 ))).label("completed_today"),
-            )
+            ).where(Task.company_id == self.company_id)
         )).one()
 
         # Query 3: Agent counts in one query
@@ -56,7 +57,7 @@ class ReportService:
             select(
                 func.count().label("total"),
                 func.count(case((Profile.is_active == True, 1))).label("active"),
-            ).where(Profile.role == UserRole.AGENT)
+            ).where(Profile.role == UserRole.TELECALLER, Profile.company_id == self.company_id)
         )).one()
 
         won = leads_by_stage.get(LeadStage.WON, 0)
@@ -78,7 +79,9 @@ class ReportService:
 
     async def pipeline(self) -> dict:
         stage_counts = (await self.db.execute(
-            select(Lead.current_stage, func.count()).group_by(Lead.current_stage)
+            select(Lead.current_stage, func.count())
+            .where(Lead.company_id == self.company_id)
+            .group_by(Lead.current_stage)
         )).all()
 
         total = sum(count for _, count in stage_counts)
@@ -97,7 +100,7 @@ class ReportService:
 
     async def agents_summary(self) -> list[dict]:
         result = await self.db.execute(
-            select(Profile).where(Profile.role == UserRole.AGENT).order_by(Profile.full_name)
+            select(Profile).where(Profile.role == UserRole.TELECALLER, Profile.company_id == self.company_id).order_by(Profile.full_name)
         )
         agents = result.scalars().all()
         if not agents:
@@ -186,7 +189,9 @@ class ReportService:
     # ── Agent Detail (single agent — keep individual queries) ──────────
 
     async def agent_detail(self, agent_id: uuid.UUID) -> dict:
-        result = await self.db.execute(select(Profile).where(Profile.id == agent_id))
+        result = await self.db.execute(
+            select(Profile).where(Profile.id == agent_id, Profile.company_id == self.company_id)
+        )
         agent = result.scalar_one_or_none()
         if not agent:
             from app.core.exceptions import NotFoundError
@@ -246,6 +251,7 @@ class ReportService:
                 func.count(case((Lead.current_stage == LeadStage.LOST, Lead.id))).label("lost"),
             )
             .outerjoin(Lead, Lead.lead_source_id == LeadSource.id)
+            .where(LeadSource.company_id == self.company_id)
             .group_by(LeadSource.id, LeadSource.name)
             .order_by(LeadSource.name)
         )).all()
@@ -271,7 +277,7 @@ class ReportService:
                 func.count(case((Task.status == TaskStatus.COMPLETED, 1))).label("completed"),
                 func.count(case((Task.status == TaskStatus.OVERDUE, 1))).label("overdue"),
                 func.count(case((Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]), 1))).label("pending"),
-            )
+            ).where(Task.company_id == self.company_id)
         )).one()
 
         return {
@@ -296,7 +302,7 @@ class ReportService:
                 cast(Lead.created_at, Date).label("day"),
                 func.count().label("cnt"),
             )
-            .where(Lead.created_at >= start_date)
+            .where(Lead.company_id == self.company_id, Lead.created_at >= start_date)
             .group_by(cast(Lead.created_at, Date))
         )).all()
 
@@ -306,7 +312,7 @@ class ReportService:
                 cast(Lead.won_time, Date).label("day"),
                 func.count().label("cnt"),
             )
-            .where(Lead.won_time >= start_date)
+            .where(Lead.company_id == self.company_id, Lead.won_time >= start_date)
             .group_by(cast(Lead.won_time, Date))
         )).all()
 
@@ -316,7 +322,7 @@ class ReportService:
                 cast(Lead.lost_time, Date).label("day"),
                 func.count().label("cnt"),
             )
-            .where(Lead.lost_time >= start_date)
+            .where(Lead.company_id == self.company_id, Lead.lost_time >= start_date)
             .group_by(cast(Lead.lost_time, Date))
         )).all()
 
@@ -326,7 +332,7 @@ class ReportService:
                 cast(CallAttempt.created_at, Date).label("day"),
                 func.count().label("cnt"),
             )
-            .where(CallAttempt.created_at >= start_date)
+            .where(CallAttempt.company_id == self.company_id, CallAttempt.created_at >= start_date)
             .group_by(cast(CallAttempt.created_at, Date))
         )).all()
 

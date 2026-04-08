@@ -31,7 +31,7 @@ class AuthService:
         except AuthApiError as e:
             raise UnauthorizedError(str(e))
 
-    def register(self, email: str, password: str, full_name: str, role: str = "agent", phone: str | None = None, vertical: str | None = None) -> dict:
+    def register(self, email: str, password: str, full_name: str, role: str = "telecaller", phone: str | None = None, vertical: str | None = None) -> dict:
         try:
             response = self.supabase.auth.admin.create_user({
                 "email": email,

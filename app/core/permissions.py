@@ -5,9 +5,16 @@ from app.models.profile import Profile
 
 
 def require_admin(current_user: Profile = Depends()):
-    """Dependency that ensures the current user is an admin. Actual wiring done via dependencies.py."""
+    """Dependency that ensures the current user is an admin."""
     if current_user.role != UserRole.ADMIN:
         raise ForbiddenError("Admin access required")
+    return current_user
+
+
+def require_manager(current_user: Profile = Depends()):
+    """Dependency that ensures the current user is admin or manager."""
+    if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER):
+        raise ForbiddenError("Manager access required")
     return current_user
 
 

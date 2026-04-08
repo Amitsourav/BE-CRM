@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.dependencies import get_current_user
+from app.core.tenant import get_current_company_id
 from app.models.profile import Profile
 from app.services.stage_machine import StageMachine
 from app.schemas.stage import StageTransitionRequest, StageLogOut
@@ -18,9 +19,10 @@ async def transition_stage(
     lead_id: uuid.UUID,
     body: StageTransitionRequest,
     current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
-    machine = StageMachine(db)
+    machine = StageMachine(db, company_id)
     return await machine.transition(
         lead_id=lead_id,
         to_stage=body.to_stage,
@@ -36,7 +38,8 @@ async def transition_stage(
 async def get_stage_history(
     lead_id: uuid.UUID,
     current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
-    machine = StageMachine(db)
+    machine = StageMachine(db, company_id)
     return await machine.get_stage_history(lead_id, current_user)

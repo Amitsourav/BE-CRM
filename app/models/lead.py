@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, List, Dict
-from sqlalchemy import String, Integer, Numeric, Date, DateTime, text, ForeignKey
+from sqlalchemy import String, Integer, Boolean, Numeric, Date, DateTime, text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY, ENUM
 from app.models.base import Base, TimestampMixin
@@ -14,6 +14,7 @@ class Lead(Base, TimestampMixin):
     __tablename__ = "leads"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
 
     # Identity
     full_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -62,7 +63,12 @@ class Lead(Base, TimestampMixin):
     # Tracking
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
 
+    # Soft delete
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Relationships
+    company = relationship("Company", back_populates="leads")
     assigned_agent = relationship("Profile", back_populates="assigned_leads", foreign_keys=[assigned_agent_id])
     lead_source = relationship("LeadSource", back_populates="leads")
     stage_logs = relationship("LeadStageLog", back_populates="lead", order_by="LeadStageLog.created_at.desc()")

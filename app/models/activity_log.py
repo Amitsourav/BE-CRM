@@ -13,6 +13,7 @@ class ActivityLog(Base):
     __tablename__ = "activity_logs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     actor_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)
     action: Mapped[str] = mapped_column(String, nullable=False)
     entity_type: Mapped[str] = mapped_column(String, nullable=False)

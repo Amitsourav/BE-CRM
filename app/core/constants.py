@@ -5,7 +5,8 @@ import enum
 
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
-    AGENT = "agent"
+    MANAGER = "manager"
+    TELECALLER = "telecaller"
 
 
 class LeadStage(str, enum.Enum):
