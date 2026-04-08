@@ -20,6 +20,7 @@ class SarvamSTT:
         audio_bytes: bytes,
         language_code: str = "unknown",
         model: str = "saaras:v3",
+        keywords: str = "",
     ) -> dict:
         """Transcribe audio bytes to text."""
         settings = get_settings()
@@ -38,6 +39,9 @@ class SarvamSTT:
                         "language_code": language_code,
                         "with_timestamps": "false",
                         "with_diarization": "false",
+                        # Sarvam accepts a comma-separated hotword list as
+                        # "vocab" on some models; unknown fields are ignored.
+                        **({"vocab": keywords} if keywords else {}),
                     },
                 )
 
@@ -86,6 +90,7 @@ class SarvamSTT:
         audio_bytes: bytes,
         timeout_seconds: float = 8.0,
         model: str = "saaras:v3",
+        keywords: str = "",
     ) -> dict:
         """Transcribe via Sarvam streaming WebSocket. Falls back to batch on
         ANY error so callers always get a usable result.
@@ -170,7 +175,7 @@ class SarvamSTT:
             if not full:
                 # Streaming returned nothing — fall back to batch
                 logger.info("streaming STT returned empty, falling back to batch")
-                return await self.transcribe(audio_bytes, model=model)
+                return await self.transcribe(audio_bytes, model=model, keywords=keywords)
 
             from app.services.language_detector import detect_language
             return {
@@ -181,10 +186,10 @@ class SarvamSTT:
 
         except (asyncio.TimeoutError, OSError, websockets.WebSocketException) as e:
             logger.info("streaming STT failed (%s), falling back to batch", e)
-            return await self.transcribe(audio_bytes, model=model)
+            return await self.transcribe(audio_bytes, model=model, keywords=keywords)
         except Exception as e:
             logger.warning("streaming STT unexpected error: %s — fallback to batch", e)
-            return await self.transcribe(audio_bytes, model=model)
+            return await self.transcribe(audio_bytes, model=model, keywords=keywords)
 
 
 sarvam_stt = SarvamSTT()

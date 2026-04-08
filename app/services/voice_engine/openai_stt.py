@@ -21,6 +21,7 @@ class OpenAISTT:
         audio_bytes: bytes,
         language_code: str = "en",
         model: str = "whisper-1",
+        keywords: str = "",
     ) -> dict:
         settings = get_settings()
         if not settings.openai_api_key:
@@ -40,6 +41,8 @@ class OpenAISTT:
                         "model": model,
                         "language": lang,
                         "response_format": "json",
+                        # Whisper uses "prompt" as a hotword hint
+                        **({"prompt": keywords} if keywords else {}),
                     },
                 )
                 if response.status_code != 200:
@@ -61,8 +64,9 @@ class OpenAISTT:
         audio_bytes: bytes,
         timeout_seconds: float = 8.0,
         model: str = "whisper-1",
+        keywords: str = "",
     ) -> dict:
-        return await self.transcribe(audio_bytes, model=model)
+        return await self.transcribe(audio_bytes, model=model, keywords=keywords)
 
 
 openai_stt = OpenAISTT()

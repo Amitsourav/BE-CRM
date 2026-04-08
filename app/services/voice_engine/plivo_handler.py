@@ -45,8 +45,13 @@ class PlivoHandler:
         lead_name: str = "there",
         time_limit: int = 600,
         ring_timeout: int = 30,
+        from_number: str = "",
     ) -> dict:
-        """Initiate outbound call to lead. time_limit/ring_timeout in seconds."""
+        """Initiate outbound call to lead. time_limit/ring_timeout in seconds.
+
+        If from_number is provided, use it as caller ID (per-agent override).
+        Otherwise falls back to PLIVO_PHONE_NUMBER env var.
+        """
         try:
             answer_params = urlencode({
                 "call_id": call_id,
@@ -59,15 +64,16 @@ class PlivoHandler:
             hangup_params = urlencode({"call_id": call_id})
             hangup_url = f"{self.backend_url}/api/v1/voice/hangup?{hangup_params}"
 
+            caller_id = from_number or self.phone_number
             logger.info(
                 "PLIVO_MAKE_CALL call_id=%s to=%s from=%s agent_id=%s "
                 "answer_url=%s hangup_url=%s",
-                call_id, to_number, self.phone_number, agent_id,
+                call_id, to_number, caller_id, agent_id,
                 answer_url, hangup_url,
             )
 
             response = self.client.calls.create(
-                from_=self.phone_number,
+                from_=caller_id,
                 to_=to_number,
                 answer_url=answer_url,
                 answer_method="POST",

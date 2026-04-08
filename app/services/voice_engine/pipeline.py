@@ -22,10 +22,12 @@ class VoicePipeline:
         # STEP 1: STT — route by agent.stt_provider (sarvam/deepgram/openai).
         # Each backend exposes the same transcribe_stream() interface.
         stt_engine, stt_model = get_stt_for_agent(agent)
+        stt_keywords = getattr(agent, "stt_keywords", None) or ""
         stt_result = await retry_async(
             lambda: stt_engine.transcribe_stream(
                 audio_bytes=audio_bytes,
                 model=stt_model,
+                keywords=stt_keywords,
             ),
             attempts=1,  # each backend has its own internal fallback
             fallback={"transcript": "", "language_code": "en-IN", "detected_language": "en"},

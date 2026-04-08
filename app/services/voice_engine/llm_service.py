@@ -19,18 +19,41 @@ class LLMService:
         """Get AI response for user message with language injection."""
         settings = get_settings()
         try:
-            detected_lang = detect_language(message)
+            # Language policy from agent config:
+            # - auto_language_switch=False → lock to primary_language
+            # - auto_language_switch=True  → allow primary ↔ secondary only
+            primary = (getattr(agent, "primary_language", None) or "en").lower()
+            secondary = (getattr(agent, "secondary_language", None) or "hi").lower()
+            auto_switch = getattr(agent, "auto_language_switch", True)
+
+            if not auto_switch:
+                detected_lang = primary
+            else:
+                raw = detect_language(message)
+                # Only allow the two languages the agent is configured for
+                if raw == primary:
+                    detected_lang = primary
+                elif raw == secondary:
+                    detected_lang = secondary
+                else:
+                    detected_lang = primary
+
             lang_instruction = get_language_instruction(detected_lang)
             enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
-            # Inject max_response_words constraint from agent config so the
-            # dashboard field actually affects LLM output length.
+            # Inject role/tone + max_response_words into system prompt
             max_words = getattr(agent, "max_response_words", None) or 25
+            role = getattr(agent, "role", None) or "sales"
+            tone = getattr(agent, "tone", None) or "friendly"
+            persona_rule = (
+                f"[PERSONA: You are a {role} agent speaking with a {tone} tone. "
+                f"Stay in character throughout the call.]\n\n"
+            )
             length_rule = (
                 f"\n\n[LENGTH RULE: Keep responses to at most {max_words} words. "
                 "Be concise — this is a phone call, not an email.]"
             )
-            system_content = (agent.system_prompt or "") + length_rule
+            system_content = persona_rule + (agent.system_prompt or "") + length_rule
 
             messages = [
                 {"role": "system", "content": system_content},

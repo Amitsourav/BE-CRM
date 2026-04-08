@@ -151,6 +151,28 @@ async def initiate_outbound_call(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    # Enforce call-hours window if the agent opts in. Interpreted as IST
+    # (server-side clock) in 24h "HH:MM" format. Wrap-around (e.g. 22:00-06:00)
+    # is supported by checking for "outside" the window when start > end.
+    if getattr(agent, "restrict_call_hours", False):
+        from datetime import datetime as _dt, timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now_hm = _dt.now(ist).strftime("%H:%M")
+        start = agent.call_start_time or "09:00"
+        end = agent.call_end_time or "19:00"
+        in_window = (
+            (start <= now_hm <= end) if start <= end
+            else (now_hm >= start or now_hm <= end)
+        )
+        if not in_window:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Agent '{agent.name}' is restricted to {start}-{end} IST. "
+                    f"Current time: {now_hm} IST."
+                ),
+            )
+
     call_id = uuid.uuid4()
 
     call = CallAttempt(
@@ -206,6 +228,7 @@ async def initiate_outbound_call(
             lead_name=body.lead_name or "there",
             time_limit=getattr(agent, "call_timeout_seconds", None) or 600,
             ring_timeout=30,
+            from_number=getattr(agent, "phone_number", None) or "",
         )
     except Exception as e:
         # Catches anything that escapes plivo_handler.make_call (it normally
@@ -403,23 +426,68 @@ async def _silence_watchdog(
     call_id: str,
     get_last_ts,
     max_silence_seconds: int,
+    websocket: WebSocket,
+    state,
+    agent,
 ):
-    """Hang up the Plivo call if no inbound media is seen for N seconds.
+    """Play silence prompt → if still silent, play final message → hangup.
 
-    Polls every 2s; calls plivo.hangup_call when exceeded. The WS handler
-    cancels this task in its finally block, so normal hangups never trigger
-    the watchdog path.
+    Polls every 2s:
+    1. When idle reaches max_silence_seconds / 2, play silence_message
+       (once) to prompt the user.
+    2. When idle reaches max_silence_seconds, play final_message and hang up.
+
+    The WS handler cancels this task in its finally block, so normal hangups
+    never trigger the watchdog path.
     """
+    prompted = False
     try:
         loop = asyncio.get_event_loop()
+        from app.services.voice_engine import voice_pipeline
         while True:
             await asyncio.sleep(2.0)
             idle = loop.time() - get_last_ts()
+
+            # Halfway through the silence budget: nudge the user once
+            if not prompted and idle >= (max_silence_seconds / 2):
+                prompted = True
+                lang = state.current_language or "en"
+                msg = (
+                    agent.silence_message_hi if lang == "hi"
+                    else agent.silence_message_en
+                )
+                if msg:
+                    try:
+                        wav = await voice_pipeline._get_tts_audio(
+                            text=msg, language=lang, agent=agent,
+                        )
+                        if wav:
+                            await _send_audio_response(websocket, state, wav)
+                    except Exception as e:
+                        logger.warning("silence_message send failed: %s", e)
+
             if idle >= max_silence_seconds:
                 logger.info(
                     "SILENCE_HANGUP call_id=%s idle=%.1fs threshold=%ds",
                     call_id, idle, max_silence_seconds,
                 )
+                # Play final message before hanging up
+                lang = state.current_language or "en"
+                final = (
+                    agent.final_message_hi if lang == "hi"
+                    else agent.final_message_en
+                )
+                if final:
+                    try:
+                        wav = await voice_pipeline._get_tts_audio(
+                            text=final, language=lang, agent=agent,
+                        )
+                        if wav:
+                            await _send_audio_response(websocket, state, wav)
+                            # Give Plivo a moment to play it
+                            await asyncio.sleep(min(6.0, len(wav) / 16000))
+                    except Exception as e:
+                        logger.warning("final_message send failed: %s", e)
                 try:
                     from app.services.voice_engine import plivo_handler
                     await plivo_handler.hangup_call(call_id)
@@ -534,6 +602,9 @@ async def voice_stream(
             call_id=call_id,
             get_last_ts=lambda: last_media_ts,
             max_silence_seconds=hangup_silence_sec,
+            websocket=websocket,
+            state=state,
+            agent=agent,
         )
     )
 

@@ -22,6 +22,7 @@ class DeepgramSTT:
         audio_bytes: bytes,
         language_code: str = "en-IN",
         model: str = "nova-2-general",
+        keywords: str = "",
     ) -> dict:
         settings = get_settings()
         if not settings.deepgram_api_key:
@@ -35,6 +36,11 @@ class DeepgramSTT:
                 "smart_format": "true",
                 "punctuate": "true",
             }
+            if keywords:
+                # Deepgram supports keyword:boost; keep default boost 2.0
+                params["keywords"] = [
+                    f"{k.strip()}:2" for k in keywords.split(",") if k.strip()
+                ]
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.post(
                     self.BASE_URL,
@@ -71,8 +77,9 @@ class DeepgramSTT:
         audio_bytes: bytes,
         timeout_seconds: float = 8.0,
         model: str = "nova-2-general",
+        keywords: str = "",
     ) -> dict:
-        return await self.transcribe(audio_bytes, model=model)
+        return await self.transcribe(audio_bytes, model=model, keywords=keywords)
 
 
 deepgram_stt = DeepgramSTT()
