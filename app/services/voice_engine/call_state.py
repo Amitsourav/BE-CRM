@@ -18,6 +18,7 @@ class CallState:
         self.lead_id = lead_id
         self.company_id = company_id
         self.lead_name = lead_name
+        self.welcome_audio: bytes = b""
         self.conversation_history: list = []
         self.transcript_segments: list = []
         self.current_language = "en"
@@ -70,6 +71,7 @@ class CallStateManager:
         lead_id: str,
         company_id: str,
         lead_name: str = "there",
+        welcome_audio: bytes = b"",
     ) -> CallState:
         state = CallState(
             call_id=call_id,
@@ -78,6 +80,7 @@ class CallStateManager:
             company_id=company_id,
             lead_name=lead_name,
         )
+        state.welcome_audio = welcome_audio
         self._calls[call_id] = state
         return state
 

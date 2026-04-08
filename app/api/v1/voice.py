@@ -173,12 +173,28 @@ async def initiate_outbound_call(
     await db.commit()
     await db.refresh(call)
 
+    # Pre-generate welcome audio BEFORE dialing so the first WS frame can
+    # be sent instantly on call answer (saves 2-4s of perceived delay).
+    # Failure here is non-fatal — WS handler will regenerate on demand.
+    try:
+        welcome_audio = await asyncio.wait_for(
+            voice_pipeline.generate_welcome_audio(
+                agent=agent,
+                lead_name=body.lead_name or "there",
+            ),
+            timeout=5.0,
+        )
+    except Exception as e:
+        logger.warning("pre-gen welcome audio failed: %s", e)
+        welcome_audio = b""
+
     call_state_manager.create(
         call_id=str(call_id),
         agent_id=str(body.agent_id),
         lead_id=str(body.lead_id),
         company_id=str(current_user.company_id),
         lead_name=body.lead_name or "there",
+        welcome_audio=welcome_audio,
     )
 
     try:
@@ -370,9 +386,9 @@ async def _update_call_status_background(call_id: str, status: str):
 
 # Silence/turn-taking thresholds (Plivo media frames are ~20ms each)
 # Tuned for streaming STT pipeline — lower latency than batch-STT defaults
-SILENCE_THRESHOLD = 25       # 25 frames ≈ 500ms of trailing silence
-MIN_BUFFER_SIZE = 4800       # ~600ms of mulaw @ 8kHz before we'll process
-MIN_SPEECH_FRAMES = 8        # require ≥160ms of non-silence before turn ends
+SILENCE_THRESHOLD = 15       # 15 frames ≈ 300ms of trailing silence
+MIN_BUFFER_SIZE = 3200       # ~400ms of mulaw @ 8kHz before we'll process
+MIN_SPEECH_FRAMES = 6        # require ≥120ms of non-silence before turn ends
 
 
 async def _reset_speaking_flag(state, duration_seconds: float):
@@ -482,11 +498,15 @@ async def voice_stream(
                 except Exception as e:
                     logger.warning("stream start: status update failed: %s", e)
 
-                # Play welcome audio via configured TTS as the first frame
+                # Play welcome audio via configured TTS as the first frame.
+                # Prefer the pre-generated audio from /voice/outbound (instant).
+                # Only generate now if pre-gen failed — avoids 2-4s delay.
                 try:
-                    welcome_wav = await voice_pipeline.generate_welcome_audio(
-                        agent=agent, lead_name=state.lead_name
-                    )
+                    welcome_wav = state.welcome_audio
+                    if not welcome_wav:
+                        welcome_wav = await voice_pipeline.generate_welcome_audio(
+                            agent=agent, lead_name=state.lead_name
+                        )
                     if welcome_wav:
                         await _send_audio_response(websocket, state, welcome_wav)
                     else:
