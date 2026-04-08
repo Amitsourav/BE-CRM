@@ -19,26 +19,46 @@ class LLMService:
         """Get AI response for user message with language injection."""
         settings = get_settings()
         try:
-            # Language policy from agent config:
-            # - auto_language_switch=False → lock to primary_language
-            # - auto_language_switch=True  → allow primary ↔ secondary only
+            # Language policy from agent config.
+            # language_style takes precedence over auto_language_switch:
+            #   mirror       → reply in same language as user (clamped to
+            #                  primary/secondary if auto_switch is on,
+            #                  else locked to primary)
+            #   hinglish     → always reply Hindi+English mixed regardless
+            #                  of what user spoke
+            #   primary_only → always reply in primary_language, never switch
             primary = (getattr(agent, "primary_language", None) or "en").lower()
             secondary = (getattr(agent, "secondary_language", None) or "hi").lower()
             auto_switch = getattr(agent, "auto_language_switch", True)
+            style = (getattr(agent, "language_style", None) or "mirror").lower()
 
-            if not auto_switch:
+            if style == "hinglish":
+                detected_lang = "hinglish"
+                lang_instruction = (
+                    "[LANGUAGE RULES (strict):\n"
+                    "- Reply in natural Hinglish: mix Hindi and English in a "
+                    "single sentence, the way urban Indians speak casually.\n"
+                    "- Use Hindi for verbs/connectors (hai, karunga, toh, aur) "
+                    "and English for nouns/technical terms (loan, MBA, visa).\n"
+                    "- Do NOT reply in pure Hindi or pure English.\n"
+                    "- Use female Hindi grammar: karungi, sakti hoon, chahti hoon.]"
+                )
+            elif style == "primary_only":
                 detected_lang = primary
-            else:
-                raw = detect_language(message)
-                # Only allow the two languages the agent is configured for
-                if raw == primary:
+                lang_instruction = get_language_instruction(primary)
+            else:  # mirror (default)
+                if not auto_switch:
                     detected_lang = primary
-                elif raw == secondary:
-                    detected_lang = secondary
                 else:
-                    detected_lang = primary
+                    raw = detect_language(message)
+                    if raw == primary:
+                        detected_lang = primary
+                    elif raw == secondary:
+                        detected_lang = secondary
+                    else:
+                        detected_lang = primary
+                lang_instruction = get_language_instruction(detected_lang)
 
-            lang_instruction = get_language_instruction(detected_lang)
             enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
             # Inject role/tone + max_response_words into system prompt

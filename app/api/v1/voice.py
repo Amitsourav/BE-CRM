@@ -462,7 +462,10 @@ async def _silence_watchdog(
                             text=msg, language=lang, agent=agent,
                         )
                         if wav:
-                            await _send_audio_response(websocket, state, wav)
+                            await _send_audio_response(
+                                websocket, state, wav,
+                                buffer_size=agent.tts_buffer_size or 0,
+                            )
                     except Exception as e:
                         logger.warning("silence_message send failed: %s", e)
 
@@ -483,7 +486,10 @@ async def _silence_watchdog(
                             text=final, language=lang, agent=agent,
                         )
                         if wav:
-                            await _send_audio_response(websocket, state, wav)
+                            await _send_audio_response(
+                                websocket, state, wav,
+                                buffer_size=agent.tts_buffer_size or 0,
+                            )
                             # Give Plivo a moment to play it
                             await asyncio.sleep(min(6.0, len(wav) / 16000))
                     except Exception as e:
@@ -498,27 +504,57 @@ async def _silence_watchdog(
         pass
 
 
-async def _send_audio_response(websocket: WebSocket, state, wav_bytes: bytes):
-    """Convert WAV → mulaw → base64, send playAudio frame, set speaking flag."""
+async def _send_audio_response(
+    websocket: WebSocket,
+    state,
+    wav_bytes: bytes,
+    buffer_size: int = 0,
+):
+    """Convert WAV → mulaw → base64, send playAudio frame(s), set speaking flag.
+
+    If buffer_size > 0, chunk the mulaw payload into buffer_size byte pieces
+    and send sequential frames. Smaller buffers give Plivo faster playback
+    start at the cost of more frames. 0 = send as one frame.
+    """
     if not wav_bytes:
         return
     mulaw_response = wav_to_mulaw(wav_bytes)
     if not mulaw_response:
         return
-    b64_audio = encode_for_plivo(mulaw_response)
-    await websocket.send_text(
-        json.dumps(
-            {
-                "event": "playAudio",
-                "media": {
-                    "contentType": "audio/x-mulaw",
-                    "sampleRate": "8000",
-                    "payload": b64_audio,
-                },
-            }
+
+    total_len = len(mulaw_response)
+    if buffer_size and buffer_size > 0 and buffer_size < total_len:
+        # Send in chunks; each frame is an independent playAudio event.
+        # Plivo queues them in order on the call's playback buffer.
+        for i in range(0, total_len, buffer_size):
+            chunk = mulaw_response[i : i + buffer_size]
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "event": "playAudio",
+                        "media": {
+                            "contentType": "audio/x-mulaw",
+                            "sampleRate": "8000",
+                            "payload": encode_for_plivo(chunk),
+                        },
+                    }
+                )
+            )
+    else:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "event": "playAudio",
+                    "media": {
+                        "contentType": "audio/x-mulaw",
+                        "sampleRate": "8000",
+                        "payload": encode_for_plivo(mulaw_response),
+                    },
+                }
+            )
         )
-    )
-    duration = len(mulaw_response) / 8000.0
+
+    duration = total_len / 8000.0
     state.is_agent_speaking = True
     asyncio.create_task(_reset_speaking_flag(state, duration))
 
@@ -654,7 +690,10 @@ async def voice_stream(
                             agent=agent, lead_name=state.lead_name
                         )
                     if welcome_wav:
-                        await _send_audio_response(websocket, state, welcome_wav)
+                        await _send_audio_response(
+                            websocket, state, welcome_wav,
+                            buffer_size=agent.tts_buffer_size or 0,
+                        )
                     else:
                         logger.warning("welcome audio empty for call %s", call_id)
                 except Exception as e:
@@ -746,7 +785,8 @@ async def voice_stream(
 
                 if result.get("audio_response"):
                     await _send_audio_response(
-                        websocket, state, result["audio_response"]
+                        websocket, state, result["audio_response"],
+                        buffer_size=agent.tts_buffer_size or 0,
                     )
 
     except WebSocketDisconnect:
