@@ -195,29 +195,40 @@ async def initiate_outbound_call(
     await db.commit()
     await db.refresh(call)
 
-    # Pre-generate welcome audio BEFORE dialing so the first WS frame can
-    # be sent instantly on call answer (saves 2-4s of perceived delay).
-    # Failure here is non-fatal — WS handler will regenerate on demand.
-    try:
-        welcome_audio = await asyncio.wait_for(
-            voice_pipeline.generate_welcome_audio(
-                agent=agent,
-                lead_name=body.lead_name or "there",
-            ),
-            timeout=5.0,
-        )
-    except Exception as e:
-        logger.warning("pre-gen welcome audio failed: %s", e)
-        welcome_audio = b""
-
-    call_state_manager.create(
+    # Create call state FIRST, then kick off welcome TTS in the background.
+    # Phone ringing takes 5-8s — plenty of time for Sarvam TTS (~3-5s) to
+    # finish while the phone is ringing. Do NOT block the outbound response.
+    state = call_state_manager.create(
         call_id=str(call_id),
         agent_id=str(body.agent_id),
         lead_id=str(body.lead_id),
         company_id=str(current_user.company_id),
         lead_name=body.lead_name or "there",
-        welcome_audio=welcome_audio,
     )
+    state.welcome_ready = asyncio.Event()
+
+    async def _pregen_welcome():
+        import time
+        t0 = time.time()
+        try:
+            wav = await voice_pipeline.generate_welcome_audio(
+                agent=agent,
+                lead_name=body.lead_name or "there",
+            )
+            state.welcome_audio = wav or b""
+            logger.info(
+                "WELCOME_PREGEN call_id=%s bytes=%d elapsed=%.2fs",
+                call_id, len(state.welcome_audio), time.time() - t0,
+            )
+        except Exception as e:
+            logger.warning(
+                "WELCOME_PREGEN_FAIL call_id=%s elapsed=%.2fs err=%s",
+                call_id, time.time() - t0, e,
+            )
+        finally:
+            state.welcome_ready.set()
+
+    asyncio.create_task(_pregen_welcome())
 
     try:
         plivo_response = await plivo_handler.make_call(
@@ -692,14 +703,34 @@ async def voice_stream(
                     logger.warning("stream start: status update failed: %s", e)
 
                 # Play welcome audio via configured TTS as the first frame.
-                # Prefer the pre-generated audio from /voice/outbound (instant).
-                # Only generate now if pre-gen failed — avoids 2-4s delay.
+                # Pre-gen started in /voice/outbound while the phone was
+                # ringing. Wait briefly for it to finish (usually already
+                # done), then fall back to fresh generation if empty.
+                import time as _time
+                t_start = _time.time()
                 try:
+                    if state.welcome_ready:
+                        try:
+                            await asyncio.wait_for(
+                                state.welcome_ready.wait(), timeout=2.0
+                            )
+                        except asyncio.TimeoutError:
+                            pass
+
                     welcome_wav = state.welcome_audio
+                    source = "cached"
                     if not welcome_wav:
+                        source = "fresh"
                         welcome_wav = await voice_pipeline.generate_welcome_audio(
                             agent=agent, lead_name=state.lead_name
                         )
+
+                    elapsed_ms = int((_time.time() - t_start) * 1000)
+                    logger.info(
+                        "WELCOME_PLAY call_id=%s source=%s bytes=%d wait_ms=%d",
+                        call_id, source, len(welcome_wav or b""), elapsed_ms,
+                    )
+
                     if welcome_wav:
                         await _send_audio_response(
                             websocket, state, welcome_wav,

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -19,6 +20,7 @@ class CallState:
         self.company_id = company_id
         self.lead_name = lead_name
         self.welcome_audio: bytes = b""
+        self.welcome_ready: "asyncio.Event | None" = None
         self.conversation_history: list = []
         self.transcript_segments: list = []
         self.current_language = "en"
