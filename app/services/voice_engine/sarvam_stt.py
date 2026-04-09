@@ -111,14 +111,18 @@ class SarvamSTT:
             # Strip 44-byte WAV header for raw LINEAR16.
             pcm_payload = audio_bytes[44:] if audio_bytes.startswith(b"RIFF") else audio_bytes
 
-            async with asyncio.wait_for(
-                websockets.connect(
-                    self.STREAMING_URI,
-                    extra_headers={"api-subscription-key": settings.sarvam_api_key},
-                    ping_interval=None,
-                    open_timeout=3.0,
-                ),
-                timeout=timeout_seconds,
+            # Use websockets.connect() directly as an async context manager.
+            # The previous code wrapped it in asyncio.wait_for() which returns
+            # a coroutine (not an async CM) and crashed with
+            # "'coroutine' object does not support the asynchronous context
+            # manager protocol" — causing streaming STT to silently fall back
+            # to batch on every call. open_timeout already covers connect time.
+            async with websockets.connect(
+                self.STREAMING_URI,
+                extra_headers={"api-subscription-key": settings.sarvam_api_key},
+                ping_interval=None,
+                open_timeout=3.0,
+                close_timeout=1.0,
             ) as ws:
                 # Initial config frame
                 await ws.send(
@@ -151,9 +155,22 @@ class SarvamSTT:
                 # Signal end of stream
                 await ws.send(json.dumps({"type": "end"}))
 
-                # Drain incoming messages until terminal event or timeout
+                # Drain incoming messages until terminal event or overall timeout.
+                # Overall budget prevents a hung WS from stalling the turn.
+                # Per-recv timeout ensures we notice silence quickly.
+                deadline = asyncio.get_event_loop().time() + timeout_seconds
                 try:
-                    async for raw in ws:
+                    while True:
+                        remaining = deadline - asyncio.get_event_loop().time()
+                        if remaining <= 0:
+                            break
+                        try:
+                            raw = await asyncio.wait_for(
+                                ws.recv(), timeout=min(remaining, 2.0)
+                            )
+                        except asyncio.TimeoutError:
+                            # No message for 2s while still within budget → keep waiting
+                            continue
                         try:
                             data = json.loads(raw)
                         except (ValueError, TypeError):
@@ -168,7 +185,7 @@ class SarvamSTT:
                             if text:
                                 transcript_parts.append(text)
                             break
-                except asyncio.TimeoutError:
+                except (websockets.ConnectionClosed, asyncio.TimeoutError):
                     pass
 
             full = " ".join(transcript_parts).strip()
