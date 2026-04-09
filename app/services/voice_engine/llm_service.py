@@ -8,51 +8,7 @@ from app.services.language_detector import (
     detect_language,
     get_language_instruction,
 )
-from app.services.voice_engine.http_clients import (
-    get_openai_client,
-    get_openrouter_client,
-)
-
-
-def _resolve_llm_endpoint(model: str) -> tuple[object, str, str, dict[str, str]]:
-    """Pick the fastest upstream for the given model.
-
-    If the model is an OpenAI model AND settings.openai_api_key is set,
-    bypass OpenRouter entirely and talk to api.openai.com directly.
-    OpenRouter adds 200-800ms of proxy latency per request on top of
-    OpenAI's own first-token time, so skipping it is the single biggest
-    TTFT win we can get without changing model providers.
-
-    Returns: (client, url_path, normalized_model, extra_headers)
-      - client:         persistent httpx.AsyncClient to use
-      - url_path:       path relative to the client's base_url
-      - normalized_model: 'openai/gpt-4o-mini' -> 'gpt-4o-mini' for direct
-      - extra_headers:  any per-upstream required headers
-    """
-    settings = get_settings()
-    m = (model or "").strip()
-    if m.startswith("openai/") and settings.openai_api_key:
-        return (
-            get_openai_client(),
-            "/v1/chat/completions",
-            m.split("/", 1)[1],
-            {
-                "Authorization": f"Bearer {settings.openai_api_key}",
-                "Content-Type": "application/json",
-            },
-        )
-    # Default path: OpenRouter (supports all models, required for anthropic/*)
-    return (
-        get_openrouter_client(),
-        "/api/v1/chat/completions",
-        m,
-        {
-            "Authorization": f"Bearer {settings.openrouter_api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": settings.backend_url,
-            "X-Title": "BE-CRM Voice Agent",
-        },
-    )
+from app.services.voice_engine.http_clients import get_openrouter_client
 
 logger = logging.getLogger(__name__)
 
@@ -171,14 +127,17 @@ class LLMService:
                 {"role": "user", "content": enhanced_message},
             ]
 
-            client, url_path, model_id, headers = _resolve_llm_endpoint(
-                agent.llm_model
-            )
+            client = get_openrouter_client()
             response = await client.post(
-                url_path,
-                headers=headers,
+                self.OPENROUTER_PATH,
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": settings.backend_url,
+                    "X-Title": "BE-CRM Voice Agent",
+                },
                 json={
-                    "model": model_id,
+                    "model": agent.llm_model,
                     "messages": messages,
                     "max_tokens": agent.llm_max_tokens,
                     "temperature": agent.llm_temperature,
@@ -292,15 +251,18 @@ class LLMService:
         first_chunk_flushed = False
 
         try:
-            client, url_path, model_id, headers = _resolve_llm_endpoint(
-                agent.llm_model
-            )
+            client = get_openrouter_client()
             async with client.stream(
                 "POST",
-                url_path,
-                headers=headers,
+                self.OPENROUTER_PATH,
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": settings.backend_url,
+                    "X-Title": "BE-CRM Voice Agent",
+                },
                 json={
-                    "model": model_id,
+                    "model": agent.llm_model,
                     "messages": messages,
                     "max_tokens": agent.llm_max_tokens,
                     "temperature": agent.llm_temperature,
