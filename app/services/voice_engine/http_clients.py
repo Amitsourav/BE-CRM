@@ -87,7 +87,7 @@ def get_openai_client() -> httpx.AsyncClient:
     if _openai is None:
         _openai = httpx.AsyncClient(
             base_url="https://api.openai.com",
-            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0),
+            timeout=httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0),
             limits=_LIMITS,
             http2=False,
         )
