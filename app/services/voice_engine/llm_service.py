@@ -358,4 +358,40 @@ class LLMService:
             yield {"type": "error", "text": str(e), "language": detected_lang}
 
 
+    async def warmup(self, model: str) -> None:
+        """Fire a tiny chat completion to wake the model on Groq/OpenRouter.
+
+        Groq keeps a model hot for ~5 minutes after use, then evicts it.
+        A cold first request costs 3-6s of first-token latency while the
+        model is reloaded onto the LPU. Calling this during phone ring
+        time (~5-8s of idle wait) lets the real turn be served warm.
+
+        Returns once we've received any response (ignores errors).
+        Uses max_tokens=1 so it costs essentially nothing.
+        """
+        settings = get_settings()
+        try:
+            client = get_openrouter_client()
+            await client.post(
+                self.OPENROUTER_PATH,
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": settings.backend_url,
+                    "X-Title": "BE-CRM Voice Agent",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "user", "content": "ping"},
+                    ],
+                    "max_tokens": 1,
+                    "temperature": 0,
+                },
+                timeout=10.0,
+            )
+        except Exception as e:
+            logger.debug("llm warmup ping failed (non-fatal): %s", e)
+
+
 llm_service = LLMService()

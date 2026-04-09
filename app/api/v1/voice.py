@@ -240,6 +240,29 @@ async def initiate_outbound_call(
 
     asyncio.create_task(_pregen_welcome())
 
+    # Pre-warm the LLM in parallel with welcome pre-gen. Groq keeps a
+    # model hot for ~5 minutes after use, then cold-starts the next
+    # request (3-6s first-token latency). Phone rings for 5-8s before
+    # the user picks up — we use that idle time to send a 1-token ping
+    # that wakes the model up, so the real first turn is served warm.
+    async def _warmup_llm():
+        import time
+        t0 = time.time()
+        try:
+            from app.services.voice_engine.llm_service import llm_service as _llm
+            await _llm.warmup(model=agent.llm_model)
+            logger.info(
+                "LLM_WARMUP call_id=%s model=%s elapsed=%.2fs",
+                call_id, agent.llm_model, time.time() - t0,
+            )
+        except Exception as e:
+            logger.debug(
+                "LLM_WARMUP_FAIL call_id=%s elapsed=%.2fs err=%s",
+                call_id, time.time() - t0, e,
+            )
+
+    asyncio.create_task(_warmup_llm())
+
     try:
         plivo_response = await plivo_handler.make_call(
             to_number=body.phone_number,
