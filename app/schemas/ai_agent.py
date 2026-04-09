@@ -11,14 +11,22 @@ from pydantic import BaseModel, Field
 # working in production — Sarvam's catalog differs by bulbul model
 # version and unsupported voices return HTTP 400 and cause silent calls.
 #
-# Sarvam bulbul:v3 authoritative catalog (from Sarvam's own 400 error
-# message on 2026-04-09):
-#   anushka, abhilash, manisha, vidya, arya, karun, hitesh, aditya,
-#   ritu, priya, neha, rahul, pooja, rohan, simran, kavya, ...
+# Sarvam bulbul:v3 authoritative speaker catalog, confirmed from Sarvam's
+# own model-specific 400 error on 2026-04-09:
 #
-# bulbul:v1/v2 voices that DO NOT work on v3 (remove them from the list):
-#   meera, pavithra, maitreyi, misha, diya, maya, arjun, amol, amartya,
-#   arvind, neel, vian
+#   "Speaker '...' is not compatible with model bulbul:v3.
+#    Available speakers for bulbul:v3 are: aditya, ritu, ashutosh,
+#    priya, neha, rahul, pooja, rohan, simran, kavya, amit, dev, ..."
+#
+# Agent 3 has been confirmed working with tts_voice=simran (see
+# TURN_TIMING logs). simran is the safest default.
+#
+# Voices that are NOT compatible with bulbul:v3 (from repeated 400s):
+#   anushka, abhilash, manisha, vidya, arya, karun, hitesh,
+#   meera, pavithra, maitreyi, misha, diya, maya, arjun, amol,
+#   amartya, arvind, neel, vian
+# (these belong to other bulbul model versions; re-listing them here
+# will cause silent calls)
 #
 # If you upgrade/downgrade the bulbul model version, the voice list here
 # MUST be updated to match. Paste-testing a voice? Set it on an agent,
@@ -57,11 +65,12 @@ PROVIDER_OPTIONS = {
             {"value": "sonic-english", "label": "Sonic English (Female)"},
         ],
         "sarvam": [
-            {"value": "anushka", "label": "Anushka (Female Indian English)"},
+            {"value": "simran", "label": "Simran (Female Indian English)"},
             {"value": "priya", "label": "Priya (Female Indian English)"},
             {"value": "neha", "label": "Neha (Female Indian English)"},
+            {"value": "pooja", "label": "Pooja (Female Indian English)"},
             {"value": "rahul", "label": "Rahul (Male Indian English)"},
-            {"value": "abhilash", "label": "Abhilash (Male Indian English)"},
+            {"value": "aditya", "label": "Aditya (Male Indian English)"},
         ],
     },
     "tts_providers_hindi": [
@@ -69,16 +78,16 @@ PROVIDER_OPTIONS = {
     ],
     "tts_voices_hindi": {
         "sarvam": [
-            {"value": "anushka", "label": "Anushka (Female Hindi)"},
-            {"value": "priya", "label": "Priya (Female Hindi)"},
             {"value": "simran", "label": "Simran (Female Hindi)"},
+            {"value": "priya", "label": "Priya (Female Hindi)"},
+            {"value": "neha", "label": "Neha (Female Hindi)"},
             {"value": "pooja", "label": "Pooja (Female Hindi)"},
             {"value": "ritu", "label": "Ritu (Female Hindi)"},
             {"value": "kavya", "label": "Kavya (Female Hindi)"},
             {"value": "rahul", "label": "Rahul (Male Hindi)"},
             {"value": "rohan", "label": "Rohan (Male Hindi)"},
-            {"value": "abhilash", "label": "Abhilash (Male Hindi)"},
-            {"value": "hitesh", "label": "Hitesh (Male Hindi)"},
+            {"value": "aditya", "label": "Aditya (Male Hindi)"},
+            {"value": "ashutosh", "label": "Ashutosh (Male Hindi)"},
         ],
     },
     "llm_providers": [
@@ -100,24 +109,20 @@ PROVIDER_OPTIONS = {
     "voices": {
         "sarvam": {
             "female": [
-                {"value": "anushka", "label": "Anushka (Female Hindi/English)"},
+                {"value": "simran", "label": "Simran (Female Hindi/English)"},
                 {"value": "priya", "label": "Priya (Female Hindi/English)"},
                 {"value": "neha", "label": "Neha (Female Hindi/English)"},
-                {"value": "simran", "label": "Simran (Female Hindi/English)"},
                 {"value": "pooja", "label": "Pooja (Female Hindi/English)"},
                 {"value": "ritu", "label": "Ritu (Female Hindi/English)"},
                 {"value": "kavya", "label": "Kavya (Female Hindi/English)"},
-                {"value": "manisha", "label": "Manisha (Female Hindi/English)"},
-                {"value": "vidya", "label": "Vidya (Female Hindi/English)"},
-                {"value": "arya", "label": "Arya (Female Hindi/English)"},
             ],
             "male": [
                 {"value": "rahul", "label": "Rahul (Male Hindi/English)"},
-                {"value": "abhilash", "label": "Abhilash (Male Hindi/English)"},
-                {"value": "hitesh", "label": "Hitesh (Male Hindi/English)"},
-                {"value": "rohan", "label": "Rohan (Male Hindi/English)"},
-                {"value": "karun", "label": "Karun (Male Hindi/English)"},
                 {"value": "aditya", "label": "Aditya (Male Hindi/English)"},
+                {"value": "ashutosh", "label": "Ashutosh (Male Hindi/English)"},
+                {"value": "rohan", "label": "Rohan (Male Hindi/English)"},
+                {"value": "amit", "label": "Amit (Male Hindi/English)"},
+                {"value": "dev", "label": "Dev (Male Hindi/English)"},
             ],
         },
         "smallest": {

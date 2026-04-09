@@ -13,8 +13,12 @@ logger = logging.getLogger(__name__)
 # agent's configured voice is rejected by Sarvam (HTTP 400) so calls don't
 # go silent mid-turn. MUST be a speaker that Sarvam's current model
 # accepts — otherwise the fallback itself 400s and calls stay silent.
-# Confirmed present in Sarvam bulbul:v3 catalog on 2026-04-09.
-_SAFE_DEFAULT_VOICE = "anushka"
+#
+# Confirmed working via Agent 3 production calls (TURN_TIMING logs show
+# non-zero tts_first_sentence_ms). bulbul:v3 valid speakers from Sarvam's
+# own 400 error: aditya, ritu, ashutosh, priya, neha, rahul, pooja, rohan,
+# simran, kavya, amit, dev, ...
+_SAFE_DEFAULT_VOICE = "simran"
 
 
 class SarvamTTS:
