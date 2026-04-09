@@ -206,6 +206,9 @@ async def initiate_outbound_call(
         lead_name=body.lead_name or "there",
     )
     state.welcome_ready = asyncio.Event()
+    # Cache the already-loaded agent on state so WS handler doesn't have
+    # to re-fetch from Supabase (saves ~700ms per call on cross-region DB).
+    state.agent = agent
 
     async def _pregen_welcome():
         import time
@@ -606,15 +609,20 @@ async def voice_stream(
         await websocket.close()
         return
 
-    agent = None
-    try:
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(AIAgent).where(AIAgent.id == uuid.UUID(state.agent_id))
-            )
-            agent = result.scalar_one_or_none()
-    except Exception as e:
-        logger.error("stream: agent fetch failed: %s", e)
+    # Prefer the agent cached on state by /voice/outbound — saves one
+    # cross-region Supabase round-trip (~700ms). Fall back to a fresh
+    # DB lookup only if the state object somehow lost it (e.g. worker
+    # restart between dial and answer).
+    agent = state.agent
+    if not agent:
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(AIAgent).where(AIAgent.id == uuid.UUID(state.agent_id))
+                )
+                agent = result.scalar_one_or_none()
+        except Exception as e:
+            logger.error("stream: agent fetch failed: %s", e)
 
     if not agent:
         await websocket.close()
@@ -687,20 +695,13 @@ async def voice_stream(
             event = data.get("event", "")
 
             if event == "start":
-                # Mark connected in DB
-                try:
-                    async with AsyncSessionLocal() as db:
-                        result = await db.execute(
-                            select(CallAttempt).where(
-                                CallAttempt.id == uuid.UUID(call_id)
-                            )
-                        )
-                        call = result.scalar_one_or_none()
-                        if call:
-                            call.call_status = "connected"
-                            await db.commit()
-                except Exception as e:
-                    logger.warning("stream start: status update failed: %s", e)
+                # Mark connected in DB — fire-and-forget so the welcome
+                # audio isn't blocked by a ~700ms cross-region Supabase
+                # commit. Users hear the welcome immediately; DB catches
+                # up in the background.
+                asyncio.create_task(
+                    _update_call_status_background(call_id, "connected")
+                )
 
                 # Play welcome audio via configured TTS as the first frame.
                 # Pre-gen started in /voice/outbound while the phone was

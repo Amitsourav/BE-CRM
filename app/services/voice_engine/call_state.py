@@ -21,6 +21,9 @@ class CallState:
         self.lead_name = lead_name
         self.welcome_audio: bytes = b""
         self.welcome_ready: "asyncio.Event | None" = None
+        # Cached AIAgent ORM instance so the WS handler can skip the
+        # second Supabase lookup. Populated by /voice/outbound.
+        self.agent = None
         self.conversation_history: list = []
         self.transcript_segments: list = []
         self.current_language = "en"
