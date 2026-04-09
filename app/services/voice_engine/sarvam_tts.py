@@ -1,8 +1,18 @@
 import base64
+import logging
+
 import httpx
+
 from app.config import get_settings
 from app.services.voice_engine.audio_utils import concat_wav, split_for_tts
 from app.services.voice_engine.http_clients import get_sarvam_client
+
+logger = logging.getLogger(__name__)
+
+# Safe default voice that has been confirmed to work across bulbul model
+# versions. Used as automatic fallback when the agent's configured voice
+# is rejected by Sarvam (HTTP 400) so calls don't go silent mid-turn.
+_SAFE_DEFAULT_VOICE = "meera"
 
 
 class SarvamTTS:
@@ -38,21 +48,20 @@ class SarvamTTS:
             return b""
 
         settings = get_settings()
-        wav_blobs: list = []
         client = get_sarvam_client()
 
-        try:
-            for chunk in chunks:
-                response = await client.post(
+        async def _call_sarvam(chunk_text: str, speaker: str) -> tuple[int, dict | str]:
+            try:
+                r = await client.post(
                     "/text-to-speech",
                     headers={
                         "api-subscription-key": settings.sarvam_api_key,
                         "Content-Type": "application/json",
                     },
                     json={
-                        "inputs": [chunk],
+                        "inputs": [chunk_text],
                         "target_language_code": language_code,
-                        "speaker": voice,
+                        "speaker": speaker,
                         "model": model,
                         "enable_preprocessing": True,
                         "speech_sample_rate": 8000,
@@ -60,23 +69,54 @@ class SarvamTTS:
                         "pace": speed,
                     },
                 )
-                if response.status_code != 200:
-                    if response.status_code in (401, 403, 429):
-                        break
-                    continue
-                try:
-                    data = response.json()
-                except ValueError:
-                    continue
-                audios = data.get("audios", []) if isinstance(data, dict) else []
-                if not audios:
-                    continue
-                try:
-                    wav_blobs.append(base64.b64decode(audios[0]))
-                except Exception:
-                    continue
-        except (httpx.RequestError, httpx.TimeoutException):
-            pass
+            except (httpx.RequestError, httpx.TimeoutException) as e:
+                return 0, str(e)
+            try:
+                return r.status_code, r.json() if r.status_code == 200 else r.text
+            except ValueError:
+                return r.status_code, r.text
+
+        wav_blobs: list = []
+        fallback_voice_tried = False
+        current_voice = voice
+
+        for chunk in chunks:
+            status, body = await _call_sarvam(chunk, current_voice)
+
+            # If the configured voice is rejected (bad voice name, unsupported
+            # on this model version, etc.), retry this chunk once with the
+            # safe default voice. Prevents the entire call from going silent
+            # due to one misconfigured dashboard field.
+            if status == 400 and current_voice != _SAFE_DEFAULT_VOICE:
+                logger.warning(
+                    "sarvam TTS 400 for voice=%r model=%r lang=%r body=%r — "
+                    "retrying with fallback voice=%r",
+                    current_voice, model, language_code, str(body)[:200],
+                    _SAFE_DEFAULT_VOICE,
+                )
+                current_voice = _SAFE_DEFAULT_VOICE
+                fallback_voice_tried = True
+                status, body = await _call_sarvam(chunk, current_voice)
+
+            if status != 200:
+                logger.warning(
+                    "sarvam TTS failed status=%s voice=%r body=%r",
+                    status, current_voice, str(body)[:200],
+                )
+                if status in (401, 403, 429):
+                    break
+                continue
+
+            audios = body.get("audios", []) if isinstance(body, dict) else []
+            if not audios:
+                continue
+            try:
+                wav_blobs.append(base64.b64decode(audios[0]))
+            except Exception:
+                continue
+
+        if fallback_voice_tried:
+            logger.info("sarvam TTS served via fallback voice %r", _SAFE_DEFAULT_VOICE)
 
         return concat_wav(wav_blobs)
 
