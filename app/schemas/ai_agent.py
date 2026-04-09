@@ -176,10 +176,10 @@ PROVIDER_OPTIONS = {
         {"value": "none", "label": "None"},
     ],
     "language_styles": [
+        {"value": "mirror_hinglish", "label": "English→English, Hindi→Hinglish (recommended)"},
         {"value": "hinglish", "label": "Hinglish always (Hindi+English mix)"},
-        {"value": "mirror_user", "label": "Mirror user language"},
-        {"value": "always_hindi", "label": "Always Hindi"},
-        {"value": "always_english", "label": "Always English"},
+        {"value": "mirror_user", "label": "Mirror user language (English or pure Hindi)"},
+        {"value": "primary_only", "label": "Always primary language"},
     ],
     "roles": [
         {"value": "sales", "label": "Sales"},

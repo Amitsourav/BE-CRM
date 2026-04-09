@@ -24,6 +24,66 @@ _EARLY_FLUSH = ".!?।,:;"
 _MAX_EARLY_CHARS = 60
 
 
+_HINGLISH_INSTRUCTION = (
+    "[LANGUAGE RULES (strict):\n"
+    "- Reply in natural Hinglish: mix Hindi and English in a single "
+    "sentence, the way urban Indians speak casually.\n"
+    "- Use Hindi words for verbs/connectors (hai, karunga, toh, aur, "
+    "chahiye) and English for nouns/technical terms (loan, MBA, visa, "
+    "collateral, eligibility).\n"
+    "- Write Hindi words in ROMAN script (Hinglish) — NEVER in "
+    "Devanagari/Hindi script.\n"
+    "- Do NOT reply in pure Hindi. Do NOT reply in pure English.\n"
+    "- Use female Hindi grammar: karungi, sakti hoon, chahti hoon.]"
+)
+
+
+def _resolve_language_policy(
+    message: str,
+    style: str,
+    primary: str,
+    secondary: str,
+    auto_switch: bool,
+) -> tuple[str, str]:
+    """Return (detected_lang, lang_instruction) based on agent policy.
+
+    Supported language_style values:
+      hinglish        — always Hinglish regardless of user language
+      primary_only    — always reply in primary_language (no switching)
+      mirror / mirror_user — reply in user's language (primary↔secondary)
+      mirror_hinglish — reply in English when user speaks English, reply
+                        in Hinglish when user speaks Hindi. Never pure
+                        Hindi. This is what most Indian voice agents
+                        actually want.
+    """
+    if style == "hinglish":
+        return "hinglish", _HINGLISH_INSTRUCTION
+
+    if style == "primary_only":
+        return primary, get_language_instruction(primary)
+
+    if style == "mirror_hinglish":
+        # English stays English; anything detected as Hindi becomes Hinglish
+        raw = detect_language(message) if auto_switch else primary
+        if raw == "en":
+            return "en", get_language_instruction("en")
+        # Hindi (or any non-English) → Hinglish
+        return "hinglish", _HINGLISH_INSTRUCTION
+
+    # mirror / mirror_user / anything else → mirror user's detected language
+    if not auto_switch:
+        detected_lang = primary
+    else:
+        raw = detect_language(message)
+        if raw == primary:
+            detected_lang = primary
+        elif raw == secondary:
+            detected_lang = secondary
+        else:
+            detected_lang = primary
+    return detected_lang, get_language_instruction(detected_lang)
+
+
 def _find_sentence_end(buf: str, early: bool = False) -> int:
     """Return index of first sentence-ending punctuation in buf, or -1.
 
@@ -78,32 +138,13 @@ class LLMService:
             auto_switch = getattr(agent, "auto_language_switch", True)
             style = (getattr(agent, "language_style", None) or "mirror").lower()
 
-            if style == "hinglish":
-                detected_lang = "hinglish"
-                lang_instruction = (
-                    "[LANGUAGE RULES (strict):\n"
-                    "- Reply in natural Hinglish: mix Hindi and English in a "
-                    "single sentence, the way urban Indians speak casually.\n"
-                    "- Use Hindi for verbs/connectors (hai, karunga, toh, aur) "
-                    "and English for nouns/technical terms (loan, MBA, visa).\n"
-                    "- Do NOT reply in pure Hindi or pure English.\n"
-                    "- Use female Hindi grammar: karungi, sakti hoon, chahti hoon.]"
-                )
-            elif style == "primary_only":
-                detected_lang = primary
-                lang_instruction = get_language_instruction(primary)
-            else:  # mirror (default)
-                if not auto_switch:
-                    detected_lang = primary
-                else:
-                    raw = detect_language(message)
-                    if raw == primary:
-                        detected_lang = primary
-                    elif raw == secondary:
-                        detected_lang = secondary
-                    else:
-                        detected_lang = primary
-                lang_instruction = get_language_instruction(detected_lang)
+            detected_lang, lang_instruction = _resolve_language_policy(
+                message=message,
+                style=style,
+                primary=primary,
+                secondary=secondary,
+                auto_switch=auto_switch,
+            )
 
             enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
@@ -198,32 +239,13 @@ class LLMService:
         auto_switch = getattr(agent, "auto_language_switch", True)
         style = (getattr(agent, "language_style", None) or "mirror").lower()
 
-        if style == "hinglish":
-            detected_lang = "hinglish"
-            lang_instruction = (
-                "[LANGUAGE RULES (strict):\n"
-                "- Reply in natural Hinglish: mix Hindi and English in a "
-                "single sentence, the way urban Indians speak casually.\n"
-                "- Use Hindi for verbs/connectors (hai, karunga, toh, aur) "
-                "and English for nouns/technical terms (loan, MBA, visa).\n"
-                "- Do NOT reply in pure Hindi or pure English.\n"
-                "- Use female Hindi grammar: karungi, sakti hoon, chahti hoon.]"
-            )
-        elif style == "primary_only":
-            detected_lang = primary
-            lang_instruction = get_language_instruction(primary)
-        else:  # mirror
-            if not auto_switch:
-                detected_lang = primary
-            else:
-                raw = detect_language(message)
-                if raw == primary:
-                    detected_lang = primary
-                elif raw == secondary:
-                    detected_lang = secondary
-                else:
-                    detected_lang = primary
-            lang_instruction = get_language_instruction(detected_lang)
+        detected_lang, lang_instruction = _resolve_language_policy(
+            message=message,
+            style=style,
+            primary=primary,
+            secondary=secondary,
+            auto_switch=auto_switch,
+        )
 
         enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
