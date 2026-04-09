@@ -65,8 +65,12 @@ class OpenAISTT:
         timeout_seconds: float = 8.0,
         model: str = "whisper-1",
         keywords: str = "",
+        language_code: str = "hi",
     ) -> dict:
-        return await self.transcribe(audio_bytes, model=model, keywords=keywords)
+        return await self.transcribe(
+            audio_bytes, model=model, keywords=keywords,
+            language_code=language_code,
+        )
 
 
 openai_stt = OpenAISTT()

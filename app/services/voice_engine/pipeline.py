@@ -11,6 +11,40 @@ from app.services.voice_engine.stt_router import get_stt_for_agent
 logger = logging.getLogger(__name__)
 
 
+def _stt_language_code_for_agent(agent) -> str:
+    """Pick the STT language_code based on agent config.
+
+    Why this exists: Sarvam's 'unknown' auto-detection was randomly
+    returning Gujarati/Telugu/Malayalam/Bengali scripts for the same
+    user (who was actually speaking Hindi+English). Locking the STT
+    to a specific language code stops the script chaos.
+
+    Sarvam's 'hi-IN' accepts Hindi AND English speech (Hinglish),
+    which is what almost every Indian voice agent actually needs.
+    Only return 'en-IN' for pure-English agents.
+    """
+    provider = (getattr(agent, "stt_provider", "sarvam") or "sarvam").lower()
+    primary = (getattr(agent, "primary_language", None) or "en").lower()
+    secondary = (getattr(agent, "secondary_language", None) or "hi").lower()
+    style = (getattr(agent, "language_style", None) or "mirror").lower()
+
+    handles_hindi = (
+        primary == "hi"
+        or secondary == "hi"
+        or style in ("hinglish", "mirror_hinglish")
+    )
+
+    if provider == "deepgram":
+        # Deepgram doesn't support Hindi on nova-2-general; use multi
+        return "multi" if handles_hindi else "en-IN"
+    if provider == "openai":
+        # Whisper uses ISO-639-1
+        return "hi" if handles_hindi else "en"
+    # Sarvam (default) — hi-IN is the multilingual bucket that
+    # accepts Hindi + English + Hinglish reliably
+    return "hi-IN" if handles_hindi else "en-IN"
+
+
 class VoicePipeline:
 
     async def process_audio(
@@ -25,17 +59,20 @@ class VoicePipeline:
             return {"error": "Call not found"}
 
         # STEP 1: STT — route by agent.stt_provider (sarvam/deepgram/openai).
-        # Each backend exposes the same transcribe_stream() interface.
+        # Pass a concrete language_code derived from agent config so Sarvam
+        # doesn't randomly pick Gujarati/Telugu/Malayalam etc per turn.
         stt_engine, stt_model = get_stt_for_agent(agent)
         stt_keywords = getattr(agent, "stt_keywords", None) or ""
+        stt_lang = _stt_language_code_for_agent(agent)
         stt_result = await retry_async(
             lambda: stt_engine.transcribe_stream(
                 audio_bytes=audio_bytes,
                 model=stt_model,
                 keywords=stt_keywords,
+                language_code=stt_lang,
             ),
             attempts=1,  # each backend has its own internal fallback
-            fallback={"transcript": "", "language_code": "en-IN", "detected_language": "en"},
+            fallback={"transcript": "", "language_code": stt_lang, "detected_language": "en"},
             label=f"stt_{getattr(agent, 'stt_provider', 'sarvam')}",
         )
         transcript = (stt_result or {}).get("transcript", "").strip()
@@ -118,15 +155,17 @@ class VoicePipeline:
         # STEP 1: STT (same as batch path)
         stt_engine, stt_model = get_stt_for_agent(agent)
         stt_keywords = getattr(agent, "stt_keywords", None) or ""
+        stt_lang = _stt_language_code_for_agent(agent)
         stt_t0 = time.time()
         stt_result = await retry_async(
             lambda: stt_engine.transcribe_stream(
                 audio_bytes=audio_bytes,
                 model=stt_model,
                 keywords=stt_keywords,
+                language_code=stt_lang,
             ),
             attempts=1,
-            fallback={"transcript": "", "language_code": "en-IN", "detected_language": "en"},
+            fallback={"transcript": "", "language_code": stt_lang, "detected_language": "en"},
             label=f"stt_{getattr(agent, 'stt_provider', 'sarvam')}",
         )
         stt_ms = int((time.time() - stt_t0) * 1000)

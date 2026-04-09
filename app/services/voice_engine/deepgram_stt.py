@@ -79,8 +79,12 @@ class DeepgramSTT:
         timeout_seconds: float = 8.0,
         model: str = "nova-2-general",
         keywords: str = "",
+        language_code: str = "en-IN",
     ) -> dict:
-        return await self.transcribe(audio_bytes, model=model, keywords=keywords)
+        return await self.transcribe(
+            audio_bytes, model=model, keywords=keywords,
+            language_code=language_code,
+        )
 
 
 deepgram_stt = DeepgramSTT()
