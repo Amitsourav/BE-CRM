@@ -12,14 +12,24 @@ PROVIDER_COSTS = {
         "elevenlabs": 0.0300,
         "cartesia": 0.0050,
     },
+    # USD cost per minute of conversation, based on typical voice-agent
+    # token usage (~300 input + 150 output tokens/min). Updated 2026-04-09
+    # to add Groq-backed models — dashboard "Est. cost" widget reads from
+    # here so the live price reflects the selected model.
     "llm": {
+        # Groq-hosted via OpenRouter — dramatically cheaper than OpenAI
+        "meta-llama/llama-3.3-70b-instruct": 0.0008,
+        "meta-llama/llama-3.1-8b-instruct": 0.0002,
+        "google/gemini-flash-1.5-8b": 0.0003,
+        # OpenAI via OpenRouter
         "openai/gpt-4o-mini": 0.0030,
         "openai/gpt-4o": 0.0150,
         "openai/gpt-4.1-mini": 0.0030,
         "openai/gpt-4.1": 0.0120,
+        "openai/gpt-4.1-nano": 0.0010,
+        # Anthropic via OpenRouter
         "anthropic/claude-3-haiku-20240307": 0.0020,
         "anthropic/claude-sonnet-4": 0.0200,
-        "openai/gpt-4.1-nano": 0.0010,
     },
     "telephony": {
         "plivo": 0.0100,
