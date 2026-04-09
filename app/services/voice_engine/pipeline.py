@@ -1,9 +1,14 @@
+import logging
+import time
+
 from app.services.voice_engine.sarvam_tts import sarvam_tts
 from app.services.voice_engine.smallest_tts import smallest_tts
 from app.services.voice_engine.llm_service import llm_service
 from app.services.voice_engine.call_state import call_state_manager
 from app.services.voice_engine.retry import retry_async
 from app.services.voice_engine.stt_router import get_stt_for_agent
+
+logger = logging.getLogger(__name__)
 
 
 class VoicePipeline:
@@ -108,9 +113,12 @@ class VoicePipeline:
         if not state:
             return
 
+        turn_t0 = time.time()
+
         # STEP 1: STT (same as batch path)
         stt_engine, stt_model = get_stt_for_agent(agent)
         stt_keywords = getattr(agent, "stt_keywords", None) or ""
+        stt_t0 = time.time()
         stt_result = await retry_async(
             lambda: stt_engine.transcribe_stream(
                 audio_bytes=audio_bytes,
@@ -121,8 +129,10 @@ class VoicePipeline:
             fallback={"transcript": "", "language_code": "en-IN", "detected_language": "en"},
             label=f"stt_{getattr(agent, 'stt_provider', 'sarvam')}",
         )
+        stt_ms = int((time.time() - stt_t0) * 1000)
         transcript = (stt_result or {}).get("transcript", "").strip()
         if not transcript:
+            logger.info("TURN_EMPTY call_id=%s stt_ms=%d", call_id, stt_ms)
             return
 
         # STEP 2: LLM stream → sentence chunks → TTS immediately
@@ -130,6 +140,11 @@ class VoicePipeline:
         full_response = ""
         detected_language = "en"
         any_audio_sent = False
+        llm_first_token_ms = 0
+        tts_first_sentence_ms = 0
+        llm_t0 = time.time()
+        first_token_seen = False
+        first_audio_seen = False
 
         try:
             async for chunk in llm_service.get_response_stream(
@@ -139,11 +154,15 @@ class VoicePipeline:
             ):
                 ctype = chunk.get("type")
                 if ctype == "sentence":
+                    if not first_token_seen:
+                        first_token_seen = True
+                        llm_first_token_ms = int((time.time() - llm_t0) * 1000)
                     sentence = chunk.get("text", "").strip()
                     detected_language = chunk.get("language", detected_language)
                     if not sentence:
                         continue
                     # TTS this sentence alone; skip on failure rather than block
+                    tts_t0 = time.time()
                     try:
                         wav = await self._get_tts_audio(
                             text=sentence,
@@ -154,6 +173,9 @@ class VoicePipeline:
                         wav = b""
                     if wav:
                         any_audio_sent = True
+                        if not first_audio_seen:
+                            first_audio_seen = True
+                            tts_first_sentence_ms = int((time.time() - tts_t0) * 1000)
                         yield {
                             "audio": wav,
                             "text": sentence,
@@ -199,6 +221,14 @@ class VoicePipeline:
                 agent_text=full_response,
                 language=detected_language,
             )
+
+        turn_total_ms = int((time.time() - turn_t0) * 1000)
+        logger.info(
+            "TURN_TIMING call_id=%s stt_ms=%d llm_first_token_ms=%d "
+            "tts_first_sentence_ms=%d total_ms=%d lang=%s transcript=%r",
+            call_id, stt_ms, llm_first_token_ms, tts_first_sentence_ms,
+            turn_total_ms, detected_language, transcript[:80],
+        )
 
         yield {
             "done": True,

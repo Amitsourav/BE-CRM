@@ -95,12 +95,18 @@ class SarvamSTT:
         """Transcribe via Sarvam streaming WebSocket. Falls back to batch on
         ANY error so callers always get a usable result.
 
-        NOTE: The exact Sarvam streaming protocol may differ from what's
-        implemented here. If streaming fails repeatedly in production logs,
-        check Sarvam's WS API reference and adjust the message shapes below.
+        NOTE: Sarvam's streaming endpoint currently returns HTTP 403 on our
+        account (auth / plan / URL mismatch — unclear which). Attempting the
+        WS connect wastes 300-500ms per turn before falling back. Until the
+        protocol is confirmed with Sarvam, short-circuit straight to batch.
+        Flip SARVAM_TRY_STREAMING below to re-enable experimentation.
         """
         if not audio_bytes:
             return {"transcript": "", "language_code": "en-IN", "detected_language": "en"}
+
+        SARVAM_TRY_STREAMING = False
+        if not SARVAM_TRY_STREAMING:
+            return await self.transcribe(audio_bytes, model=model, keywords=keywords)
 
         settings = get_settings()
         transcript_parts = []
