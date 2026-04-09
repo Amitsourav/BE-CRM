@@ -9,10 +9,12 @@ from app.services.voice_engine.http_clients import get_sarvam_client
 
 logger = logging.getLogger(__name__)
 
-# Safe default voice that has been confirmed to work across bulbul model
-# versions. Used as automatic fallback when the agent's configured voice
-# is rejected by Sarvam (HTTP 400) so calls don't go silent mid-turn.
-_SAFE_DEFAULT_VOICE = "meera"
+# Safe default voice for bulbul:v3. Used as automatic fallback when the
+# agent's configured voice is rejected by Sarvam (HTTP 400) so calls don't
+# go silent mid-turn. MUST be a speaker that Sarvam's current model
+# accepts — otherwise the fallback itself 400s and calls stay silent.
+# Confirmed present in Sarvam bulbul:v3 catalog on 2026-04-09.
+_SAFE_DEFAULT_VOICE = "anushka"
 
 
 class SarvamTTS:
