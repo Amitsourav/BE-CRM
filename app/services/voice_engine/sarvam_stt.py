@@ -117,13 +117,27 @@ class SarvamSTT:
             # "'coroutine' object does not support the asynchronous context
             # manager protocol" — causing streaming STT to silently fall back
             # to batch on every call. open_timeout already covers connect time.
-            async with websockets.connect(
-                self.STREAMING_URI,
-                extra_headers={"api-subscription-key": settings.sarvam_api_key},
-                ping_interval=None,
-                open_timeout=3.0,
-                close_timeout=1.0,
-            ) as ws:
+            # websockets >=14 renamed extra_headers -> additional_headers.
+            # Try the new name first, fall back to the old one so the same
+            # code runs on both library versions without a hard dependency.
+            headers = {"api-subscription-key": settings.sarvam_api_key}
+            try:
+                connect_cm = websockets.connect(
+                    self.STREAMING_URI,
+                    additional_headers=headers,
+                    ping_interval=None,
+                    open_timeout=3.0,
+                    close_timeout=1.0,
+                )
+            except TypeError:
+                connect_cm = websockets.connect(
+                    self.STREAMING_URI,
+                    extra_headers=headers,
+                    ping_interval=None,
+                    open_timeout=3.0,
+                    close_timeout=1.0,
+                )
+            async with connect_cm as ws:
                 # Initial config frame
                 await ws.send(
                     json.dumps(
