@@ -6,6 +6,18 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+# IMPORTANT: voice lists here are the SINGLE SOURCE OF TRUTH for the
+# agent dashboard dropdowns. Only list voices that have been confirmed
+# working in production — Sarvam's catalog differs by bulbul model
+# version and unsupported voices return HTTP 400 and cause silent calls.
+#
+# Sarvam bulbul:v2 / bulbul:v3 confirmed-working set (as of Apr 2026):
+#   Female: meera, pavithra, maitreyi, misha, diya, maya
+#   Male:   arjun, amol, amartya, arvind, neel, vian, rahul
+#
+# Voices previously listed but rejected by Sarvam (do NOT re-add without
+# confirming via sarvam_tts logs first):
+#   simran, anushka, priya, pooja, ishita, shreya, amelia, kabir, aditya
 PROVIDER_OPTIONS = {
     "stt_providers": [
         {"value": "sarvam", "label": "Sarvam AI (Hindi+English best)"},
@@ -40,8 +52,10 @@ PROVIDER_OPTIONS = {
             {"value": "sonic-english", "label": "Sonic English (Female)"},
         ],
         "sarvam": [
-            {"value": "amelia", "label": "Amelia (Indian English)"},
-            {"value": "anushka", "label": "Anushka (Indian English)"},
+            {"value": "meera", "label": "Meera (Female Indian English)"},
+            {"value": "pavithra", "label": "Pavithra (Female Indian English)"},
+            {"value": "arjun", "label": "Arjun (Male Indian English)"},
+            {"value": "rahul", "label": "Rahul (Male Indian English)"},
         ],
     },
     "tts_providers_hindi": [
@@ -49,11 +63,13 @@ PROVIDER_OPTIONS = {
     ],
     "tts_voices_hindi": {
         "sarvam": [
-            {"value": "simran", "label": "Simran (Female Hindi)"},
-            {"value": "anushka", "label": "Anushka (Female Hindi)"},
-            {"value": "priya", "label": "Priya (Female Hindi)"},
-            {"value": "pooja", "label": "Pooja (Female Hindi)"},
-            {"value": "ishita", "label": "Ishita (Female Hindi)"},
+            {"value": "meera", "label": "Meera (Female Hindi)"},
+            {"value": "pavithra", "label": "Pavithra (Female Hindi)"},
+            {"value": "maitreyi", "label": "Maitreyi (Female Hindi)"},
+            {"value": "diya", "label": "Diya (Female Hindi)"},
+            {"value": "arjun", "label": "Arjun (Male Hindi)"},
+            {"value": "rahul", "label": "Rahul (Male Hindi)"},
+            {"value": "amol", "label": "Amol (Male Hindi)"},
         ],
     },
     "llm_providers": [
@@ -69,25 +85,56 @@ PROVIDER_OPTIONS = {
         {"value": "openai/gpt-4.1", "label": "GPT-4.1 (latest powerful)"},
         {"value": "anthropic/claude-3-haiku-20240307", "label": "Claude Haiku (fast)"},
     ],
+    # Gender-indexed voice catalog consumed by the dashboard
+    # options.voices?.[provider]?.[gender] dropdown. Keep in sync with
+    # the confirmed-working set in the comment at top of this file.
     "voices": {
         "sarvam": {
             "female": [
-                {"value": "simran", "label": "Simran (Hindi/English)"},
-                {"value": "anushka", "label": "Anushka (Hindi/English)"},
-                {"value": "priya", "label": "Priya (Hindi/English)"},
-                {"value": "pooja", "label": "Pooja (Hindi/English)"},
-                {"value": "ishita", "label": "Ishita (Hindi/English)"},
-                {"value": "shreya", "label": "Shreya (Hindi/English)"},
-                {"value": "meera", "label": "Meera (Hindi)"},
-                {"value": "amelia", "label": "Amelia (English)"},
+                {"value": "meera", "label": "Meera (Female Hindi/English)"},
+                {"value": "pavithra", "label": "Pavithra (Female Hindi/English)"},
+                {"value": "maitreyi", "label": "Maitreyi (Female Hindi/English)"},
+                {"value": "diya", "label": "Diya (Female Hindi/English)"},
+                {"value": "misha", "label": "Misha (Female Hindi/English)"},
+                {"value": "maya", "label": "Maya (Female Hindi/English)"},
             ],
             "male": [
-                {"value": "arjun", "label": "Arjun (Hindi/English)"},
-                {"value": "rahul", "label": "Rahul (Hindi/English)"},
-                {"value": "aditya", "label": "Aditya (Hindi/English)"},
-                {"value": "kabir", "label": "Kabir (Hindi/English)"},
+                {"value": "arjun", "label": "Arjun (Male Hindi/English)"},
+                {"value": "rahul", "label": "Rahul (Male Hindi/English)"},
+                {"value": "amol", "label": "Amol (Male Hindi/English)"},
+                {"value": "amartya", "label": "Amartya (Male Hindi/English)"},
+                {"value": "arvind", "label": "Arvind (Male Hindi/English)"},
+                {"value": "neel", "label": "Neel (Male Hindi/English)"},
+                {"value": "vian", "label": "Vian (Male Hindi/English)"},
             ],
-        }
+        },
+        "smallest": {
+            "female": [
+                {"value": "emily", "label": "Emily (Female English)"},
+                {"value": "sarah", "label": "Sarah (Female English)"},
+                {"value": "luna", "label": "Luna (Female English)"},
+            ],
+            "male": [
+                {"value": "john", "label": "John (Male English)"},
+            ],
+        },
+        "elevenlabs": {
+            "female": [
+                {"value": "Rachel", "label": "Rachel (Female English)"},
+                {"value": "Domi", "label": "Domi (Female English)"},
+                {"value": "Bella", "label": "Bella (Female English)"},
+            ],
+            "male": [
+                {"value": "Adam", "label": "Adam (Male English)"},
+                {"value": "Antoni", "label": "Antoni (Male English)"},
+            ],
+        },
+        "cartesia": {
+            "female": [
+                {"value": "sonic-english", "label": "Sonic English (Female)"},
+            ],
+            "male": [],
+        },
     },
     "languages": [
         {"value": "en", "label": "English"},
