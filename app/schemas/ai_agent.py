@@ -96,11 +96,19 @@ PROVIDER_OPTIONS = {
         {"value": "anthropic", "label": "Anthropic"},
     ],
     "llm_models": [
-        {"value": "openai/gpt-4o-mini", "label": "GPT-4o Mini (recommended)"},
+        # Groq-backed models on OpenRouter — lowest first-token latency.
+        # OpenRouter auto-routes these to the fastest available provider
+        # (usually Groq) which runs on custom LPU hardware (~200ms TTFT).
+        {"value": "meta-llama/llama-3.3-70b-instruct", "label": "Llama 3.3 70B (fastest, Groq)"},
+        {"value": "meta-llama/llama-3.1-8b-instruct", "label": "Llama 3.1 8B (ultra-fast, smaller)"},
+        {"value": "google/gemini-flash-1.5-8b", "label": "Gemini Flash 8B (very fast)"},
+        # OpenAI — higher quality, higher latency
+        {"value": "openai/gpt-4o-mini", "label": "GPT-4o Mini (balanced)"},
         {"value": "openai/gpt-4.1-mini", "label": "GPT-4.1 Mini (latest)"},
         {"value": "openai/gpt-4.1-nano", "label": "GPT-4.1 Nano (cheapest)"},
         {"value": "openai/gpt-4o", "label": "GPT-4o (powerful)"},
         {"value": "openai/gpt-4.1", "label": "GPT-4.1 (latest powerful)"},
+        # Anthropic — reasoning/quality
         {"value": "anthropic/claude-3-haiku-20240307", "label": "Claude Haiku (fast)"},
     ],
     # Gender-indexed voice catalog consumed by the dashboard
