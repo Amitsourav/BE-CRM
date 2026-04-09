@@ -37,6 +37,28 @@ PROVIDER_OPTIONS = {
         {"value": "deepgram", "label": "Deepgram (English reliable)"},
         {"value": "azure", "label": "Azure STT"},
     ],
+    # Per-provider STT model catalog consumed by the dashboard dropdown.
+    # Frontend reads options.stt_models?.[provider] to populate choices.
+    "stt_models": {
+        "sarvam": [
+            {"value": "saarika:v2.5", "label": "saarika:v2.5 (latest, best Hinglish)"},
+            {"value": "saarika:v2", "label": "saarika:v2 (code-mixed optimized)"},
+            {"value": "saaras:v3", "label": "saaras:v3 (older, may translate)"},
+            {"value": "saaras:v2", "label": "saaras:v2 (legacy)"},
+        ],
+        "deepgram": [
+            {"value": "nova-2-general", "label": "Nova-2 General (recommended)"},
+            {"value": "nova-2-meeting", "label": "Nova-2 Meeting"},
+            {"value": "enhanced-general", "label": "Enhanced General"},
+        ],
+        "openai": [
+            {"value": "whisper-1", "label": "Whisper-1"},
+        ],
+        "azure": [
+            {"value": "en-IN", "label": "English (India)"},
+            {"value": "hi-IN", "label": "Hindi (India)"},
+        ],
+    },
     "tts_providers": [
         {"value": "sarvam", "label": "Sarvam AI (Indian voices)"},
         {"value": "smallest", "label": "Smallest AI (fast English)"},
