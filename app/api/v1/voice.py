@@ -151,6 +151,13 @@ async def initiate_outbound_call(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    # Pre-seed the /answer webhook's in-memory agent cache so the Plivo
+    # answer_url callback can skip its ~700ms cross-region Supabase lookup.
+    # Without this, the cache is cold on first touch → a call always pays
+    # one extra Supabase round-trip between phone-answer and welcome audio.
+    import time as _time
+    _AGENT_CACHE[str(body.agent_id)] = (agent, _time.time() + _AGENT_CACHE_TTL)
+
     # Enforce call-hours window if the agent opts in. Interpreted as IST
     # (server-side clock) in 24h "HH:MM" format. Wrap-around (e.g. 22:00-06:00)
     # is supported by checking for "outside" the window when start > end.
@@ -335,20 +342,14 @@ async def handle_answer(
     of silence.
     """
     client_host = request.client.host if request.client else "unknown"
-    ua = request.headers.get("user-agent", "")
 
-    # ── Fix 4: Print full webhook body ──
-    try:
-        body_bytes = await request.body()
-        body_str = body_bytes.decode("utf-8", errors="replace") if body_bytes else ""
-    except Exception as e:
-        body_str = f"<failed to read body: {e}>"
-
+    # Body read previously happened here for logging. Removed from the hot
+    # path — reading + logging several KB of Plivo form data synchronously
+    # was adding ~50-150ms before we could even start the agent lookup.
+    # If you need to debug what Plivo sends, flip DEBUG_ANSWER_BODY below.
     logger.info(
-        "ANSWER_WEBHOOK_IN call_id=%s agent_id=%s lead_id=%s lead_name=%r "
-        "from=%s ua=%s query=%s body=%r",
-        call_id, agent_id, lead_id, lead_name,
-        client_host, ua, dict(request.query_params), body_str,
+        "ANSWER_WEBHOOK_IN call_id=%s agent_id=%s lead_id=%s lead_name=%r from=%s",
+        call_id, agent_id, lead_id, lead_name, client_host,
     )
 
     if not verify_plivo_webhook(request):
