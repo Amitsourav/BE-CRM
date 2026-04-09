@@ -8,6 +8,7 @@ from app.services.language_detector import (
     detect_language,
     get_language_instruction,
 )
+from app.services.voice_engine.http_clients import get_openrouter_client
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ def _find_sentence_end(buf: str) -> int:
 class LLMService:
 
     OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+    OPENROUTER_PATH = "/api/v1/chat/completions"
 
     async def get_response(
         self,
@@ -106,42 +108,41 @@ class LLMService:
                 {"role": "user", "content": enhanced_message},
             ]
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    self.OPENROUTER_URL,
-                    headers={
-                        "Authorization": f"Bearer {settings.openrouter_api_key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": settings.backend_url,
-                        "X-Title": "BE-CRM Voice Agent",
-                    },
-                    json={
-                        "model": agent.llm_model,
-                        "messages": messages,
-                        "max_tokens": agent.llm_max_tokens,
-                        "temperature": agent.llm_temperature,
-                    },
-                )
-
-                if response.status_code != 200:
-                    return {
-                        "response": "Sorry, I am having technical difficulties.",
-                        "language": detected_lang,
-                    }
-
-                try:
-                    data = response.json()
-                    ai_text = data["choices"][0]["message"]["content"].strip()
-                except (ValueError, KeyError, IndexError):
-                    return {
-                        "response": "Sorry, please repeat that.",
-                        "language": detected_lang,
-                    }
-
+            client = get_openrouter_client()
+            response = await client.post(
+                self.OPENROUTER_PATH,
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": settings.backend_url,
+                    "X-Title": "BE-CRM Voice Agent",
+                },
+                json={
+                    "model": agent.llm_model,
+                    "messages": messages,
+                    "max_tokens": agent.llm_max_tokens,
+                    "temperature": agent.llm_temperature,
+                },
+            )
+            if response.status_code != 200:
                 return {
-                    "response": ai_text,
+                    "response": "Sorry, I am having technical difficulties.",
                     "language": detected_lang,
                 }
+
+            try:
+                data = response.json()
+                ai_text = data["choices"][0]["message"]["content"].strip()
+            except (ValueError, KeyError, IndexError):
+                return {
+                    "response": "Sorry, please repeat that.",
+                    "language": detected_lang,
+                }
+
+            return {
+                "response": ai_text,
+                "language": detected_lang,
+            }
 
         except (httpx.RequestError, httpx.TimeoutException) as e:
             return {
@@ -230,64 +231,64 @@ class LLMService:
         full_response = ""
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                async with client.stream(
-                    "POST",
-                    self.OPENROUTER_URL,
-                    headers={
-                        "Authorization": f"Bearer {settings.openrouter_api_key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": settings.backend_url,
-                        "X-Title": "BE-CRM Voice Agent",
-                    },
-                    json={
-                        "model": agent.llm_model,
-                        "messages": messages,
-                        "max_tokens": agent.llm_max_tokens,
-                        "temperature": agent.llm_temperature,
-                        "stream": True,
-                    },
-                ) as response:
-                    if response.status_code != 200:
-                        err_body = (await response.aread()).decode("utf-8", "replace")[:200]
-                        logger.warning("LLM stream HTTP %s: %s", response.status_code, err_body)
-                        yield {"type": "error", "text": "", "language": detected_lang}
-                        return
+            client = get_openrouter_client()
+            async with client.stream(
+                "POST",
+                self.OPENROUTER_PATH,
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": settings.backend_url,
+                    "X-Title": "BE-CRM Voice Agent",
+                },
+                json={
+                    "model": agent.llm_model,
+                    "messages": messages,
+                    "max_tokens": agent.llm_max_tokens,
+                    "temperature": agent.llm_temperature,
+                    "stream": True,
+                },
+            ) as response:
+                if response.status_code != 200:
+                    err_body = (await response.aread()).decode("utf-8", "replace")[:200]
+                    logger.warning("LLM stream HTTP %s: %s", response.status_code, err_body)
+                    yield {"type": "error", "text": "", "language": detected_lang}
+                    return
 
-                    async for line in response.aiter_lines():
-                        if not line or not line.startswith("data: "):
-                            continue
-                        payload = line[6:].strip()
-                        if payload == "[DONE]":
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    payload = line[6:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(payload)
+                        delta = (
+                            data.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content", "")
+                        )
+                    except (ValueError, KeyError, IndexError):
+                        continue
+                    if not delta:
+                        continue
+
+                    buffer += delta
+                    full_response += delta
+
+                    # Flush every complete sentence as soon as it's ready
+                    while True:
+                        idx = _find_sentence_end(buffer)
+                        if idx == -1:
                             break
-                        try:
-                            data = json.loads(payload)
-                            delta = (
-                                data.get("choices", [{}])[0]
-                                .get("delta", {})
-                                .get("content", "")
-                            )
-                        except (ValueError, KeyError, IndexError):
-                            continue
-                        if not delta:
-                            continue
-
-                        buffer += delta
-                        full_response += delta
-
-                        # Flush every complete sentence as soon as it's ready
-                        while True:
-                            idx = _find_sentence_end(buffer)
-                            if idx == -1:
-                                break
-                            sentence = buffer[: idx + 1].strip()
-                            buffer = buffer[idx + 1 :].lstrip()
-                            if sentence:
-                                yield {
-                                    "type": "sentence",
-                                    "text": sentence,
-                                    "language": detected_lang,
-                                }
+                        sentence = buffer[: idx + 1].strip()
+                        buffer = buffer[idx + 1 :].lstrip()
+                        if sentence:
+                            yield {
+                                "type": "sentence",
+                                "text": sentence,
+                                "language": detected_lang,
+                            }
 
             # Flush any trailing fragment as one last sentence
             tail = buffer.strip()

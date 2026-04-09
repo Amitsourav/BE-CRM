@@ -1,5 +1,6 @@
 import httpx
 from app.config import get_settings
+from app.services.voice_engine.http_clients import get_smallest_client
 
 
 class SmallestTTS:
@@ -26,29 +27,26 @@ class SmallestTTS:
             return b""
 
         settings = get_settings()
+        client = get_smallest_client()
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.BASE_URL}/api/v1/lightning/get_speech",
-                    headers={
-                        "Authorization": f"Bearer {settings.smallest_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "text": text,
-                        "voice_id": voice,
-                        "speed": speed,
-                        "model": model,
-                        "sample_rate": 8000,
-                        "add_wav_header": True,
-                    },
-                )
-
-                if response.status_code != 200:
-                    return b""
-
-                return response.content
-
+            response = await client.post(
+                "/api/v1/lightning/get_speech",
+                headers={
+                    "Authorization": f"Bearer {settings.smallest_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text": text,
+                    "voice_id": voice,
+                    "speed": speed,
+                    "model": model,
+                    "sample_rate": 8000,
+                    "add_wav_header": True,
+                },
+            )
+            if response.status_code != 200:
+                return b""
+            return response.content
         except httpx.RequestError:
             return b""
 

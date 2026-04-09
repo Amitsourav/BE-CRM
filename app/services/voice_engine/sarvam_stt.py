@@ -7,6 +7,7 @@ import httpx
 import websockets
 
 from app.config import get_settings
+from app.services.voice_engine.http_clients import get_sarvam_client
 
 logger = logging.getLogger(__name__)
 
@@ -24,57 +25,50 @@ class SarvamSTT:
     ) -> dict:
         """Transcribe audio bytes to text."""
         settings = get_settings()
+        client = get_sarvam_client()
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.BASE_URL}/speech-to-text",
-                    headers={
-                        "api-subscription-key": settings.sarvam_api_key,
-                    },
-                    files={
-                        "file": ("audio.wav", audio_bytes, "audio/wav"),
-                    },
-                    data={
-                        "model": model,
-                        "language_code": language_code,
-                        "with_timestamps": "false",
-                        "with_diarization": "false",
-                        # Sarvam accepts a comma-separated hotword list as
-                        # "vocab" on some models; unknown fields are ignored.
-                        **({"vocab": keywords} if keywords else {}),
-                    },
-                )
+            response = await client.post(
+                "/speech-to-text",
+                headers={"api-subscription-key": settings.sarvam_api_key},
+                files={"file": ("audio.wav", audio_bytes, "audio/wav")},
+                data={
+                    "model": model,
+                    "language_code": language_code,
+                    "with_timestamps": "false",
+                    "with_diarization": "false",
+                    **({"vocab": keywords} if keywords else {}),
+                },
+            )
 
-                if response.status_code != 200:
-                    return {
-                        "transcript": "",
-                        "language_code": "en-IN",
-                        "detected_language": "en",
-                        "error": response.text,
-                    }
-
-                try:
-                    data = response.json()
-                except ValueError as e:
-                    return {
-                        "transcript": "",
-                        "language_code": "en-IN",
-                        "detected_language": "en",
-                        "error": f"invalid JSON: {e}",
-                    }
-
-                transcript = data.get("transcript", "") if isinstance(data, dict) else ""
-                lang = data.get("language_code", "en-IN") if isinstance(data, dict) else "en-IN"
-
-                from app.services.language_detector import detect_language
-                detected = detect_language(transcript)
-
+            if response.status_code != 200:
                 return {
-                    "transcript": transcript,
-                    "language_code": lang,
-                    "detected_language": detected,
+                    "transcript": "",
+                    "language_code": "en-IN",
+                    "detected_language": "en",
+                    "error": response.text,
                 }
 
+            try:
+                data = response.json()
+            except ValueError as e:
+                return {
+                    "transcript": "",
+                    "language_code": "en-IN",
+                    "detected_language": "en",
+                    "error": f"invalid JSON: {e}",
+                }
+
+            transcript = data.get("transcript", "") if isinstance(data, dict) else ""
+            lang = data.get("language_code", "en-IN") if isinstance(data, dict) else "en-IN"
+
+            from app.services.language_detector import detect_language
+            detected = detect_language(transcript)
+
+            return {
+                "transcript": transcript,
+                "language_code": lang,
+                "detected_language": detected,
+            }
         except (httpx.RequestError, httpx.TimeoutException) as e:
             return {
                 "transcript": "",

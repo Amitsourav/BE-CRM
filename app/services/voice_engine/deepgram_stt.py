@@ -4,6 +4,7 @@ import httpx
 
 from app.config import get_settings
 from app.services.language_detector import detect_language
+from app.services.voice_engine.http_clients import get_deepgram_client
 
 logger = logging.getLogger(__name__)
 
@@ -41,32 +42,32 @@ class DeepgramSTT:
                 params["keywords"] = [
                     f"{k.strip()}:2" for k in keywords.split(",") if k.strip()
                 ]
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.post(
-                    self.BASE_URL,
-                    params=params,
-                    headers={
-                        "Authorization": f"Token {settings.deepgram_api_key}",
-                        "Content-Type": "audio/wav",
-                    },
-                    content=audio_bytes,
-                )
-                if response.status_code != 200:
-                    logger.warning("deepgram STT failed: %s %s", response.status_code, response.text[:200])
-                    return {"transcript": "", "language_code": language_code, "detected_language": "en"}
-                data = response.json()
-                transcript = (
-                    data.get("results", {})
-                    .get("channels", [{}])[0]
-                    .get("alternatives", [{}])[0]
-                    .get("transcript", "")
-                    or ""
-                ).strip()
-                return {
-                    "transcript": transcript,
-                    "language_code": language_code,
-                    "detected_language": detect_language(transcript),
-                }
+            client = get_deepgram_client()
+            response = await client.post(
+                "/v1/listen",
+                params=params,
+                headers={
+                    "Authorization": f"Token {settings.deepgram_api_key}",
+                    "Content-Type": "audio/wav",
+                },
+                content=audio_bytes,
+            )
+            if response.status_code != 200:
+                logger.warning("deepgram STT failed: %s %s", response.status_code, response.text[:200])
+                return {"transcript": "", "language_code": language_code, "detected_language": "en"}
+            data = response.json()
+            transcript = (
+                data.get("results", {})
+                .get("channels", [{}])[0]
+                .get("alternatives", [{}])[0]
+                .get("transcript", "")
+                or ""
+            ).strip()
+            return {
+                "transcript": transcript,
+                "language_code": language_code,
+                "detected_language": detect_language(transcript),
+            }
         except (httpx.RequestError, httpx.TimeoutException) as e:
             logger.warning("deepgram STT error: %s", e)
             return {"transcript": "", "language_code": language_code, "detected_language": "en"}

@@ -4,6 +4,7 @@ import httpx
 
 from app.config import get_settings
 from app.services.language_detector import detect_language
+from app.services.voice_engine.http_clients import get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -32,29 +33,28 @@ class OpenAISTT:
         lang = (language_code or "en").split("-")[0]
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    self.BASE_URL,
-                    headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-                    files={"file": ("audio.wav", audio_bytes, "audio/wav")},
-                    data={
-                        "model": model,
-                        "language": lang,
-                        "response_format": "json",
-                        # Whisper uses "prompt" as a hotword hint
-                        **({"prompt": keywords} if keywords else {}),
-                    },
-                )
-                if response.status_code != 200:
-                    logger.warning("openai STT failed: %s %s", response.status_code, response.text[:200])
-                    return {"transcript": "", "language_code": language_code, "detected_language": "en"}
-                data = response.json()
-                transcript = (data.get("text") or "").strip()
-                return {
-                    "transcript": transcript,
-                    "language_code": language_code,
-                    "detected_language": detect_language(transcript),
-                }
+            client = get_openai_client()
+            response = await client.post(
+                "/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                files={"file": ("audio.wav", audio_bytes, "audio/wav")},
+                data={
+                    "model": model,
+                    "language": lang,
+                    "response_format": "json",
+                    **({"prompt": keywords} if keywords else {}),
+                },
+            )
+            if response.status_code != 200:
+                logger.warning("openai STT failed: %s %s", response.status_code, response.text[:200])
+                return {"transcript": "", "language_code": language_code, "detected_language": "en"}
+            data = response.json()
+            transcript = (data.get("text") or "").strip()
+            return {
+                "transcript": transcript,
+                "language_code": language_code,
+                "detected_language": detect_language(transcript),
+            }
         except (httpx.RequestError, httpx.TimeoutException) as e:
             logger.warning("openai STT error: %s", e)
             return {"transcript": "", "language_code": language_code, "detected_language": "en"}

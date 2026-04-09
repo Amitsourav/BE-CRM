@@ -2,6 +2,7 @@ import base64
 import httpx
 from app.config import get_settings
 from app.services.voice_engine.audio_utils import concat_wav, split_for_tts
+from app.services.voice_engine.http_clients import get_sarvam_client
 
 
 class SarvamTTS:
@@ -38,43 +39,42 @@ class SarvamTTS:
 
         settings = get_settings()
         wav_blobs: list = []
+        client = get_sarvam_client()
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                for chunk in chunks:
-                    response = await client.post(
-                        f"{self.BASE_URL}/text-to-speech",
-                        headers={
-                            "api-subscription-key": settings.sarvam_api_key,
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "inputs": [chunk],
-                            "target_language_code": language_code,
-                            "speaker": voice,
-                            "model": model,
-                            "enable_preprocessing": True,
-                            "speech_sample_rate": 8000,
-                            "encoding": "wav",
-                            "pace": speed,
-                        },
-                    )
-                    if response.status_code != 200:
-                        # Don't keep hammering on auth/quota failures
-                        if response.status_code in (401, 403, 429):
-                            break
-                        continue
-                    try:
-                        data = response.json()
-                    except ValueError:
-                        continue
-                    audios = data.get("audios", []) if isinstance(data, dict) else []
-                    if not audios:
-                        continue
-                    try:
-                        wav_blobs.append(base64.b64decode(audios[0]))
-                    except Exception:
-                        continue
+            for chunk in chunks:
+                response = await client.post(
+                    "/text-to-speech",
+                    headers={
+                        "api-subscription-key": settings.sarvam_api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "inputs": [chunk],
+                        "target_language_code": language_code,
+                        "speaker": voice,
+                        "model": model,
+                        "enable_preprocessing": True,
+                        "speech_sample_rate": 8000,
+                        "encoding": "wav",
+                        "pace": speed,
+                    },
+                )
+                if response.status_code != 200:
+                    if response.status_code in (401, 403, 429):
+                        break
+                    continue
+                try:
+                    data = response.json()
+                except ValueError:
+                    continue
+                audios = data.get("audios", []) if isinstance(data, dict) else []
+                if not audios:
+                    continue
+                try:
+                    wav_blobs.append(base64.b64decode(audios[0]))
+                except Exception:
+                    continue
         except (httpx.RequestError, httpx.TimeoutException):
             pass
 
