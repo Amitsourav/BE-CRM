@@ -65,6 +65,35 @@ PROVIDER_OPTIONS = {
         {"value": "elevenlabs", "label": "ElevenLabs (premium)"},
         {"value": "cartesia", "label": "Cartesia (low latency)"},
     ],
+    # Per-provider TTS model catalog consumed by the dashboard.
+    # Frontend reads options.tts_models?.[provider] for the dropdown.
+    # NOTE: Sarvam catalog must match the PROVIDER_OPTIONS.voices.sarvam
+    # set — each voice is tied to a specific bulbul version. Mixing a
+    # voice with the wrong model version produces HTTP 400 / silent calls.
+    "tts_models": {
+        "sarvam": [
+            {"value": "bulbul:v3", "label": "bulbul:v3 (latest, recommended)"},
+            {"value": "bulbul:v2", "label": "bulbul:v2 (older, different voices)"},
+        ],
+        "smallest": [
+            {"value": "lightning-v2", "label": "Lightning v2 (fastest)"},
+            {"value": "lightning", "label": "Lightning v1 (legacy)"},
+        ],
+        "elevenlabs": [
+            {"value": "eleven_turbo_v2_5", "label": "Turbo v2.5 (fast)"},
+            {"value": "eleven_multilingual_v2", "label": "Multilingual v2 (best quality)"},
+            {"value": "eleven_flash_v2_5", "label": "Flash v2.5 (ultra low latency)"},
+        ],
+        "cartesia": [
+            {"value": "sonic-2", "label": "Sonic 2 (latest)"},
+            {"value": "sonic", "label": "Sonic (legacy)"},
+        ],
+    },
+    # Gender toggle for TTS voice dropdowns
+    "tts_genders": [
+        {"value": "female", "label": "Female"},
+        {"value": "male", "label": "Male"},
+    ],
     "tts_providers_english": [
         {"value": "smallest", "label": "Smallest AI (fast English)"},
         {"value": "elevenlabs", "label": "ElevenLabs (premium English)"},
