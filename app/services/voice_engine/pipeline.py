@@ -205,26 +205,47 @@ class VoicePipeline:
                     detected_language = chunk.get("language", detected_language)
                     if not sentence:
                         continue
-                    # TTS this sentence alone; skip on failure rather than block
+                    # Stream TTS sub-chunks to Plivo as each is ready.
+                    # First sub-chunk arrives in ~500-700ms instead of
+                    # ~1500ms for the full sentence batch.
                     tts_t0 = time.time()
                     try:
-                        wav = await self._get_tts_audio(
-                            text=sentence,
-                            language=detected_language,
-                            agent=agent,
-                        )
+                        tts_provider = (getattr(agent, "tts_provider", "sarvam") or "sarvam").lower()
+                        if tts_provider == "sarvam":
+                            async for wav_chunk in sarvam_tts.synthesize_for_call_streaming(
+                                text=sentence,
+                                agent=agent,
+                                language=detected_language,
+                            ):
+                                if wav_chunk:
+                                    any_audio_sent = True
+                                    if not first_audio_seen:
+                                        first_audio_seen = True
+                                        tts_first_sentence_ms = int((time.time() - tts_t0) * 1000)
+                                    yield {
+                                        "audio": wav_chunk,
+                                        "text": sentence,
+                                        "language": detected_language,
+                                    }
+                        else:
+                            # Non-Sarvam providers: batch as before
+                            wav = await self._get_tts_audio(
+                                text=sentence,
+                                language=detected_language,
+                                agent=agent,
+                            )
+                            if wav:
+                                any_audio_sent = True
+                                if not first_audio_seen:
+                                    first_audio_seen = True
+                                    tts_first_sentence_ms = int((time.time() - tts_t0) * 1000)
+                                yield {
+                                    "audio": wav,
+                                    "text": sentence,
+                                    "language": detected_language,
+                                }
                     except Exception:
-                        wav = b""
-                    if wav:
-                        any_audio_sent = True
-                        if not first_audio_seen:
-                            first_audio_seen = True
-                            tts_first_sentence_ms = int((time.time() - tts_t0) * 1000)
-                        yield {
-                            "audio": wav,
-                            "text": sentence,
-                            "language": detected_language,
-                        }
+                        pass
                 elif ctype == "done":
                     full_response = chunk.get("text", "") or full_response
                     detected_language = chunk.get("language", detected_language)
