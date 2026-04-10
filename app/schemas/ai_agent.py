@@ -35,24 +35,26 @@ PROVIDER_OPTIONS = {
     "stt_providers": [
         {"value": "sarvam", "label": "Sarvam AI (Hindi+English best)"},
         {"value": "deepgram", "label": "Deepgram (English reliable)"},
-        {"value": "azure", "label": "Azure STT"},
+        {"value": "openai", "label": "OpenAI Whisper/GPT"},
+        {"value": "azure", "label": "Azure STT (not yet wired)"},
     ],
-    # Per-provider STT model catalog consumed by the dashboard dropdown.
-    # Frontend reads options.stt_models?.[provider] to populate choices.
     "stt_models": {
         "sarvam": [
-            {"value": "saarika:v2.5", "label": "saarika:v2.5 (latest, best Hinglish)"},
-            {"value": "saarika:v2", "label": "saarika:v2 (code-mixed optimized)"},
-            {"value": "saaras:v3", "label": "saaras:v3 (older, may translate)"},
+            {"value": "saaras:v3", "label": "saaras:v3 (recommended, multi-mode)"},
+            {"value": "saarika:v2.5", "label": "saarika:v2.5 (legacy, being deprecated)"},
+            {"value": "saarika:v2", "label": "saarika:v2 (legacy)"},
             {"value": "saaras:v2", "label": "saaras:v2 (legacy)"},
         ],
         "deepgram": [
-            {"value": "nova-2-general", "label": "Nova-2 General (recommended)"},
+            {"value": "nova-3", "label": "Nova-3 (latest, best Hindi)"},
+            {"value": "nova-2-general", "label": "Nova-2 General"},
             {"value": "nova-2-meeting", "label": "Nova-2 Meeting"},
             {"value": "enhanced-general", "label": "Enhanced General"},
         ],
         "openai": [
-            {"value": "whisper-1", "label": "Whisper-1"},
+            {"value": "gpt-4o-mini-transcribe", "label": "GPT-4o Mini Transcribe (recommended)"},
+            {"value": "gpt-4o-transcribe", "label": "GPT-4o Transcribe"},
+            {"value": "whisper-1", "label": "Whisper-1 (legacy)"},
         ],
         "azure": [
             {"value": "en-IN", "label": "English (India)"},
@@ -60,10 +62,10 @@ PROVIDER_OPTIONS = {
         ],
     },
     "tts_providers": [
-        {"value": "sarvam", "label": "Sarvam AI (Indian voices)"},
-        {"value": "smallest", "label": "Smallest AI (fast English)"},
-        {"value": "elevenlabs", "label": "ElevenLabs (premium)"},
-        {"value": "cartesia", "label": "Cartesia (low latency)"},
+        {"value": "sarvam", "label": "Sarvam AI (Indian voices, natural)"},
+        {"value": "smallest", "label": "Smallest AI (fast, Hindi+English)"},
+        {"value": "elevenlabs", "label": "ElevenLabs (premium, not yet wired)"},
+        {"value": "cartesia", "label": "Cartesia (low latency, not yet wired)"},
     ],
     # Per-provider TTS model catalog consumed by the dashboard.
     # Frontend reads options.tts_models?.[provider] for the dropdown.
@@ -72,11 +74,12 @@ PROVIDER_OPTIONS = {
     # voice with the wrong model version produces HTTP 400 / silent calls.
     "tts_models": {
         "sarvam": [
-            {"value": "bulbul:v3", "label": "bulbul:v3 (latest, recommended)"},
+            {"value": "bulbul:v3", "label": "bulbul:v3 (latest, 35+ voices)"},
             {"value": "bulbul:v2", "label": "bulbul:v2 (older, different voices)"},
         ],
         "smallest": [
-            {"value": "lightning-v2", "label": "Lightning v2 (fastest)"},
+            {"value": "lightning-v3", "label": "Lightning v3 (latest, Hindi support)"},
+            {"value": "lightning-v2", "label": "Lightning v2"},
             {"value": "lightning", "label": "Lightning v1 (legacy)"},
         ],
         "elevenlabs": [
@@ -125,7 +128,8 @@ PROVIDER_OPTIONS = {
         ],
     },
     "tts_providers_hindi": [
-        {"value": "sarvam", "label": "Sarvam AI (best for Hindi)"},
+        {"value": "sarvam", "label": "Sarvam AI (best Hindi quality)"},
+        {"value": "smallest", "label": "Smallest AI (fast Hindi)"},
     ],
     "tts_voices_hindi": {
         "sarvam": [
@@ -135,10 +139,17 @@ PROVIDER_OPTIONS = {
             {"value": "pooja", "label": "Pooja (Female Hindi)"},
             {"value": "ritu", "label": "Ritu (Female Hindi)"},
             {"value": "kavya", "label": "Kavya (Female Hindi)"},
+            {"value": "ishita", "label": "Ishita (Female Hindi)"},
+            {"value": "shreya", "label": "Shreya (Female Hindi)"},
+            {"value": "tanya", "label": "Tanya (Female Hindi)"},
             {"value": "rahul", "label": "Rahul (Male Hindi)"},
             {"value": "rohan", "label": "Rohan (Male Hindi)"},
             {"value": "aditya", "label": "Aditya (Male Hindi)"},
             {"value": "ashutosh", "label": "Ashutosh (Male Hindi)"},
+            {"value": "shubh", "label": "Shubh (Male Hindi)"},
+        ],
+        "smallest": [
+            {"value": "mithali", "label": "Mithali (Female Hindi, fast)"},
         ],
     },
     "llm_providers": [
@@ -168,30 +179,48 @@ PROVIDER_OPTIONS = {
     "voices": {
         "sarvam": {
             "female": [
-                {"value": "simran", "label": "Simran (Female Hindi/English)"},
-                {"value": "priya", "label": "Priya (Female Hindi/English)"},
-                {"value": "neha", "label": "Neha (Female Hindi/English)"},
-                {"value": "pooja", "label": "Pooja (Female Hindi/English)"},
-                {"value": "ritu", "label": "Ritu (Female Hindi/English)"},
-                {"value": "kavya", "label": "Kavya (Female Hindi/English)"},
+                {"value": "simran", "label": "Simran"},
+                {"value": "priya", "label": "Priya"},
+                {"value": "neha", "label": "Neha"},
+                {"value": "pooja", "label": "Pooja"},
+                {"value": "ritu", "label": "Ritu"},
+                {"value": "kavya", "label": "Kavya"},
+                {"value": "ishita", "label": "Ishita"},
+                {"value": "shreya", "label": "Shreya"},
+                {"value": "tanya", "label": "Tanya"},
+                {"value": "roopa", "label": "Roopa"},
+                {"value": "shruti", "label": "Shruti"},
+                {"value": "suhani", "label": "Suhani"},
+                {"value": "kavitha", "label": "Kavitha"},
+                {"value": "rupali", "label": "Rupali"},
             ],
             "male": [
-                {"value": "rahul", "label": "Rahul (Male Hindi/English)"},
-                {"value": "aditya", "label": "Aditya (Male Hindi/English)"},
-                {"value": "ashutosh", "label": "Ashutosh (Male Hindi/English)"},
-                {"value": "rohan", "label": "Rohan (Male Hindi/English)"},
-                {"value": "amit", "label": "Amit (Male Hindi/English)"},
-                {"value": "dev", "label": "Dev (Male Hindi/English)"},
+                {"value": "rahul", "label": "Rahul"},
+                {"value": "aditya", "label": "Aditya"},
+                {"value": "ashutosh", "label": "Ashutosh"},
+                {"value": "rohan", "label": "Rohan"},
+                {"value": "amit", "label": "Amit"},
+                {"value": "dev", "label": "Dev"},
+                {"value": "shubh", "label": "Shubh"},
+                {"value": "ratan", "label": "Ratan"},
+                {"value": "varun", "label": "Varun"},
+                {"value": "manan", "label": "Manan"},
+                {"value": "sumit", "label": "Sumit"},
+                {"value": "kabir", "label": "Kabir"},
+                {"value": "vijay", "label": "Vijay"},
+                {"value": "mohit", "label": "Mohit"},
+                {"value": "sunny", "label": "Sunny"},
             ],
         },
         "smallest": {
             "female": [
-                {"value": "emily", "label": "Emily (Female English)"},
-                {"value": "sarah", "label": "Sarah (Female English)"},
-                {"value": "luna", "label": "Luna (Female English)"},
+                {"value": "mithali", "label": "Mithali (Hindi/English)"},
+                {"value": "emily", "label": "Emily (English)"},
+                {"value": "sarah", "label": "Sarah (English)"},
+                {"value": "luna", "label": "Luna (English)"},
             ],
             "male": [
-                {"value": "john", "label": "John (Male English)"},
+                {"value": "john", "label": "John (English)"},
             ],
         },
         "elevenlabs": {

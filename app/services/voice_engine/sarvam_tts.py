@@ -25,16 +25,20 @@ class SarvamTTS:
 
     BASE_URL = "https://api.sarvam.ai"
 
+    # bulbul:v3 confirmed speakers (from Sarvam's own API error + docs)
     VOICES = {
-        "simran": "simran",
-        "anushka": "anushka",
-        "priya": "priya",
-        "pooja": "pooja",
-        "ishita": "ishita",
-        "shreya": "shreya",
-        "arjun": "arjun",
-        "rahul": "rahul",
-        "aditya": "aditya",
+        # Female
+        "simran": "simran", "priya": "priya", "neha": "neha",
+        "pooja": "pooja", "ritu": "ritu", "kavya": "kavya",
+        "ishita": "ishita", "shreya": "shreya", "tanya": "tanya",
+        "roopa": "roopa", "shruti": "shruti", "suhani": "suhani",
+        "kavitha": "kavitha", "rupali": "rupali",
+        # Male
+        "rahul": "rahul", "aditya": "aditya", "ashutosh": "ashutosh",
+        "rohan": "rohan", "amit": "amit", "dev": "dev",
+        "shubh": "shubh", "ratan": "ratan", "varun": "varun",
+        "manan": "manan", "sumit": "sumit", "kabir": "kabir",
+        "vijay": "vijay", "mohit": "mohit", "sunny": "sunny",
     }
 
     async def synthesize(
