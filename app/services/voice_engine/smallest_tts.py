@@ -16,6 +16,7 @@ class SmallestTTS:
         "divya": "divya", "avni": "avni", "kavya": "kavya",
         "sameera": "sameera", "sunidhi": "sunidhi", "srishti": "srishti",
         "sakshi": "sakshi", "chinmayi": "chinmayi",
+        "zoya": "zoya", "aanya": "aanya",
         # Female English
         "avery": "avery", "mia": "mia", "sophia": "sophia",
         "rachel": "rachel", "olivia": "olivia",

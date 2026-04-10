@@ -246,6 +246,8 @@ PROVIDER_OPTIONS = {
                 {"value": "srishti", "label": "Srishti (Hindi/English)"},
                 {"value": "sakshi", "label": "Sakshi (Hindi/English)"},
                 {"value": "chinmayi", "label": "Chinmayi (Hindi/English)"},
+                {"value": "zoya", "label": "Zoya (Hindi)"},
+                {"value": "aanya", "label": "Aanya (Hindi)"},
                 {"value": "avery", "label": "Avery (English)"},
                 {"value": "mia", "label": "Mia (English)"},
                 {"value": "sophia", "label": "Sophia (English)"},
