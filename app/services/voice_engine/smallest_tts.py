@@ -4,7 +4,7 @@ import wave
 
 import httpx
 from app.config import get_settings
-from app.services.voice_engine.http_clients import get_smallest_client
+from app.services.voice_engine.http_clients import get_smallest_client, get_smallest_v3_client
 
 
 def _wrap_pcm_as_wav(pcm_data: bytes, sample_rate: int = 8000, channels: int = 1, sample_width: int = 2) -> bytes:
@@ -72,22 +72,21 @@ class SmallestTTS:
             if is_v3:
                 # New API: api.smallest.ai/waves/v1/{model}/get_speech
                 # v3.1 voices ONLY work on this endpoint
-                import httpx as _httpx
-                async with _httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.post(
-                        f"{self.BASE_URL_V3}/waves/v1/{model}/get_speech",
-                        headers={
-                            "Authorization": f"Bearer {settings.smallest_api_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "text": text,
-                            "voice_id": voice,
-                            "speed": speed,
-                            "sample_rate": 8000,
-                            "add_wav_header": True,
-                        },
-                    )
+                client = get_smallest_v3_client()
+                response = await client.post(
+                    f"/waves/v1/{model}/get_speech",
+                    headers={
+                        "Authorization": f"Bearer {settings.smallest_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "text": text,
+                        "voice_id": voice,
+                        "speed": speed,
+                        "sample_rate": 8000,
+                        "add_wav_header": True,
+                    },
+                )
             else:
                 # Legacy API: waves-api.smallest.ai/api/v1/lightning/get_speech
                 # v1/v2 voices (mithali, emily, etc.)

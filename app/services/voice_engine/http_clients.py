@@ -59,6 +59,7 @@ def get_openrouter_client() -> httpx.AsyncClient:
 
 
 def get_smallest_client() -> httpx.AsyncClient:
+    """Legacy Smallest API (v1/v2 voices)."""
     global _smallest
     if _smallest is None:
         _smallest = httpx.AsyncClient(
@@ -68,6 +69,22 @@ def get_smallest_client() -> httpx.AsyncClient:
             http2=False,
         )
     return _smallest
+
+
+_smallest_v3: httpx.AsyncClient | None = None
+
+
+def get_smallest_v3_client() -> httpx.AsyncClient:
+    """New Smallest API (v3.1 voices)."""
+    global _smallest_v3
+    if _smallest_v3 is None:
+        _smallest_v3 = httpx.AsyncClient(
+            base_url="https://api.smallest.ai",
+            timeout=httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=3.0),
+            limits=_LIMITS,
+            http2=False,
+        )
+    return _smallest_v3
 
 
 def get_deepgram_client() -> httpx.AsyncClient:
