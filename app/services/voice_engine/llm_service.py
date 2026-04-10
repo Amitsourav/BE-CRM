@@ -321,18 +321,33 @@ class LLMService:
                     # First chunk: use early-flush (comma/colon/maxchars)
                     # so TTS can start on the opening clause. Subsequent
                     # chunks use strict sentence-end only.
+                    #
+                    # But: if the very first "sentence" is an ultra-short
+                    # acknowledgment like "Great!", "Okay!", "Sure!" —
+                    # don't flush it alone or the user hears the filler
+                    # and then a 2-3s gap before the real reply. Merge
+                    # it with the next sentence instead.
                     while True:
                         use_early = not first_chunk_flushed
                         idx = _find_sentence_end(buffer, early=use_early)
                         if idx == -1:
                             break
-                        sentence = buffer[: idx + 1].strip()
-                        buffer = buffer[idx + 1 :].lstrip()
-                        if sentence:
+                        candidate = buffer[: idx + 1].strip()
+                        remaining = buffer[idx + 1 :].lstrip()
+                        # Hold ultra-short first sentences unless we've
+                        # already flushed once or buffered too much
+                        if (
+                            not first_chunk_flushed
+                            and len(candidate) < 20
+                            and len(buffer) < 120
+                        ):
+                            break
+                        buffer = remaining
+                        if candidate:
                             first_chunk_flushed = True
                             yield {
                                 "type": "sentence",
-                                "text": sentence,
+                                "text": candidate,
                                 "language": detected_lang,
                             }
 
