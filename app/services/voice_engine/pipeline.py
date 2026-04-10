@@ -97,6 +97,7 @@ class VoicePipeline:
                 message=transcript,
                 conversation_history=current_history,
                 agent=agent,
+                lead_name=state.lead_name or "there",
             ),
             attempts=2,
             fallback={"response": "Sorry, please repeat that.", "language": "en"},
@@ -180,7 +181,19 @@ class VoicePipeline:
             return
 
         # STEP 2: LLM stream → sentence chunks → TTS immediately
+        # Seed conversation with the welcome exchange if this is the
+        # first turn, so the LLM knows a greeting already happened and
+        # doesn't re-introduce itself on every "hello".
         current_history = list(state.conversation_history)
+        if not current_history and state.lead_name:
+            welcome_text = (agent.welcome_message or "Hello, am I speaking with {name}?")
+            welcome_text = welcome_text.replace("{name}", state.lead_name)
+            current_history = [
+                {"role": "assistant", "content": welcome_text},
+                {"role": "user", "content": transcript},
+            ]
+            # Skip adding transcript again below — it's already in history
+            # (the LLM stream will see welcome + first user reply)
         full_response = ""
         detected_language = "en"
         any_audio_sent = False
@@ -195,6 +208,7 @@ class VoicePipeline:
                 message=transcript,
                 conversation_history=current_history,
                 agent=agent,
+                lead_name=state.lead_name or "there",
             ):
                 ctype = chunk.get("type")
                 if ctype == "sentence":
@@ -244,6 +258,7 @@ class VoicePipeline:
                 message=transcript,
                 conversation_history=current_history,
                 agent=agent,
+                lead_name=state.lead_name or "there",
             )
             full_response = (llm_result or {}).get("response", "")
             detected_language = (llm_result or {}).get("language", "en")

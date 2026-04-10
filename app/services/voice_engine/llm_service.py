@@ -146,6 +146,7 @@ class LLMService:
         message: str,
         conversation_history: list,
         agent,
+        lead_name: str = "there",
     ) -> dict:
         """Get AI response for user message with language injection."""
         settings = get_settings()
@@ -185,7 +186,8 @@ class LLMService:
                 f"\n\n[LENGTH RULE: Keep responses to at most {max_words} words. "
                 "Be concise — this is a phone call, not an email.]"
             )
-            system_content = persona_rule + (agent.system_prompt or "") + length_rule
+            raw_prompt = (agent.system_prompt or "").replace("{name}", lead_name)
+            system_content = persona_rule + raw_prompt + length_rule
 
             messages = [
                 {"role": "system", "content": system_content},
@@ -242,6 +244,7 @@ class LLMService:
         message: str,
         conversation_history: list,
         agent,
+        lead_name: str = "there",
     ):
         """Streaming version of get_response.
 
