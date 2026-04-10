@@ -7,12 +7,29 @@ class SmallestTTS:
 
     BASE_URL = "https://waves-api.smallest.ai"
 
+    # lightning-v3.1 voice catalog (subset — full list has 104 voices).
+    # IMPORTANT: v3.1 voices are INCOMPATIBLE with v1/v2 and vice versa.
     VOICES = {
-        "emily": "emily",
-        "sarah": "sarah",
-        "luna": "luna",
-        "john": "john",
-        "mithali": "mithali",
+        # Female Hindi/English
+        "maithili": "maithili", "advika": "advika", "aisha": "aisha",
+        "ishani": "ishani", "yuvika": "yuvika", "sana": "sana",
+        "divya": "divya", "avni": "avni", "kavya": "kavya",
+        "sameera": "sameera", "sunidhi": "sunidhi", "srishti": "srishti",
+        "sakshi": "sakshi", "chinmayi": "chinmayi",
+        # Female English
+        "avery": "avery", "mia": "mia", "sophia": "sophia",
+        "rachel": "rachel", "olivia": "olivia",
+        # Male Hindi/English
+        "devansh": "devansh", "neel": "neel", "arjun": "arjun",
+        "vivaan": "vivaan", "gaurav": "gaurav", "hitesh": "hitesh",
+        "vaibhav": "vaibhav", "kunal": "kunal", "siddharth": "siddharth",
+        "mohit": "mohit", "mihir": "mihir", "aarush": "aarush",
+        "parth": "parth",
+        # Male English
+        "robert": "robert", "ethan": "ethan",
+        # Legacy v1 voices (only work with model="lightning")
+        "emily": "emily", "mithali": "mithali", "sarah": "sarah",
+        "luna": "luna", "john": "john",
     }
 
     async def synthesize(
