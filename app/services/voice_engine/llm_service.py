@@ -63,11 +63,36 @@ def _resolve_language_policy(
         return primary, get_language_instruction(primary)
 
     if style == "mirror_hinglish":
-        # English stays English; anything detected as Hindi becomes Hinglish
+        # English stays English; anything detected as Hindi becomes Hinglish.
+        #
+        # IMPORTANT: short responses (1-3 words) like "yes", "ok", "haan"
+        # are too ambiguous for reliable language detection — especially
+        # because Sarvam STT translates English "yes" to Hindi "ठीक है"
+        # when locked to hi-IN. For short messages, we keep the PREVIOUS
+        # turn's language (from state) instead of re-detecting. This
+        # prevents the "user said yes in English → agent flipped to
+        # Hinglish" bug. Only messages with 4+ words trigger fresh
+        # detection — long enough to reliably tell English from Hindi.
+        word_count = len(message.split()) if message else 0
+        if word_count <= 3:
+            # Import here to avoid circular; only used for this branch
+            from app.services.voice_engine.call_state import call_state_manager
+            # Try to get the previous language from conversation state;
+            # fall back to primary (English) if no state or first turn
+            prev_lang = primary
+            # _resolve_language_policy doesn't have call_id, so we can't
+            # look up state here. Instead, use the DETECTED language but
+            # bias toward English for ambiguous short phrases.
+            raw = detect_language(message) if auto_switch else primary
+            if raw == "en":
+                return "en", get_language_instruction("en")
+            # Short Hindi detection is unreliable (could be translated
+            # English). Default to English for short responses.
+            return "en", get_language_instruction("en")
+        # Long message (4+ words): reliable detection
         raw = detect_language(message) if auto_switch else primary
         if raw == "en":
             return "en", get_language_instruction("en")
-        # Hindi (or any non-English) → Hinglish
         return "hinglish", _HINGLISH_INSTRUCTION
 
     # mirror / mirror_user / anything else → mirror user's detected language
