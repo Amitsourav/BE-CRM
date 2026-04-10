@@ -1,17 +1,50 @@
 HINDI_WORDS = {
-    "haan", "nahi", "nhi", "kya", "kitna",
-    "chahiye", "hai", "ho", "aap", "main",
-    "achha", "bilkul", "toh", "abhi", "matlab",
-    "samjha", "bata", "milega", "theek", "zaroor",
-    "kaisa", "kahan", "kaun", "kyun", "kab",
-    "kal", "aur", "par", "lekin", "isliye",
-    "kyunki", "phir", "woh", "yeh", "iska",
-    "uska", "mera", "tera", "humara", "tumhara",
-    "batao", "bolo", "suno", "dekho", "lena",
-    "dena", "karna", "jana", "aana", "rehna",
-    "paisa", "paise", "rupee", "rupaye", "loan",
-    "chahta", "chahti", "chahte", "karunga",
-    "karungi", "sakta", "sakti", "hoga", "hogi",
+    # Acknowledgments / yes-no
+    "haan", "nahi", "nhi", "ji", "haanji", "nahin", "bilkul",
+    "achha", "accha", "theek", "thik", "zaroor", "sahi",
+    # Question words
+    "kya", "kitna", "kitni", "kitne", "kaisa", "kaisi", "kaise",
+    "kahan", "kahaan", "kaun", "kyun", "kyu", "kab",
+    # Pronouns / possessives
+    "main", "mein", "mujhe", "mujhse", "mera", "meri", "mere",
+    "aap", "aapka", "aapki", "aapke", "aapko", "aapse",
+    "woh", "wo", "uska", "uski", "uske", "unka", "unki", "unke",
+    "yeh", "ye", "iska", "iski", "iske", "inke",
+    "hum", "humara", "humari", "humare", "humko", "humse",
+    "tera", "teri", "tere", "tumhara", "tumhari", "tumhare",
+    # Postpositions / connectors (critical for detection!)
+    "ka", "ki", "ke", "ko", "se", "mein", "par", "pe",
+    "liye", "ke_liye", "wala", "wali", "wale",
+    "aur", "ya", "lekin", "par", "toh", "to",
+    "isliye", "kyunki", "phir", "abhi", "tab", "jab",
+    # Common verbs / verb forms
+    "hai", "hain", "ho", "tha", "thi", "the",
+    "hoon", "hoo", "hun", "hoga", "hogi", "hoge",
+    "chahiye", "chahta", "chahti", "chahte",
+    "karna", "karta", "karti", "karte", "karunga", "karungi",
+    "sakta", "sakti", "sakte", "sakti",
+    "raha", "rahi", "rahe", "rahe",
+    "jana", "jata", "jati", "jate", "jaunga", "jaungi",
+    "aana", "aata", "aati", "aate", "aayega", "aayegi",
+    "rehna", "rehta", "rehti", "rehte",
+    "lena", "leta", "leti", "lete", "lena", "lunga", "lungi",
+    "dena", "deta", "deti", "dete", "dunga", "dungi",
+    "dekho", "dekh", "dekhna", "dekhte", "dekha",
+    "bolo", "bol", "bolta", "bolti", "bolna",
+    "batao", "bata", "batana", "bataye",
+    "suno", "sun", "sunna", "soch", "socho", "sochna",
+    "milega", "milegi", "milenge", "mila", "mili",
+    "samjha", "samjhi", "samjhe", "samjho",
+    # Time / misc
+    "kal", "aaj", "parso", "abhi", "baad", "pehle", "matlab",
+    # Money
+    "paisa", "paise", "rupee", "rupaye", "lakh", "crore",
+    # Common casual speech
+    "yaar", "bhai", "didi", "sir", "madam",
+    "chalo", "chal", "chalega", "chalegi",
+    "pata", "naa", "na", "bas", "bohot", "bahut", "zyada",
+    "koi", "kuch", "sab", "apna", "apni", "apne",
+    "wapas", "dobara", "pehle", "baad",
 }
 
 HINDI_CHARS = set(

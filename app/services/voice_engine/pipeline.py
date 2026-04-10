@@ -309,25 +309,12 @@ class VoicePipeline:
                 model=agent.tts_model_english or "lightning-v2",
             )
 
-        # Auto-route ENGLISH ONLY to Smallest. Hinglish was tested on
-        # Smallest (e4a92f4) but Hindi pronunciation was too bad —
-        # reverted. Hindi/Hinglish stays on Sarvam for voice quality.
-        if (
-            language == "en"
-            and agent.tts_provider != "smallest"
-            and settings.smallest_api_key
-            and not getattr(agent, "tts_provider_english", None)
-        ):
-            try:
-                result = await smallest_tts.synthesize(
-                    text=text,
-                    voice="emily",
-                    model="lightning-v2",
-                )
-                if result:
-                    return result
-            except Exception:
-                pass  # Fall through to Sarvam
+        # Smallest auto-route DISABLED. Tested on real calls:
+        # - English: fast (300ms) but voice sounds robotic
+        # - Hinglish: can't pronounce Hindi words at all
+        # User prefers Sarvam kavya/simran voice quality for all
+        # languages. Accept ~1500ms TTS latency for natural voice.
+        # To re-enable: set tts_provider_english=smallest in dashboard.
 
         # Default-provider Smallest fallback
         if (
