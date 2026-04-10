@@ -309,10 +309,13 @@ class VoicePipeline:
                 model=agent.tts_model_english or "lightning-v2",
             )
 
-        # Auto-route English to Smallest when available + no explicit
-        # English TTS configured. Saves ~1000ms per English reply.
+        # Auto-route English AND Hinglish to Smallest when available.
+        # Hinglish replies are mostly Latin-script text with Hindi
+        # connectors ("Achha, toh aapko MBA ke liye loan chahiye?")
+        # which Smallest can pronounce reasonably well. Saves ~1200ms
+        # per turn vs Sarvam. Falls back to Sarvam on any error.
         if (
-            language == "en"
+            language in ("en", "hinglish")
             and agent.tts_provider != "smallest"
             and settings.smallest_api_key
             and not getattr(agent, "tts_provider_english", None)
