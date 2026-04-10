@@ -462,7 +462,7 @@ async def _reset_speaking_flag(state, duration_seconds: float):
 
 async def _silence_watchdog(
     call_id: str,
-    get_last_ts,
+    ts_ref: list,
     max_silence_seconds: int,
     websocket: WebSocket,
     state,
@@ -470,13 +470,13 @@ async def _silence_watchdog(
 ):
     """Play silence prompt → if still silent, play final message → hangup.
 
-    Polls every 2s:
-    1. When idle reaches max_silence_seconds / 2, play silence_message
-       (once) to prompt the user.
-    2. When idle reaches max_silence_seconds, play final_message and hang up.
-
-    The WS handler cancels this task in its finally block, so normal hangups
-    never trigger the watchdog path.
+    ts_ref is a single-element list [float] shared with the WS handler.
+    WS handler writes ts_ref[0] = now on every inbound media frame.
+    This watchdog reads ts_ref[0] to compute idle time, and also RESETS
+    ts_ref[0] to 'now' while the agent is speaking — otherwise a long
+    agent reply (>5s) would be counted as 'user silence' and the
+    'are you still there?' prompt would get spoken on top of the
+    agent's own reply.
     """
     prompted = False
     try:
@@ -484,7 +484,16 @@ async def _silence_watchdog(
         from app.services.voice_engine import voice_pipeline
         while True:
             await asyncio.sleep(2.0)
-            idle = loop.time() - get_last_ts()
+
+            # Pause idle counter during agent speech — continuously
+            # refresh the 'last seen' timestamp so idle time can't
+            # accumulate while the agent is itself talking.
+            if state.is_agent_speaking:
+                ts_ref[0] = loop.time()
+                prompted = False
+                continue
+
+            idle = loop.time() - ts_ref[0]
 
             # Halfway through the silence budget: nudge the user once
             if not prompted and idle >= (max_silence_seconds / 2):
@@ -684,13 +693,17 @@ async def voice_stream(
     # Clamp to avoid instant interrupt on single noise burst.
     barge_in_frames = max(10, (agent.words_before_interrupt or 3) * 15)
 
-    # Last time we saw inbound media, for silence-watchdog
-    last_media_ts = asyncio.get_event_loop().time()
+    # Last time we saw inbound media, for silence-watchdog.
+    # Using a single-element list so the watchdog task can both read and
+    # write it (Python closures can read an outer var, but reassigning
+    # a float rebinds the local — list element mutation works across
+    # closures cleanly).
+    last_media_ts: list = [asyncio.get_event_loop().time()]
     hangup_silence_sec = max(5, agent.hangup_on_silence_seconds or 10)
     watchdog_task = asyncio.create_task(
         _silence_watchdog(
             call_id=call_id,
-            get_last_ts=lambda: last_media_ts,
+            ts_ref=last_media_ts,
             max_silence_seconds=hangup_silence_sec,
             websocket=websocket,
             state=state,
@@ -773,8 +786,9 @@ async def voice_stream(
             if event != "media":
                 continue
 
-            # Record media timestamp for silence watchdog
-            last_media_ts = asyncio.get_event_loop().time()
+            # Record media timestamp for silence watchdog (mutate the
+            # list element so the watchdog task sees the new value)
+            last_media_ts[0] = asyncio.get_event_loop().time()
 
             # Barge-in — while agent is speaking, track sustained user speech.
             # Once enough non-silence frames accumulate, stop agent playback.
