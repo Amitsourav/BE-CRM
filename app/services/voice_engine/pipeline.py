@@ -309,13 +309,11 @@ class VoicePipeline:
                 model=agent.tts_model_english or "lightning-v2",
             )
 
-        # Auto-route English AND Hinglish to Smallest when available.
-        # Hinglish replies are mostly Latin-script text with Hindi
-        # connectors ("Achha, toh aapko MBA ke liye loan chahiye?")
-        # which Smallest can pronounce reasonably well. Saves ~1200ms
-        # per turn vs Sarvam. Falls back to Sarvam on any error.
+        # Auto-route ENGLISH ONLY to Smallest. Hinglish was tested on
+        # Smallest (e4a92f4) but Hindi pronunciation was too bad —
+        # reverted. Hindi/Hinglish stays on Sarvam for voice quality.
         if (
-            language in ("en", "hinglish")
+            language == "en"
             and agent.tts_provider != "smallest"
             and settings.smallest_api_key
             and not getattr(agent, "tts_provider_english", None)
