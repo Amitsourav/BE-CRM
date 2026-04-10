@@ -40,9 +40,14 @@ def _stt_language_code_for_agent(agent) -> str:
     if provider == "openai":
         # Whisper uses ISO-639-1
         return "hi" if handles_hindi else "en"
-    # Sarvam (default) — hi-IN is the multilingual bucket that
-    # accepts Hindi + English + Hinglish reliably
-    return "hi-IN" if handles_hindi else "en-IN"
+    # Sarvam: en-IN is safer for mixed English+Hindi callers because
+    # hi-IN mode mistranslates English words into Hindi equivalents
+    # ("yeah sure" → "यह अच्छा", "its myself" → "हम्म इसमें").
+    # en-IN correctly transcribes English and romanizes Hindi speech
+    # which our language detector can still classify from HINDI_WORDS.
+    # If pure Hindi callers report bad transcription, switch back to
+    # hi-IN and accept the English translation artifacts.
+    return "en-IN"
 
 
 class VoicePipeline:
