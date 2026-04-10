@@ -205,45 +205,27 @@ class VoicePipeline:
                     detected_language = chunk.get("language", detected_language)
                     if not sentence:
                         continue
-                    # Stream TTS sub-chunks to Plivo as each is ready.
-                    # First sub-chunk arrives in ~500-700ms instead of
-                    # ~1500ms for the full sentence batch.
+                    # TTS: try Smallest v3.1 first (100ms), fall back to
+                    # Sarvam streaming (500-700ms per chunk), then batch.
                     tts_t0 = time.time()
                     try:
-                        tts_provider = (getattr(agent, "tts_provider", "sarvam") or "sarvam").lower()
-                        if tts_provider == "sarvam":
-                            async for wav_chunk in sarvam_tts.synthesize_for_call_streaming(
-                                text=sentence,
-                                agent=agent,
-                                language=detected_language,
-                            ):
-                                if wav_chunk:
-                                    any_audio_sent = True
-                                    if not first_audio_seen:
-                                        first_audio_seen = True
-                                        tts_first_sentence_ms = int((time.time() - tts_t0) * 1000)
-                                    yield {
-                                        "audio": wav_chunk,
-                                        "text": sentence,
-                                        "language": detected_language,
-                                    }
-                        else:
-                            # Non-Sarvam providers: batch as before
-                            wav = await self._get_tts_audio(
-                                text=sentence,
-                                language=detected_language,
-                                agent=agent,
-                            )
-                            if wav:
-                                any_audio_sent = True
-                                if not first_audio_seen:
-                                    first_audio_seen = True
-                                    tts_first_sentence_ms = int((time.time() - tts_t0) * 1000)
-                                yield {
-                                    "audio": wav,
-                                    "text": sentence,
-                                    "language": detected_language,
-                                }
+                        # Route through _get_tts_audio which has the
+                        # Smallest v3.1 auto-route + Sarvam batch fallback
+                        wav = await self._get_tts_audio(
+                            text=sentence,
+                            language=detected_language,
+                            agent=agent,
+                        )
+                        if wav:
+                            any_audio_sent = True
+                            if not first_audio_seen:
+                                first_audio_seen = True
+                                tts_first_sentence_ms = int((time.time() - tts_t0) * 1000)
+                            yield {
+                                "audio": wav,
+                                "text": sentence,
+                                "language": detected_language,
+                            }
                     except Exception:
                         pass
                 elif ctype == "done":
