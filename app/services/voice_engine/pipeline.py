@@ -312,28 +312,11 @@ class VoicePipeline:
                 model=agent.tts_model_english or "lightning-v2",
             )
 
-        # Auto-route ALL languages to Smallest Lightning v3.1 when
-        # SMALLEST_API_KEY is set. Previous test with v2 failed on Hindi
-        # (robotic, couldn't pronounce). v3.1 has Hindi as Tier-1
-        # language with ~100ms TTFB — 10x faster than Sarvam.
-        # If v3.1 Hindi quality is still bad, revert this block.
-        if (
-            language in ("en", "hi", "hinglish")
-            and agent.tts_provider != "smallest"
-            and settings.smallest_api_key
-            and not getattr(agent, "tts_provider_english", None)
-            and not getattr(agent, "tts_provider_hindi", None)
-        ):
-            try:
-                result = await smallest_tts.synthesize(
-                    text=text,
-                    voice=agent.tts_voice or "emily",
-                    model="lightning-v3.1",
-                )
-                if result:
-                    return result
-            except Exception:
-                pass  # Fall through to Sarvam
+        # Smallest v3.1 auto-route DISABLED. Model name 'lightning-v3.1'
+        # appears to be wrong — returned 92 bytes (corrupt) for welcome
+        # and 11s TTS on first turn (catastrophic fallback cascade).
+        # Need to verify correct model name from Smallest AI docs before
+        # re-enabling. Until then, all TTS goes through Sarvam.
 
         # Default-provider Smallest fallback
         if (
