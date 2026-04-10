@@ -312,11 +312,29 @@ class VoicePipeline:
                 model=agent.tts_model_english or "lightning-v2",
             )
 
-        # Smallest v3.1 auto-route DISABLED. Model name 'lightning-v3.1'
-        # appears to be wrong — returned 92 bytes (corrupt) for welcome
-        # and 11s TTS on first turn (catastrophic fallback cascade).
-        # Need to verify correct model name from Smallest AI docs before
-        # re-enabling. Until then, all TTS goes through Sarvam.
+        # Auto-route to Smallest Lightning for speed (~100-300ms vs 1500ms).
+        # CRITICAL: use Smallest-specific voices, NOT the agent's Sarvam
+        # voice name. Smallest hangs/times out on unknown voices (kavya,
+        # simran, etc.) instead of returning an error. Verified working:
+        #   English: "emily"
+        #   Hindi/Hinglish: "mithali" (Smallest's Hindi voice)
+        if (
+            language in ("en", "hi", "hinglish")
+            and settings.smallest_api_key
+            and not getattr(agent, "tts_provider_english", None)
+            and not getattr(agent, "tts_provider_hindi", None)
+        ):
+            smallest_voice = "mithali" if language in ("hi", "hinglish") else "emily"
+            try:
+                result = await smallest_tts.synthesize(
+                    text=text,
+                    voice=smallest_voice,
+                    model="lightning",
+                )
+                if result and len(result) > 500:
+                    return result
+            except Exception:
+                pass  # Fall through to Sarvam
 
         # Default-provider Smallest fallback
         if (
