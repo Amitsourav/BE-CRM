@@ -1,6 +1,25 @@
+import io
+import struct
+import wave
+
 import httpx
 from app.config import get_settings
 from app.services.voice_engine.http_clients import get_smallest_client
+
+
+def _wrap_pcm_as_wav(pcm_data: bytes, sample_rate: int = 8000, channels: int = 1, sample_width: int = 2) -> bytes:
+    """Wrap raw PCM bytes in a WAV header.
+
+    Smallest AI's v3.1 API returns raw PCM despite add_wav_header=True.
+    Our pipeline expects WAV format for wav_to_mulaw conversion.
+    """
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_data)
+    return buf.getvalue()
 
 
 class SmallestTTS:
@@ -90,7 +109,14 @@ class SmallestTTS:
                 )
             if response.status_code != 200:
                 return b""
-            return response.content
+            content = response.content
+            if not content or len(content) < 100:
+                return b""
+            # v3.1 API returns raw PCM despite add_wav_header=True.
+            # Wrap in WAV header if not already RIFF format.
+            if content[:4] != b"RIFF":
+                content = _wrap_pcm_as_wav(content, sample_rate=8000)
+            return content
         except httpx.RequestError:
             return b""
 
