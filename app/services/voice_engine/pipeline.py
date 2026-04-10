@@ -290,10 +290,15 @@ class VoicePipeline:
     ) -> bytes:
         """Route to correct TTS provider — dual config first, then default.
 
-        Smallest dual-TTS path is handled here (Sarvam path delegated to
-        sarvam_tts.synthesize_for_call to avoid duplicating routing logic).
+        For English responses: prefer Smallest Lightning when available
+        (~300-600ms) over Sarvam (~1200-2400ms). This is the single
+        biggest TTS latency win.
         """
-        # DUAL TTS English via Smallest is the only case sarvam_tts can't handle
+        # English: prefer Smallest when key is available (3-5x faster)
+        from app.config import get_settings
+        settings = get_settings()
+
+        # DUAL TTS English via Smallest (explicit config)
         if (
             language == "en"
             and getattr(agent, "tts_provider_english", None) == "smallest"
@@ -303,6 +308,25 @@ class VoicePipeline:
                 voice=agent.tts_voice_english or "emily",
                 model=agent.tts_model_english or "lightning-v2",
             )
+
+        # Auto-route English to Smallest when available + no explicit
+        # English TTS configured. Saves ~1000ms per English reply.
+        if (
+            language == "en"
+            and agent.tts_provider != "smallest"
+            and settings.smallest_api_key
+            and not getattr(agent, "tts_provider_english", None)
+        ):
+            try:
+                result = await smallest_tts.synthesize(
+                    text=text,
+                    voice="emily",
+                    model="lightning-v2",
+                )
+                if result:
+                    return result
+            except Exception:
+                pass  # Fall through to Sarvam
 
         # Default-provider Smallest fallback
         if (

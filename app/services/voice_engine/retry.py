@@ -15,7 +15,7 @@ async def retry_async(
     fn: Callable[[], Awaitable[Any]],
     *,
     attempts: int = 2,
-    backoff_seconds: float = 0.4,
+    backoff_seconds: float = 0.05,
     retry_on: Tuple[Type[BaseException], ...] = (Exception,),
     fallback: Any = None,
     label: str = "",

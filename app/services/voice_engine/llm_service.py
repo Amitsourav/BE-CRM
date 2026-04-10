@@ -360,11 +360,14 @@ class LLMService:
                         candidate = buffer[: idx + 1].strip()
                         remaining = buffer[idx + 1 :].lstrip()
                         # Hold ultra-short first sentences unless we've
-                        # already flushed once or buffered too much
+                        # already flushed once or buffered too much.
+                        # Thresholds tuned for phone calls (latency > batching):
+                        #   <8 chars = single filler word ("Achha,")
+                        #   buffer <40 = haven't accumulated much yet
                         if (
                             not first_chunk_flushed
-                            and len(candidate) < 20
-                            and len(buffer) < 120
+                            and len(candidate) < 8
+                            and len(buffer) < 40
                         ):
                             break
                         buffer = remaining

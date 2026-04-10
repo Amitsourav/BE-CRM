@@ -39,7 +39,7 @@ def get_sarvam_client() -> httpx.AsyncClient:
     if _sarvam is None:
         _sarvam = httpx.AsyncClient(
             base_url="https://api.sarvam.ai",
-            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0),
+            timeout=httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=3.0),
             limits=_LIMITS,
             http2=False,
         )
@@ -51,7 +51,7 @@ def get_openrouter_client() -> httpx.AsyncClient:
     if _openrouter is None:
         _openrouter = httpx.AsyncClient(
             base_url="https://openrouter.ai",
-            timeout=httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0),
+            timeout=httpx.Timeout(connect=3.0, read=15.0, write=5.0, pool=3.0),
             limits=_LIMITS,
             http2=False,
         )
@@ -63,7 +63,7 @@ def get_smallest_client() -> httpx.AsyncClient:
     if _smallest is None:
         _smallest = httpx.AsyncClient(
             base_url="https://waves-api.smallest.ai",
-            timeout=httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0),
+            timeout=httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=3.0),
             limits=_LIMITS,
             http2=False,
         )
