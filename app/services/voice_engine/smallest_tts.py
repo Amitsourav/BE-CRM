@@ -5,7 +5,10 @@ from app.services.voice_engine.http_clients import get_smallest_client
 
 class SmallestTTS:
 
-    BASE_URL = "https://waves-api.smallest.ai"
+    # Old API (v1/v2 voices): waves-api.smallest.ai
+    # New API (v3.1 voices):  api.smallest.ai
+    BASE_URL_LEGACY = "https://waves-api.smallest.ai"
+    BASE_URL_V3 = "https://api.smallest.ai"
 
     # lightning-v3.1 voice catalog (subset — full list has 104 voices).
     # IMPORTANT: v3.1 voices are INCOMPATIBLE with v1/v2 and vice versa.
@@ -45,23 +48,46 @@ class SmallestTTS:
             return b""
 
         settings = get_settings()
-        client = get_smallest_client()
+        is_v3 = "v3" in model  # lightning-v3.1, lightning-v3, etc.
         try:
-            response = await client.post(
-                "/api/v1/lightning/get_speech",
-                headers={
-                    "Authorization": f"Bearer {settings.smallest_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": text,
-                    "voice_id": voice,
-                    "speed": speed,
-                    "model": model,
-                    "sample_rate": 8000,
-                    "add_wav_header": True,
-                },
-            )
+            if is_v3:
+                # New API: api.smallest.ai/waves/v1/{model}/get_speech
+                # v3.1 voices ONLY work on this endpoint
+                import httpx as _httpx
+                async with _httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(
+                        f"{self.BASE_URL_V3}/waves/v1/{model}/get_speech",
+                        headers={
+                            "Authorization": f"Bearer {settings.smallest_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "text": text,
+                            "voice_id": voice,
+                            "speed": speed,
+                            "sample_rate": 8000,
+                            "add_wav_header": True,
+                        },
+                    )
+            else:
+                # Legacy API: waves-api.smallest.ai/api/v1/lightning/get_speech
+                # v1/v2 voices (mithali, emily, etc.)
+                client = get_smallest_client()
+                response = await client.post(
+                    "/api/v1/lightning/get_speech",
+                    headers={
+                        "Authorization": f"Bearer {settings.smallest_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "text": text,
+                        "voice_id": voice,
+                        "speed": speed,
+                        "model": model,
+                        "sample_rate": 8000,
+                        "add_wav_header": True,
+                    },
+                )
             if response.status_code != 200:
                 return b""
             return response.content
