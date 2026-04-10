@@ -324,7 +324,7 @@ class VoicePipeline:
             and not getattr(agent, "tts_provider_english", None)
             and not getattr(agent, "tts_provider_hindi", None)
         ):
-            smallest_voice = "mithali" if language in ("hi", "hinglish") else "emily"
+            smallest_voice = "mithali"  # Indian accent, works in English + Hindi
             try:
                 result = await smallest_tts.synthesize(
                     text=text,
