@@ -17,7 +17,12 @@ PROVIDER_COSTS = {
     # to add Groq-backed models — dashboard "Est. cost" widget reads from
     # here so the live price reflects the selected model.
     "llm": {
-        # Groq-hosted via OpenRouter — dramatically cheaper than OpenAI
+        # Qwen via OpenRouter — fastest + cheapest (tested Apr 2026)
+        "qwen/qwen-turbo": 0.0001,
+        "qwen/qwen3-14b": 0.0002,
+        "qwen/qwen3-30b-a3b": 0.0003,
+        "qwen/qwen3-8b": 0.0002,
+        # Groq-hosted Llama
         "meta-llama/llama-3.3-70b-instruct": 0.0008,
         "meta-llama/llama-3.1-8b-instruct": 0.0002,
         "google/gemini-flash-1.5-8b": 0.0003,
