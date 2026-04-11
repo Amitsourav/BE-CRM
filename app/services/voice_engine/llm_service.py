@@ -164,15 +164,22 @@ class LLMService:
             auto_switch = getattr(agent, "auto_language_switch", True)
             style = (getattr(agent, "language_style", None) or "mirror").lower()
 
-            detected_lang, lang_instruction = _resolve_language_policy(
-                message=message,
-                style=style,
-                primary=primary,
-                secondary=secondary,
-                auto_switch=auto_switch,
-            )
-
-            enhanced_message = f"{lang_instruction}\n\nUser: {message}"
+            # Language handling: for styles that need per-turn detection,
+            # inject language rules. For 'natural' style, skip the
+            # injection entirely — let the system prompt control language
+            # (much simpler, works better with consultant-style prompts).
+            if style == "natural":
+                detected_lang = "hinglish"
+                enhanced_message = f"User: {message}"
+            else:
+                detected_lang, lang_instruction = _resolve_language_policy(
+                    message=message,
+                    style=style,
+                    primary=primary,
+                    secondary=secondary,
+                    auto_switch=auto_switch,
+                )
+                enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
             # Inject role/tone + max_response_words into system prompt
             max_words = getattr(agent, "max_response_words", None) or 25
@@ -267,15 +274,18 @@ class LLMService:
         auto_switch = getattr(agent, "auto_language_switch", True)
         style = (getattr(agent, "language_style", None) or "mirror").lower()
 
-        detected_lang, lang_instruction = _resolve_language_policy(
-            message=message,
-            style=style,
-            primary=primary,
-            secondary=secondary,
-            auto_switch=auto_switch,
-        )
-
-        enhanced_message = f"{lang_instruction}\n\nUser: {message}"
+        if style == "natural":
+            detected_lang = "hinglish"
+            enhanced_message = f"User: {message}"
+        else:
+            detected_lang, lang_instruction = _resolve_language_policy(
+                message=message,
+                style=style,
+                primary=primary,
+                secondary=secondary,
+                auto_switch=auto_switch,
+            )
+            enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
         max_words = getattr(agent, "max_response_words", None) or 25
         role = getattr(agent, "role", None) or "sales"
