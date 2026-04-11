@@ -226,9 +226,16 @@ async def initiate_outbound_call(
                 lead_name=body.lead_name or "there",
             )
             state.welcome_audio = wav or b""
+            # Pre-convert to mulaw+base64 so the WS start handler
+            # can send it instantly without any conversion delay.
+            if state.welcome_audio:
+                mulaw = wav_to_mulaw(state.welcome_audio)
+                if mulaw:
+                    state.welcome_audio_b64 = encode_for_plivo(mulaw)
             logger.info(
-                "WELCOME_PREGEN call_id=%s bytes=%d elapsed=%.2fs",
-                call_id, len(state.welcome_audio), time.time() - t0,
+                "WELCOME_PREGEN call_id=%s bytes=%d b64=%d elapsed=%.2fs",
+                call_id, len(state.welcome_audio),
+                len(state.welcome_audio_b64), time.time() - t0,
             )
         except Exception as e:
             logger.warning(
@@ -740,10 +747,8 @@ async def voice_stream(
                     _update_call_status_background(call_id, "connected")
                 )
 
-                # Play welcome audio via configured TTS as the first frame.
-                # Pre-gen started in /voice/outbound while the phone was
-                # ringing. Wait briefly for it to finish (usually already
-                # done), then fall back to fresh generation if empty.
+                # Play welcome audio. Use pre-encoded mulaw+base64 if
+                # available (skips wav_to_mulaw+encode, saves ~100-200ms).
                 import time as _time
                 t_start = _time.time()
                 try:
@@ -755,27 +760,51 @@ async def voice_stream(
                         except asyncio.TimeoutError:
                             pass
 
-                    welcome_wav = state.welcome_audio
-                    source = "cached"
-                    if not welcome_wav:
-                        source = "fresh"
-                        welcome_wav = await voice_pipeline.generate_welcome_audio(
-                            agent=agent, lead_name=state.lead_name
+                    # Fast path: pre-encoded during ring time
+                    if state.welcome_audio_b64:
+                        await websocket.send_text(
+                            json.dumps({
+                                "event": "playAudio",
+                                "media": {
+                                    "contentType": "audio/x-mulaw",
+                                    "sampleRate": "8000",
+                                    "payload": state.welcome_audio_b64,
+                                },
+                            })
                         )
-
-                    elapsed_ms = int((_time.time() - t_start) * 1000)
-                    logger.info(
-                        "WELCOME_PLAY call_id=%s source=%s bytes=%d wait_ms=%d",
-                        call_id, source, len(welcome_wav or b""), elapsed_ms,
-                    )
-
-                    if welcome_wav:
-                        await _send_audio_response(
-                            websocket, state, welcome_wav,
-                            buffer_size=agent.tts_buffer_size or 0,
+                        mulaw_len = len(state.welcome_audio_b64) * 3 // 4
+                        duration = mulaw_len / 8000.0
+                        state.is_agent_speaking = True
+                        asyncio.create_task(
+                            _reset_speaking_flag(state, duration)
+                        )
+                        source = "preencoded"
+                        elapsed_ms = int((_time.time() - t_start) * 1000)
+                        logger.info(
+                            "WELCOME_PLAY call_id=%s source=%s wait_ms=%d",
+                            call_id, source, elapsed_ms,
                         )
                     else:
-                        logger.warning("welcome audio empty for call %s", call_id)
+                        # Slow path: generate fresh or use cached WAV
+                        welcome_wav = state.welcome_audio
+                        source = "cached"
+                        if not welcome_wav:
+                            source = "fresh"
+                            welcome_wav = await voice_pipeline.generate_welcome_audio(
+                                agent=agent, lead_name=state.lead_name
+                            )
+                        elapsed_ms = int((_time.time() - t_start) * 1000)
+                        logger.info(
+                            "WELCOME_PLAY call_id=%s source=%s bytes=%d wait_ms=%d",
+                            call_id, source, len(welcome_wav or b""), elapsed_ms,
+                        )
+                        if welcome_wav:
+                            await _send_audio_response(
+                                websocket, state, welcome_wav,
+                                buffer_size=agent.tts_buffer_size or 0,
+                            )
+                        else:
+                            logger.warning("welcome audio empty for call %s", call_id)
                 except Exception as e:
                     logger.error("welcome audio failed: %s", e)
                 continue

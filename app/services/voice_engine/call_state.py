@@ -20,6 +20,7 @@ class CallState:
         self.company_id = company_id
         self.lead_name = lead_name
         self.welcome_audio: bytes = b""
+        self.welcome_audio_b64: str = ""  # pre-encoded mulaw+base64 for instant play
         self.welcome_ready: "asyncio.Event | None" = None
         # Cached AIAgent ORM instance so the WS handler can skip the
         # second Supabase lookup. Populated by /voice/outbound.
