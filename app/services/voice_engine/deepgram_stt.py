@@ -38,9 +38,10 @@ class DeepgramSTT:
                 "punctuate": "true",
             }
             if keywords:
-                # Deepgram supports keyword:boost; keep default boost 2.0
-                params["keywords"] = [
-                    f"{k.strip()}:2" for k in keywords.split(",") if k.strip()
+                # Nova-3 uses "keyterm" instead of "keywords"
+                param_name = "keyterm" if "nova-3" in model else "keywords"
+                params[param_name] = [
+                    k.strip().split(":")[0] for k in keywords.split(",") if k.strip()
                 ]
             client = get_deepgram_client()
             response = await client.post(
