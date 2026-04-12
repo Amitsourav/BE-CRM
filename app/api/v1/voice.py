@@ -830,6 +830,7 @@ async def voice_stream(
                     if not is_silence_mulaw(bi_chunk):
                         speech_frames_during_playback += 1
                         if speech_frames_during_playback >= barge_in_frames:
+
                             logger.info(
                                 "BARGE_IN call_id=%s frames=%d threshold=%d — stopping agent",
                                 call_id, speech_frames_during_playback, barge_in_frames,
@@ -850,8 +851,13 @@ async def voice_stream(
                             mulaw_buffer.extend(bi_chunk)
                             speech_frames = 1
                     else:
-                        # Reset streak on silence so a one-off cough doesn't interrupt
-                        speech_frames_during_playback = 0
+                        # Decay slowly on silence instead of hard reset.
+                        # Hard reset (=0) meant "ruk ... ruk" never accumulated
+                        # enough frames because the gap between words reset the
+                        # counter. Slow decay keeps most of the count so natural
+                        # speech with pauses still triggers barge-in.
+                        if speech_frames_during_playback > 0:
+                            speech_frames_during_playback -= 1
                 continue
 
             # Just transitioned out of agent-speaking — reset turn counters

@@ -16,14 +16,17 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Short filler phrases — natural Hindi/Hinglish thinking sounds.
-# Keep each under 5 words so TTS generates in <200ms.
+# Filler phrases — natural Hindi/Hinglish thinking sounds.
+# Longer phrases (~1-1.5s of audio) bridge the gap between filler
+# ending and real LLM reply arriving. Short fillers ("Hmm...") left
+# a noticeable 0.7s gap before the answer. These longer ones fill
+# the entire LLM thinking time (~800ms) naturally.
 FILLER_PHRASES = [
-    "Hmm...",
-    "Achha...",
-    "Haan...",
-    "Dekho...",
-    "Theek hai...",
+    "Hmm, ek second...",
+    "Achha, dekho...",
+    "Haan, toh...",
+    "Hmm, matlab...",
+    "Achha, theek hai...",
 ]
 
 # Module-level cache: {(tts_provider, tts_voice, tts_model): [wav_bytes, ...]}
