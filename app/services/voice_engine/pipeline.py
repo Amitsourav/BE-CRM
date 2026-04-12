@@ -181,20 +181,25 @@ class VoicePipeline:
             logger.info("TURN_EMPTY call_id=%s stt_ms=%d", call_id, stt_ms)
             return
 
-        # STEP 1.5: FILLER SOUND — play instantly while LLM thinks.
-        # Eliminates 1-2s of dead silence after user speaks.
-        # "Hmm..." or "Achha..." plays in <200ms, then real answer follows.
-        try:
-            filler_wav = await get_filler_sound(agent)
-            if filler_wav:
-                yield {
-                    "audio": filler_wav,
-                    "text": "",
-                    "language": "filler",
-                    "filler": True,
-                }
-        except Exception:
-            pass  # Filler is optional — never block the pipeline
+        # STEP 1.5: FILLER SOUND — play only for longer user messages.
+        # Short replies ("yes", "no", "okay") don't need a thinking sound
+        # and the filler often mismatches the context (e.g. "Hmm ek second"
+        # before a simple "which college?" reply feels odd).
+        # Only play filler when user said 4+ words — implies a real question
+        # that needs thinking time.
+        word_count = len(transcript.split())
+        if word_count >= 4:
+            try:
+                filler_wav = await get_filler_sound(agent)
+                if filler_wav:
+                    yield {
+                        "audio": filler_wav,
+                        "text": "",
+                        "language": "filler",
+                        "filler": True,
+                    }
+            except Exception:
+                pass
 
         # STEP 2: LLM stream → sentence chunks → TTS immediately
         # Seed conversation with the welcome exchange on first turn,
