@@ -695,10 +695,11 @@ async def voice_stream(
     silence_threshold = max(5, min(50, (agent.endpointing_ms or 300) // 20))
     min_speech_frames = max(3, MIN_SPEECH_FRAMES)
 
-    # Barge-in threshold: convert "words before interrupt" to frames.
-    # One word ≈ 300ms of sustained speech → 15 frames (@ 20ms each).
-    # Clamp to avoid instant interrupt on single noise burst.
-    barge_in_frames = max(10, (agent.words_before_interrupt or 3) * 15)
+    # Barge-in threshold: detect user interruption quickly.
+    # Lower = faster detection but more false positives from noise.
+    # 8 frames = ~160ms of sustained speech — about one spoken syllable.
+    # Old value was 45 frames (~900ms) which was too slow.
+    barge_in_frames = max(8, (agent.words_before_interrupt or 1) * 8)
 
     # Last time we saw inbound media, for silence-watchdog.
     # Using a single-element list so the watchdog task can both read and
@@ -892,12 +893,26 @@ async def voice_stream(
                 # starts hearing the reply in ~1s instead of waiting for
                 # the full LLM + TTS pipeline (~4s).
                 total_duration = 0.0
+                barged = False
                 try:
                     async for out in voice_pipeline.process_audio_streaming(
                         call_id=call_id,
                         audio_bytes=wav_audio,
                         agent=agent,
                     ):
+                        # BARGE-IN CHECK: if user interrupted during this
+                        # turn's playback, stop sending more audio chunks.
+                        # The barge-in handler in the media loop already
+                        # reset is_agent_speaking — we just need to stop
+                        # the pipeline from queuing more playAudio frames.
+                        if not state.is_agent_speaking and total_duration > 0:
+                            logger.info(
+                                "BARGE_STOP call_id=%s — user interrupted, "
+                                "stopping audio stream",
+                                call_id,
+                            )
+                            barged = True
+                            break
                         if out.get("done"):
                             continue
                         audio = out.get("audio")
