@@ -16,89 +16,91 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Filler phrases — natural Hindi/Hinglish thinking sounds.
-# Longer phrases (~1-1.5s of audio) bridge the gap between filler
-# ending and real LLM reply arriving. Short fillers ("Hmm...") left
-# a noticeable 0.7s gap before the answer. These longer ones fill
-# the entire LLM thinking time (~800ms) naturally.
-FILLER_PHRASES = [
-    "Hmm, ek second...",
-    "Achha, dekho...",
-    "Haan, toh...",
-    "Hmm, matlab...",
-    "Achha, theek hai...",
+# Short fillers — for simple acknowledgments (yes, no, okay).
+# Neutral enough to fit any context. ~0.3-0.5s audio.
+SHORT_FILLER_PHRASES = [
+    "Haan...",
+    "Hmm...",
+    "Ji...",
 ]
 
-# Module-level cache: {(tts_provider, tts_voice, tts_model): [wav_bytes, ...]}
+# Long fillers — for real questions that need thinking time.
+# ~1-1.5s audio that bridges the LLM processing gap.
+LONG_FILLER_PHRASES = [
+    "Hmm, ek second...",
+    "Haan, dekho...",
+    "Hmm, toh...",
+]
+
+# Module-level cache: {(tts_provider, tts_voice, tts_model, "short"|"long"): [wav_bytes, ...]}
 _filler_cache: dict[tuple, list[bytes]] = {}
 _cache_lock = asyncio.Lock()
 
 
-async def get_filler_sound(agent) -> Optional[bytes]:
-    """Return a random pre-generated filler WAV, or generate on-demand.
+async def _generate_fillers(phrases: list, provider: str, voice: str, model: str) -> list[bytes]:
+    """Generate TTS audio for a list of filler phrases."""
+    wavs = []
+    try:
+        if provider == "smallest":
+            from app.services.voice_engine.smallest_tts import smallest_tts
+            for phrase in phrases:
+                try:
+                    wav = await asyncio.wait_for(
+                        smallest_tts.synthesize(text=phrase, voice=voice, model=model),
+                        timeout=5.0,
+                    )
+                    if wav and len(wav) > 500:
+                        wavs.append(wav)
+                except Exception as e:
+                    logger.warning("filler gen failed for '%s': %s", phrase, e)
+        else:
+            from app.services.voice_engine.sarvam_tts import sarvam_tts
+            for phrase in phrases:
+                try:
+                    wav = await asyncio.wait_for(
+                        sarvam_tts.synthesize(text=phrase, voice=voice, model=model),
+                        timeout=5.0,
+                    )
+                    if wav and len(wav) > 500:
+                        wavs.append(wav)
+                except Exception as e:
+                    logger.warning("filler gen failed for '%s': %s", phrase, e)
+    except Exception as e:
+        logger.warning("filler generation failed: %s", e)
+    return wavs
 
-    First call for a given (provider, voice, model) combo generates ALL
-    fillers and caches them. Subsequent calls return a random cached one
-    in <1ms.
+
+async def get_filler_sound(agent, long: bool = False) -> Optional[bytes]:
+    """Return a random pre-generated filler WAV.
+
+    long=False: short neutral filler ("Haan...", ~0.3s) for simple replies
+    long=True:  longer thinking filler ("Hmm, ek second...", ~1.2s) for complex questions
+
+    First call generates both sets and caches them.
     """
     provider = (getattr(agent, "tts_provider", "smallest") or "smallest").lower()
     voice = getattr(agent, "tts_voice", "sana") or "sana"
     model = getattr(agent, "tts_model", "lightning-v3.1") or "lightning-v3.1"
-    cache_key = (provider, voice, model)
+    ftype = "long" if long else "short"
+    cache_key = (provider, voice, model, ftype)
 
     # Fast path: already cached
     if cache_key in _filler_cache and _filler_cache[cache_key]:
         return random.choice(_filler_cache[cache_key])
 
-    # Slow path: generate all fillers (runs once per agent config)
+    # Slow path: generate fillers (runs once per agent config)
     async with _cache_lock:
-        # Double-check after acquiring lock
         if cache_key in _filler_cache and _filler_cache[cache_key]:
             return random.choice(_filler_cache[cache_key])
 
-        logger.info("FILLER_GEN generating %d fillers for %s/%s/%s",
-                     len(FILLER_PHRASES), provider, voice, model)
+        phrases = LONG_FILLER_PHRASES if long else SHORT_FILLER_PHRASES
+        logger.info("FILLER_GEN generating %d %s fillers for %s/%s/%s",
+                     len(phrases), ftype, provider, voice, model)
 
-        wavs = []
-        try:
-            if provider == "smallest":
-                from app.services.voice_engine.smallest_tts import smallest_tts
-                for phrase in FILLER_PHRASES:
-                    try:
-                        wav = await asyncio.wait_for(
-                            smallest_tts.synthesize(
-                                text=phrase,
-                                voice=voice,
-                                model=model,
-                            ),
-                            timeout=5.0,
-                        )
-                        if wav and len(wav) > 500:
-                            wavs.append(wav)
-                    except Exception as e:
-                        logger.warning("filler gen failed for '%s': %s", phrase, e)
-            else:
-                from app.services.voice_engine.sarvam_tts import sarvam_tts
-                for phrase in FILLER_PHRASES:
-                    try:
-                        wav = await asyncio.wait_for(
-                            sarvam_tts.synthesize(
-                                text=phrase,
-                                voice=voice,
-                                model=model,
-                            ),
-                            timeout=5.0,
-                        )
-                        if wav and len(wav) > 500:
-                            wavs.append(wav)
-                    except Exception as e:
-                        logger.warning("filler gen failed for '%s': %s", phrase, e)
-        except Exception as e:
-            logger.warning("filler generation failed: %s", e)
-
+        wavs = await _generate_fillers(phrases, provider, voice, model)
         _filler_cache[cache_key] = wavs
-        logger.info("FILLER_GEN cached %d fillers for %s/%s/%s",
-                     len(wavs), provider, voice, model)
+        logger.info("FILLER_GEN cached %d %s fillers for %s/%s/%s",
+                     len(wavs), ftype, provider, voice, model)
 
         if wavs:
             return random.choice(wavs)

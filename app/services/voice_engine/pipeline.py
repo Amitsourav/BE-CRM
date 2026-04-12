@@ -181,25 +181,22 @@ class VoicePipeline:
             logger.info("TURN_EMPTY call_id=%s stt_ms=%d", call_id, stt_ms)
             return
 
-        # STEP 1.5: FILLER SOUND — play only for longer user messages.
-        # Short replies ("yes", "no", "okay") don't need a thinking sound
-        # and the filler often mismatches the context (e.g. "Hmm ek second"
-        # before a simple "which college?" reply feels odd).
-        # Only play filler when user said 4+ words — implies a real question
-        # that needs thinking time.
+        # STEP 1.5: FILLER SOUND — always play, but vary by context.
+        # Short user message (1-3 words: "yes", "okay") → short filler ("Haan...", 0.3s)
+        # Long user message (4+ words: real question) → long filler ("Hmm, ek second...", 1.2s)
         word_count = len(transcript.split())
-        if word_count >= 4:
-            try:
-                filler_wav = await get_filler_sound(agent)
-                if filler_wav:
-                    yield {
-                        "audio": filler_wav,
-                        "text": "",
-                        "language": "filler",
-                        "filler": True,
-                    }
-            except Exception:
-                pass
+        use_long_filler = word_count >= 4
+        try:
+            filler_wav = await get_filler_sound(agent, long=use_long_filler)
+            if filler_wav:
+                yield {
+                    "audio": filler_wav,
+                    "text": "",
+                    "language": "filler",
+                    "filler": True,
+                }
+        except Exception:
+            pass
 
         # STEP 2: LLM stream → sentence chunks → TTS immediately
         # Seed conversation with the welcome exchange on first turn,
