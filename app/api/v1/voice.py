@@ -455,8 +455,10 @@ async def _update_call_status_background(call_id: str, status: str):
 # Silence/turn-taking thresholds (Plivo media frames are ~20ms each)
 # Tuned for streaming STT pipeline — lower latency than batch-STT defaults
 SILENCE_THRESHOLD = 15       # 15 frames ≈ 300ms of trailing silence
-MIN_BUFFER_SIZE = 3200       # ~400ms of mulaw @ 8kHz before we'll process
-MIN_SPEECH_FRAMES = 6        # require ≥120ms of non-silence before turn ends
+MIN_BUFFER_SIZE = 1600       # ~200ms of mulaw @ 8kHz — lowered to catch
+                             # short words like "yeah", "yupp", "han ji"
+                             # (was 3200/400ms which cut off 300ms utterances)
+MIN_SPEECH_FRAMES = 4        # require ≥80ms of non-silence before turn ends
 
 
 async def _reset_speaking_flag(state, duration_seconds: float):
