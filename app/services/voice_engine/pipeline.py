@@ -181,22 +181,23 @@ class VoicePipeline:
             logger.info("TURN_EMPTY call_id=%s stt_ms=%d", call_id, stt_ms)
             return
 
-        # STEP 1.5: FILLER SOUND — ONLY for long user messages (4+ words).
-        # Short replies (yes, no, okay) → no filler, LLM is fast enough.
-        # Hearing "Hmm" on every turn was irritating to users.
+        # STEP 1.5: FILLER SOUND — short filler for simple inputs,
+        # long filler for complex questions. Always play to avoid dead air.
+        # Short: "Hmm." / "Right." / "Okay." (~0.2s, barely noticeable)
+        # Long:  "Hmm, so." / "Right, so." (~1s, bridges thinking time)
         word_count = len(transcript.split())
-        if word_count >= 4:
-            try:
-                filler_wav = await get_filler_sound(agent, long=True)
-                if filler_wav:
-                    yield {
-                        "audio": filler_wav,
-                        "text": "",
-                        "language": "filler",
-                        "filler": True,
-                    }
-            except Exception:
-                pass
+        use_long = word_count >= 4
+        try:
+            filler_wav = await get_filler_sound(agent, long=use_long)
+            if filler_wav:
+                yield {
+                    "audio": filler_wav,
+                    "text": "",
+                    "language": "filler",
+                    "filler": True,
+                }
+        except Exception:
+            pass
 
         # STEP 2: LLM stream → sentence chunks → TTS immediately
         # Seed conversation with the welcome exchange on first turn,

@@ -16,10 +16,14 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# NO short fillers — for simple inputs (yes, no, okay) the LLM responds
-# in ~800ms which is fast enough. Playing "Hmm" on every short reply
-# was irritating to users.
-SHORT_FILLER_PHRASES = []
+# Ultra-short fillers for simple inputs. Just 1 word (~0.2s) to break
+# the initial silence without being annoying. Varied to avoid repetition.
+SHORT_FILLER_PHRASES = [
+    "Hmm.",
+    "Right.",
+    "Okay.",
+    "Mm-hmm.",
+]
 
 # Long fillers — ONLY for 4+ word questions. Varied so user doesn't
 # hear the same sound every time. No "Hmm" repeated.
