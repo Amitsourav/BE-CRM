@@ -16,22 +16,22 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Ultra-short fillers for simple inputs. Just 1 word (~0.2s) to break
-# the initial silence without being annoying. Varied to avoid repetition.
+# Ultra-short fillers — real words that TTS pronounces naturally.
+# Avoided "Hmm" and "Mm-hmm" because TTS says "H-M-M" which sounds
+# robotic. Real words like "Right", "Okay" sound clean from TTS.
 SHORT_FILLER_PHRASES = [
-    "Hmm.",
     "Right.",
     "Okay.",
-    "Mm-hmm.",
+    "Sure.",
+    "Yeah.",
 ]
 
-# Long fillers — ONLY for 4+ word questions. Varied so user doesn't
-# hear the same sound every time. No "Hmm" repeated.
+# Long fillers — real word pairs for complex questions.
 LONG_FILLER_PHRASES = [
-    "Hmm, so.",
     "Right, so.",
     "Okay, so.",
-    "Hmm, right.",
+    "Right, okay.",
+    "Okay, let me see.",
 ]
 
 # Module-level cache: {(tts_provider, tts_voice, tts_model, "short"|"long"): [wav_bytes, ...]}
