@@ -16,25 +16,24 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Language-neutral fillers that sound natural in BOTH English and Hindi.
-# "Hmm" is universal — works in any language without sounding odd.
-# Avoided: "Haan", "Ji", "ek second", "dekho" — these sound jarring
-# when the agent replies in English.
-SHORT_FILLER_PHRASES = [
-    "Hmm.",
-    "Hmm.",
-    "Okay.",
-]
+# NO short fillers — for simple inputs (yes, no, okay) the LLM responds
+# in ~800ms which is fast enough. Playing "Hmm" on every short reply
+# was irritating to users.
+SHORT_FILLER_PHRASES = []
 
+# Long fillers — ONLY for 4+ word questions. Varied so user doesn't
+# hear the same sound every time. No "Hmm" repeated.
 LONG_FILLER_PHRASES = [
-    "Hmm, one second.",
-    "Hmm, let me check.",
+    "Hmm, so.",
+    "Right, so.",
     "Okay, so.",
+    "Hmm, right.",
 ]
 
 # Module-level cache: {(tts_provider, tts_voice, tts_model, "short"|"long"): [wav_bytes, ...]}
 # Cache clears on deploy (new process). Regenerates on first call.
 _filler_cache: dict[tuple, list[bytes]] = {}
+_last_filler_index: dict[tuple, int] = {}  # track last used to avoid repeats
 _cache_lock = asyncio.Lock()
 
 
@@ -85,9 +84,17 @@ async def get_filler_sound(agent, long: bool = False) -> Optional[bytes]:
     ftype = "long" if long else "short"
     cache_key = (provider, voice, model, ftype)
 
-    # Fast path: already cached
+    # Fast path: already cached — pick next one (avoid repeating last)
     if cache_key in _filler_cache and _filler_cache[cache_key]:
-        return random.choice(_filler_cache[cache_key])
+        wavs = _filler_cache[cache_key]
+        if len(wavs) <= 1:
+            return wavs[0] if wavs else None
+        last = _last_filler_index.get(cache_key, -1)
+        idx = last
+        while idx == last:
+            idx = random.randint(0, len(wavs) - 1)
+        _last_filler_index[cache_key] = idx
+        return wavs[idx]
 
     # Slow path: generate fillers (runs once per agent config)
     async with _cache_lock:
