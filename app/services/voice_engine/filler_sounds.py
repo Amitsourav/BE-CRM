@@ -50,7 +50,7 @@ async def _generate_fillers(phrases: list, provider: str, voice: str, model: str
             for phrase in phrases:
                 try:
                     wav = await asyncio.wait_for(
-                        smallest_tts.synthesize(text=phrase, voice=voice, model=model),
+                        smallest_tts.synthesize(text=phrase, voice=voice, model=model, speed=speed),
                         timeout=5.0,
                     )
                     if wav and len(wav) > 500:
@@ -62,7 +62,7 @@ async def _generate_fillers(phrases: list, provider: str, voice: str, model: str
             for phrase in phrases:
                 try:
                     wav = await asyncio.wait_for(
-                        sarvam_tts.synthesize(text=phrase, voice=voice, model=model),
+                        sarvam_tts.synthesize(text=phrase, voice=voice, model=model, speed=speed),
                         timeout=5.0,
                     )
                     if wav and len(wav) > 500:
@@ -85,8 +85,9 @@ async def get_filler_sound(agent, long: bool = False) -> Optional[bytes]:
     provider = (getattr(agent, "tts_provider", "smallest") or "smallest").lower()
     voice = getattr(agent, "tts_voice", "sana") or "sana"
     model = getattr(agent, "tts_model", "lightning-v3.1") or "lightning-v3.1"
+    speed = getattr(agent, "tts_speed", 1.0) or 1.0
     ftype = "long" if long else "short"
-    cache_key = (provider, voice, model, ftype)
+    cache_key = (provider, voice, model, speed, ftype)
 
     # Fast path: already cached — pick next one (avoid repeating last)
     if cache_key in _filler_cache and _filler_cache[cache_key]:
