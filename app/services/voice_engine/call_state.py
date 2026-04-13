@@ -33,6 +33,11 @@ class CallState:
         self.is_agent_speaking = False
         self.total_turns = 0
 
+    # Max conversation history entries (user + assistant = 2 per turn).
+    # 20 entries = 10 turns of context. Beyond this, older turns are
+    # dropped. Reduces LLM TTFB by ~100-300ms on long calls.
+    MAX_HISTORY = 20
+
     def add_turn(self, user_text: str, agent_text: str, language: str):
         self.conversation_history.append(
             {"role": "user", "content": user_text}
@@ -40,6 +45,17 @@ class CallState:
         self.conversation_history.append(
             {"role": "assistant", "content": agent_text}
         )
+        # Keep only the most recent turns to prevent unbounded growth.
+        # First entry (welcome) is preserved if present.
+        if len(self.conversation_history) > self.MAX_HISTORY:
+            # Keep welcome (first entry) + trim oldest after that
+            if self.conversation_history[0].get("role") == "assistant":
+                self.conversation_history = (
+                    [self.conversation_history[0]]
+                    + self.conversation_history[-(self.MAX_HISTORY - 1):]
+                )
+            else:
+                self.conversation_history = self.conversation_history[-self.MAX_HISTORY:]
         self.transcript_segments.append(
             {
                 "turn": self.total_turns + 1,

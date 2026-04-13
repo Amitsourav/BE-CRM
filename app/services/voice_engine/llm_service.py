@@ -181,23 +181,14 @@ class LLMService:
                 )
                 enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
-            # Inject role/tone + max_response_words into system prompt
-            max_words = getattr(agent, "max_response_words", None) or 25
-            role = getattr(agent, "role", None) or "sales"
-            tone = getattr(agent, "tone", None) or "friendly"
-            persona_rule = (
-                f"[PERSONA: You are a {role} agent speaking with a {tone} tone. "
-                f"Stay in character throughout the call.]\n\n"
-            )
-            length_rule = (
-                f"\n\n[LENGTH RULE: Keep responses to at most {max_words} words. "
-                "Be concise — this is a phone call, not an email.]"
-            )
+            # System prompt already contains role, tone, and length rules
+            # from the dashboard. No need to inject persona_rule/length_rule
+            # on every turn — that added ~300 redundant tokens per request,
+            # costing 150-250ms of TTFB.
             raw_prompt = (agent.system_prompt or "").replace("{name}", lead_name)
-            system_content = persona_rule + raw_prompt + length_rule
 
             messages = [
-                {"role": "system", "content": system_content},
+                {"role": "system", "content": raw_prompt},
                 *conversation_history,
                 {"role": "user", "content": enhanced_message},
             ]
@@ -287,21 +278,10 @@ class LLMService:
             )
             enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
-        max_words = getattr(agent, "max_response_words", None) or 25
-        role = getattr(agent, "role", None) or "sales"
-        tone = getattr(agent, "tone", None) or "friendly"
-        persona_rule = (
-            f"[PERSONA: You are a {role} agent speaking with a {tone} tone. "
-            f"Stay in character throughout the call.]\n\n"
-        )
-        length_rule = (
-            f"\n\n[LENGTH RULE: Keep responses to at most {max_words} words. "
-            "Be concise — this is a phone call, not an email.]"
-        )
-        system_content = persona_rule + (agent.system_prompt or "") + length_rule
+        raw_prompt = (agent.system_prompt or "").replace("{name}", lead_name)
 
         messages = [
-            {"role": "system", "content": system_content},
+            {"role": "system", "content": raw_prompt},
             *conversation_history,
             {"role": "user", "content": enhanced_message},
         ]

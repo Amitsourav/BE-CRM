@@ -41,7 +41,7 @@ def get_sarvam_client() -> httpx.AsyncClient:
             base_url="https://api.sarvam.ai",
             timeout=httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=3.0),
             limits=_LIMITS,
-            http2=False,
+            http2=True,
         )
     return _sarvam
 
@@ -53,7 +53,7 @@ def get_openrouter_client() -> httpx.AsyncClient:
             base_url="https://openrouter.ai",
             timeout=httpx.Timeout(connect=3.0, read=15.0, write=5.0, pool=3.0),
             limits=_LIMITS,
-            http2=False,
+            http2=True,
         )
     return _openrouter
 
@@ -66,7 +66,7 @@ def get_smallest_client() -> httpx.AsyncClient:
             base_url="https://waves-api.smallest.ai",
             timeout=httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=3.0),
             limits=_LIMITS,
-            http2=False,
+            http2=True,
         )
     return _smallest
 
@@ -82,7 +82,7 @@ def get_smallest_v3_client() -> httpx.AsyncClient:
             base_url="https://api.smallest.ai",
             timeout=httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=3.0),
             limits=_LIMITS,
-            http2=False,
+            http2=True,
         )
     return _smallest_v3
 
@@ -94,7 +94,7 @@ def get_deepgram_client() -> httpx.AsyncClient:
             base_url="https://api.deepgram.com",
             timeout=httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0),
             limits=_LIMITS,
-            http2=False,
+            http2=True,
         )
     return _deepgram
 
@@ -106,7 +106,7 @@ def get_openai_client() -> httpx.AsyncClient:
             base_url="https://api.openai.com",
             timeout=httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0),
             limits=_LIMITS,
-            http2=False,
+            http2=True,
         )
     return _openai
 
