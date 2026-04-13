@@ -16,23 +16,24 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Short fillers — for simple acknowledgments (yes, no, okay).
-# Neutral enough to fit any context. ~0.3-0.5s audio.
+# Language-neutral fillers that sound natural in BOTH English and Hindi.
+# "Hmm" is universal — works in any language without sounding odd.
+# Avoided: "Haan", "Ji", "ek second", "dekho" — these sound jarring
+# when the agent replies in English.
 SHORT_FILLER_PHRASES = [
-    "Haan...",
-    "Hmm...",
-    "Ji...",
+    "Hmm.",
+    "Hmm.",
+    "Okay.",
 ]
 
-# Long fillers — for real questions that need thinking time.
-# ~1-1.5s audio that bridges the LLM processing gap.
 LONG_FILLER_PHRASES = [
-    "Hmm, ek second...",
-    "Haan, dekho...",
-    "Hmm, toh...",
+    "Hmm, one second.",
+    "Hmm, let me check.",
+    "Okay, so.",
 ]
 
 # Module-level cache: {(tts_provider, tts_voice, tts_model, "short"|"long"): [wav_bytes, ...]}
+# Cache clears on deploy (new process). Regenerates on first call.
 _filler_cache: dict[tuple, list[bytes]] = {}
 _cache_lock = asyncio.Lock()
 
