@@ -85,7 +85,11 @@ async def get_filler_sound(agent, long: bool = False) -> Optional[bytes]:
     provider = (getattr(agent, "tts_provider", "smallest") or "smallest").lower()
     voice = getattr(agent, "tts_voice", "sana") or "sana"
     model = getattr(agent, "tts_model", "lightning-v3.1") or "lightning-v3.1"
-    speed = getattr(agent, "tts_speed", 1.0) or 1.0
+    # Fillers slightly slower than content. Short words at the same
+    # speed as long sentences sound faster due to compression. Using
+    # 90% of agent speed makes fillers match the perceived pace.
+    agent_speed = getattr(agent, "tts_speed", 1.0) or 1.0
+    speed = max(0.8, agent_speed * 0.9)
     ftype = "long" if long else "short"
     cache_key = (provider, voice, model, speed, ftype)
 
