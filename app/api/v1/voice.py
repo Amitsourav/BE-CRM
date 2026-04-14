@@ -270,6 +270,27 @@ async def initiate_outbound_call(
 
     asyncio.create_task(_warmup_llm())
 
+    # Warm the Sarvam STT connection in parallel. First /speech-to-text
+    # call pays TLS+HTTP/2 setup (~200-500ms). A dummy request during
+    # ring time establishes the connection so turn-1 STT is fast.
+    async def _warmup_stt():
+        import time
+        t0 = time.time()
+        try:
+            from app.services.voice_engine.sarvam_stt import sarvam_stt as _stt
+            await _stt.warmup(model=agent.stt_model or "saaras:v3")
+            logger.info(
+                "STT_WARMUP call_id=%s model=%s elapsed=%.2fs",
+                call_id, agent.stt_model, time.time() - t0,
+            )
+        except Exception as e:
+            logger.debug(
+                "STT_WARMUP_FAIL call_id=%s elapsed=%.2fs err=%s",
+                call_id, time.time() - t0, e,
+            )
+
+    asyncio.create_task(_warmup_stt())
+
     try:
         plivo_response = await plivo_handler.make_call(
             to_number=body.phone_number,

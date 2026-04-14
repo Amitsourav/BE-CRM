@@ -77,6 +77,50 @@ class SarvamSTT:
                 "error": str(e),
             }
 
+    async def warmup(self, model: str = "saaras:v3", language_code: str = "en-IN") -> None:
+        """Establish HTTP/2 connection + wake Sarvam's model during ring time.
+
+        First real /speech-to-text call on a fresh process pays TLS+HTTP/2
+        setup (~200-500ms). Sending a tiny dummy request during the 5-8s
+        ring window makes the connection hot for the real turn-1 STT.
+
+        Failures are swallowed — warmup is best-effort.
+        """
+        settings = get_settings()
+        try:
+            # 200ms of 8kHz mono PCM16 silence wrapped in a minimal WAV header.
+            # 44-byte header + 3200 bytes of zeros = 3244 bytes total.
+            num_samples = 1600  # 200ms @ 8kHz
+            data_size = num_samples * 2
+            header = b"RIFF" + (36 + data_size).to_bytes(4, "little") + b"WAVE"
+            header += b"fmt " + (16).to_bytes(4, "little")
+            header += (1).to_bytes(2, "little")  # PCM
+            header += (1).to_bytes(2, "little")  # mono
+            header += (8000).to_bytes(4, "little")  # sample rate
+            header += (16000).to_bytes(4, "little")  # byte rate
+            header += (2).to_bytes(2, "little")  # block align
+            header += (16).to_bytes(2, "little")  # bits per sample
+            header += b"data" + data_size.to_bytes(4, "little")
+            silence_wav = header + b"\x00" * data_size
+
+            client = get_sarvam_client()
+            await asyncio.wait_for(
+                client.post(
+                    "/speech-to-text",
+                    headers={"api-subscription-key": settings.sarvam_api_key},
+                    files={"file": ("warmup.wav", silence_wav, "audio/wav")},
+                    data={
+                        "model": model,
+                        "language_code": language_code,
+                        "with_timestamps": "false",
+                        "with_diarization": "false",
+                    },
+                ),
+                timeout=3.0,
+            )
+        except Exception:
+            pass  # best-effort; never fatal
+
     STREAMING_URI = "wss://api.sarvam.ai/speech-to-text-streaming"
 
     async def transcribe_stream(
