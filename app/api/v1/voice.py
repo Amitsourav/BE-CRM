@@ -719,10 +719,12 @@ async def voice_stream(
     min_speech_frames = max(3, MIN_SPEECH_FRAMES)
 
     # Barge-in threshold: detect real interruption, ignore noise.
-    # 35 frames = ~700ms of sustained speech (~2 words).
-    # Lower (24) caused false triggers from background noise (TV, fan).
-    # Higher (50+) makes real interruptions feel slow.
-    barge_in_frames = max(15, (agent.words_before_interrupt or 3) * 12)
+    # 24 frames = ~480ms — closer to human cut-in time (300-500ms).
+    # Previously 36 frames (~720ms) made interruptions feel slow and
+    # short utterances ("ruko", "nahi") never crossed threshold. Slow-decay
+    # on silence (added later) handles the false-trigger risk that earlier
+    # made 24 too aggressive.
+    barge_in_frames = max(12, (agent.words_before_interrupt or 3) * 8)
 
     # Last time we saw inbound media, for silence-watchdog.
     # Using a single-element list so the watchdog task can both read and
