@@ -41,7 +41,7 @@ _last_filler_index: dict[tuple, int] = {}  # track last used to avoid repeats
 _cache_lock = asyncio.Lock()
 
 
-async def _generate_fillers(phrases: list, provider: str, voice: str, model: str) -> list[bytes]:
+async def _generate_fillers(phrases: list, provider: str, voice: str, model: str, speed: float) -> list[bytes]:
     """Generate TTS audio for a list of filler phrases."""
     wavs = []
     try:
@@ -114,7 +114,7 @@ async def get_filler_sound(agent, long: bool = False) -> Optional[bytes]:
         logger.info("FILLER_GEN generating %d %s fillers for %s/%s/%s",
                      len(phrases), ftype, provider, voice, model)
 
-        wavs = await _generate_fillers(phrases, provider, voice, model)
+        wavs = await _generate_fillers(phrases, provider, voice, model, speed)
         _filler_cache[cache_key] = wavs
         logger.info("FILLER_GEN cached %d %s fillers for %s/%s/%s",
                      len(wavs), ftype, provider, voice, model)
