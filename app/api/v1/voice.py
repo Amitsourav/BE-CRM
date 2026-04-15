@@ -715,7 +715,10 @@ async def voice_stream(
 
     # Derive silence threshold from agent.endpointing_ms (frames @ 20ms each).
     # Clamp to reasonable range so a misconfigured agent can't break turn-taking.
-    silence_threshold = max(5, min(50, (agent.endpointing_ms or 300) // 20))
+    # Frames at 20ms each. 5 = 100ms floor, 100 = 2000ms ceiling.
+    # Thinking/hesitant speakers need 800-1200ms to avoid premature
+    # turn-end during natural pauses ("so I'm thinking for... ummm").
+    silence_threshold = max(5, min(100, (agent.endpointing_ms or 300) // 20))
     min_speech_frames = max(3, MIN_SPEECH_FRAMES)
 
     # Barge-in threshold: detect real interruption, ignore noise.
