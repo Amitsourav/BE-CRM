@@ -948,6 +948,20 @@ async def voice_stream(
                             barged = True
                             break
                         if out.get("done"):
+                            # LLM signalled end-of-call via [END_CALL]
+                            if out.get("end_call"):
+                                # Wait for audio to finish, then hangup
+                                async def _delayed_hangup(cid, delay):
+                                    await asyncio.sleep(delay + 1.0)
+                                    try:
+                                        from app.services.voice_engine import plivo_handler
+                                        await plivo_handler.hangup_call(cid)
+                                        logger.info("END_CALL hangup call_id=%s", cid)
+                                    except Exception as e:
+                                        logger.warning("END_CALL hangup failed: %s", e)
+                                asyncio.create_task(
+                                    _delayed_hangup(call_id, total_duration)
+                                )
                             continue
                         audio = out.get("audio")
                         if not audio:

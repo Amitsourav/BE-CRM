@@ -214,6 +214,7 @@ class VoicePipeline:
         full_response = ""
         detected_language = "en"
         any_audio_sent = False
+        end_call = False  # LLM signals call should end via [END_CALL]
         llm_first_token_ms = 0
         tts_first_sentence_ms = 0
         llm_t0 = time.time()
@@ -234,6 +235,11 @@ class VoicePipeline:
                         llm_first_token_ms = int((time.time() - llm_t0) * 1000)
                     sentence = chunk.get("text", "").strip()
                     detected_language = chunk.get("language", detected_language)
+                    # Detect [END_CALL] tag from LLM — signals call should
+                    # hang up after this response finishes playing.
+                    if "[END_CALL]" in sentence:
+                        end_call = True
+                        sentence = sentence.replace("[END_CALL]", "").strip()
                     if not sentence:
                         continue
                     # TTS: try Smallest v3.1 first (100ms), fall back to
@@ -309,12 +315,19 @@ class VoicePipeline:
             turn_total_ms, detected_language, transcript[:80],
         )
 
+        # Also check full_response for [END_CALL] in case batch fallback
+        # was used (streaming path checks per-sentence above).
+        if "[END_CALL]" in full_response:
+            end_call = True
+            full_response = full_response.replace("[END_CALL]", "").strip()
+
         yield {
             "done": True,
             "transcript": transcript,
             "response": full_response,
             "language": detected_language,
             "audio_sent": any_audio_sent,
+            "end_call": end_call,
         }
 
     async def _get_tts_audio(
