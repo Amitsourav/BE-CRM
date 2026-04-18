@@ -15,6 +15,19 @@ from app.workers.scheduler import start_scheduler, stop_scheduler
 
 settings = get_settings()
 
+# ── Sentry error tracking ──
+if settings.sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.app_env,
+            traces_sample_rate=0.1,
+            send_default_pii=False,
+        )
+    except ImportError:
+        pass  # sentry-sdk not installed, skip
+
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",

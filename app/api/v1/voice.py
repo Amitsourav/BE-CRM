@@ -205,13 +205,18 @@ async def initiate_outbound_call(
     # Create call state FIRST, then kick off welcome TTS in the background.
     # Phone ringing takes 5-8s — plenty of time for Sarvam TTS (~3-5s) to
     # finish while the phone is ringing. Do NOT block the outbound response.
-    state = call_state_manager.create(
-        call_id=str(call_id),
-        agent_id=str(body.agent_id),
-        lead_id=str(body.lead_id),
-        company_id=str(current_user.company_id),
-        lead_name=body.lead_name or "there",
-    )
+    try:
+        state = call_state_manager.create(
+            call_id=str(call_id),
+            agent_id=str(body.agent_id),
+            lead_id=str(body.lead_id),
+            company_id=str(current_user.company_id),
+            lead_name=body.lead_name or "there",
+        )
+    except RuntimeError as e:
+        call.call_status = "failed"
+        await db.commit()
+        raise HTTPException(status_code=429, detail=str(e))
     state.welcome_ready = asyncio.Event()
     # Cache the already-loaded agent on state so WS handler doesn't have
     # to re-fetch from Supabase (saves ~700ms per call on cross-region DB).

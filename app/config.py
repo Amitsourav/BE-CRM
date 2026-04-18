@@ -7,7 +7,7 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # Application
-    app_env: str = "development"
+    app_env: str = "production"
     secret_key: str = ""
     cors_origins: list[str] = ["http://localhost:3000"]
 
@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     csv_max_size_mb: int = 10
     csv_max_rows: int = 5000
     log_level: str = "INFO"
+    max_concurrent_calls: int = 50
+    sentry_dsn: str = ""
 
     @property
     def async_database_url(self) -> str:

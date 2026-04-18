@@ -83,8 +83,9 @@ class CallState:
 class CallStateManager:
     """Manages all active calls in memory."""
 
-    def __init__(self):
+    def __init__(self, max_calls: int = 50):
         self._calls: Dict[str, CallState] = {}
+        self._max_calls = max_calls
 
     def create(
         self,
@@ -95,6 +96,11 @@ class CallStateManager:
         lead_name: str = "there",
         welcome_audio: bytes = b"",
     ) -> CallState:
+        active = sum(1 for c in self._calls.values() if c.is_active)
+        if active >= self._max_calls:
+            raise RuntimeError(
+                f"Maximum concurrent calls ({self._max_calls}) reached"
+            )
         state = CallState(
             call_id=call_id,
             agent_id=agent_id,
@@ -105,6 +111,9 @@ class CallStateManager:
         state.welcome_audio = welcome_audio
         self._calls[call_id] = state
         return state
+
+    def get_active_count(self) -> int:
+        return sum(1 for c in self._calls.values() if c.is_active)
 
     def get(self, call_id: str) -> Optional[CallState]:
         return self._calls.get(call_id)
@@ -139,4 +148,11 @@ class CallStateManager:
         ]
 
 
-call_state_manager = CallStateManager()
+def _init_manager() -> CallStateManager:
+    try:
+        from app.config import get_settings
+        return CallStateManager(max_calls=get_settings().max_concurrent_calls)
+    except Exception:
+        return CallStateManager(max_calls=50)
+
+call_state_manager = _init_manager()

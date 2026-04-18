@@ -31,6 +31,7 @@ async def check_overdue_tasks():
 
                     notif = Notification(
                         user_id=task.assigned_to,
+                        company_id=task.company_id,
                         type=NotificationType.TASK_OVERDUE,
                         title="Task Overdue",
                         message=f"Task '{task.title}' is overdue.",
