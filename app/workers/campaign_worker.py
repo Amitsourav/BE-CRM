@@ -39,27 +39,31 @@ class CampaignWorker:
     # ── Calling hours ──────────────────────────────────────
 
     @staticmethod
-    def _in_calling_hours(campaign: Campaign) -> bool:
+    def _in_calling_hours(campaign: Campaign) -> tuple[bool, str]:
         tz = pytz.timezone(campaign.timezone or "Asia/Kolkata")
         now = datetime.now(tz)
+        current_time = now.time()
+        day_name = now.strftime("%A")
 
         # Skip weekends
         if campaign.skip_weekends and now.weekday() >= 5:
-            return False
+            return False, f"weekend ({day_name})"
 
         # Daily time window
-        if campaign.daily_start_time and campaign.daily_end_time:
-            if not (campaign.daily_start_time <= now.time() <= campaign.daily_end_time):
-                return False
+        start = campaign.daily_start_time
+        end = campaign.daily_end_time
+        if start and end:
+            if not (start <= current_time <= end):
+                return False, f"outside hours ({current_time.strftime('%H:%M')} not in {start}-{end})"
 
         # Campaign date range
         now_naive = now.replace(tzinfo=None)
         if campaign.start_date and now_naive < campaign.start_date:
-            return False
+            return False, f"before start_date ({campaign.start_date})"
         if campaign.end_date and now_naive > campaign.end_date:
-            return False
+            return False, f"after end_date ({campaign.end_date})"
 
-        return True
+        return True, "ok"
 
     # ── Active call tracking ───────────────────────────────
 
@@ -89,8 +93,10 @@ class CampaignWorker:
                 )
                 campaigns = result.scalars().all()
                 if not campaigns:
+                    logger.debug("CAMPAIGN_WORKER no active campaigns")
                     return
 
+                logger.info("CAMPAIGN_WORKER found %d active campaigns", len(campaigns))
                 for campaign in campaigns:
                     await self._process_campaign(db, campaign)
 
@@ -105,7 +111,9 @@ class CampaignWorker:
         cid = str(campaign.id)
         short = cid[:8]
 
-        if not self._in_calling_hours(campaign):
+        in_hours, reason = self._in_calling_hours(campaign)
+        if not in_hours:
+            logger.info("[CAMPAIGN %s] Skipped: %s", short, reason)
             return
 
         active = self._active_count(cid)
