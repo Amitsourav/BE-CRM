@@ -224,6 +224,32 @@ async def download_csv_template():
     )
 
 
+# Column name aliases — maps common CSV header variations to our field names
+_COL_ALIASES = {
+    "name": ["name", "full_name", "full name", "lead name", "lead_name", "student name", "student_name", "contact name"],
+    "phone": ["phone", "phone_number", "phone number", "mobile", "mobile_number", "mobile number", "contact", "number", "cell", "telephone"],
+    "email": ["email", "email_address", "email address", "e-mail", "mail"],
+    "city": ["city", "location", "place"],
+    "state": ["state", "province", "region"],
+    "notes": ["notes", "note", "comments", "comment", "remarks", "description"],
+}
+
+
+def _map_columns(raw_headers: list[str]) -> dict[str, str]:
+    """Map CSV column headers to our field names using aliases.
+
+    Returns {our_field: csv_header} for matched columns.
+    """
+    mapping = {}
+    normalized = {h.strip().lower(): h for h in raw_headers}
+    for field, aliases in _COL_ALIASES.items():
+        for alias in aliases:
+            if alias in normalized:
+                mapping[field] = normalized[alias]
+                break
+    return mapping
+
+
 @router.post("/{campaign_id}/upload-csv")
 async def upload_leads_csv(
     campaign_id: uuid.UUID,
@@ -234,11 +260,14 @@ async def upload_leads_csv(
 ):
     """Upload CSV to create leads and assign them to the campaign.
 
-    Required columns: name, phone
-    Optional columns: email, city, state, notes
+    Required columns: name + phone (accepts common variations like
+    'Full Name', 'Phone Number', 'Mobile', etc.)
+    Optional: email, city, state, notes
     Skips duplicates by phone number (within company).
     """
+    import logging
     from sqlalchemy import func
+    log = logging.getLogger(__name__)
 
     if not file.filename or not file.filename.endswith(".csv"):
         return {"success": False, "error": "Only .csv files accepted"}
@@ -248,28 +277,47 @@ async def upload_leads_csv(
     if campaign.status in ("active", "completed", "stopped"):
         return {"success": False, "error": f"Cannot add leads to {campaign.status} campaign"}
 
+    # Parse CSV
     try:
         raw = await file.read()
         text = raw.decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(text))
-        headers = [h.strip().lower() for h in (reader.fieldnames or [])]
+        raw_headers = list(reader.fieldnames or [])
     except Exception as e:
         return {"success": False, "error": f"Invalid CSV: {e}"}
 
-    if "name" not in headers or "phone" not in headers:
-        return {"success": False, "error": "CSV must have 'name' and 'phone' columns"}
+    if not raw_headers:
+        return {"success": False, "error": "CSV file is empty or has no headers"}
+
+    # Map columns flexibly
+    col_map = _map_columns(raw_headers)
+    log.info("CSV_UPLOAD campaign=%s file=%s headers=%s mapped=%s", campaign_id, file.filename, raw_headers, col_map)
+
+    if "name" not in col_map or "phone" not in col_map:
+        return {
+            "success": False,
+            "error": f"CSV must have name and phone columns. Found headers: {raw_headers}. "
+                     f"Accepted name columns: {_COL_ALIASES['name']}. "
+                     f"Accepted phone columns: {_COL_ALIASES['phone']}.",
+        }
+
+    name_col = col_map["name"]
+    phone_col = col_map["phone"]
+    email_col = col_map.get("email")
+    city_col = col_map.get("city")
+    state_col = col_map.get("state")
+    notes_col = col_map.get("notes")
 
     stats = {
         "total_rows": 0, "new_leads_created": 0, "existing_leads_added": 0,
         "duplicates_skipped": 0, "invalid_rows": 0, "errors": [],
     }
 
-    for row_num, raw_row in enumerate(reader, start=2):
+    for row_num, row in enumerate(reader, start=2):
         stats["total_rows"] += 1
-        row = {k.strip().lower(): (v or "").strip() for k, v in raw_row.items()}
 
-        name = row.get("name", "")
-        phone_raw = row.get("phone", "")
+        name = (row.get(name_col) or "").strip()
+        phone_raw = (row.get(phone_col) or "").strip()
         if not name or not phone_raw:
             stats["invalid_rows"] += 1
             stats["errors"].append({"row": row_num, "error": "Missing name or phone"})
@@ -283,6 +331,7 @@ async def upload_leads_csv(
         if not phone.startswith("+"):
             phone = "+91" + phone if len(phone) == 10 else "+" + phone
 
+        # Check existing lead by phone
         result = await db.execute(
             select(Lead).where(Lead.company_id == company_id, Lead.phone == phone, Lead.is_deleted == False)
         )
@@ -291,18 +340,21 @@ async def upload_leads_csv(
         if lead:
             stats["existing_leads_added"] += 1
         else:
-            email = row.get("email") or None
-            if email and email.lower() == "nan":
+            email = (row.get(email_col) or "").strip() if email_col else None
+            if email and email.lower() in ("nan", "none", ""):
                 email = None
             lead = Lead(
-                company_id=company_id, full_name=name, phone=phone, email=email,
-                city=row.get("city") or None, state=row.get("state") or None,
-                notes=row.get("notes") or None, current_stage="lead",
+                company_id=company_id, full_name=name, phone=phone, email=email or None,
+                city=((row.get(city_col) or "").strip() or None) if city_col else None,
+                state=((row.get(state_col) or "").strip() or None) if state_col else None,
+                notes=((row.get(notes_col) or "").strip() or None) if notes_col else None,
+                current_stage="lead",
             )
             db.add(lead)
             await db.flush()
             stats["new_leads_created"] += 1
 
+        # Check if already in campaign
         existing_cl = await db.execute(
             select(CampaignLead.id).where(
                 CampaignLead.campaign_id == campaign_id, CampaignLead.lead_id == lead.id,
@@ -319,5 +371,11 @@ async def upload_leads_csv(
     total_added = stats["new_leads_created"] + stats["existing_leads_added"] - stats["duplicates_skipped"]
     campaign.total_leads = (campaign.total_leads or 0) + total_added
     await db.commit()
+
+    log.info(
+        "CSV_UPLOAD_DONE campaign=%s rows=%d new=%d existing=%d dupes=%d invalid=%d",
+        campaign_id, stats["total_rows"], stats["new_leads_created"],
+        stats["existing_leads_added"], stats["duplicates_skipped"], stats["invalid_rows"],
+    )
 
     return {"success": True, "message": f"Processed {stats['total_rows']} rows", **stats}
