@@ -80,11 +80,13 @@ class CallAttemptOut(BaseModel):
     created_at: datetime
     updated_at: datetime | None = None
 
-    model_config = {"from_attributes": True}
-
-
-class CallAttemptWithLead(CallAttemptOut):
-    """Call detail with lead and agent info."""
+    # Joined fields — populated when query uses joinedload
     lead_name: str | None = None
     lead_phone: str | None = None
     agent_name: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+# Alias for backward compat — same schema now
+CallAttemptWithLead = CallAttemptOut

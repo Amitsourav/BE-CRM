@@ -5,6 +5,7 @@ import logging
 from datetime import date, datetime
 from sqlalchemy import select, func, cast, Date
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from app.models.lead import Lead
 from app.models.call_attempt import CallAttempt
 from app.models.notification import Notification
@@ -263,9 +264,20 @@ class CallService:
         if date_to:
             query = query.where(func.date(CallAttempt.created_at) <= date_to)
 
+        query = query.options(
+            selectinload(CallAttempt.lead),
+            selectinload(CallAttempt.ai_agent),
+        )
         query = query.offset(skip).limit(limit)
         result = await self.db.execute(query)
-        return result.scalars().all()
+        calls = result.scalars().all()
+
+        # Map joined fields so Pydantic can serialize them
+        for call in calls:
+            call.lead_name = call.lead.full_name if call.lead else None
+            call.lead_phone = call.lead.phone if call.lead else None
+            call.agent_name = call.ai_agent.name if call.ai_agent else None
+        return calls
 
     async def get_call(self, call_id: uuid.UUID, user: Profile) -> dict:
         """Get single call with lead and agent info."""
