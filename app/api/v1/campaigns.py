@@ -313,9 +313,10 @@ async def upload_leads_csv(
         "duplicates_skipped": 0, "invalid_rows": 0, "errors": [],
     }
 
+    # ── STEP 1: Parse all rows into clean records ──
+    parsed = []  # list of {name, phone, email, city, state, notes}
     for row_num, row in enumerate(reader, start=2):
         stats["total_rows"] += 1
-
         name = (row.get(name_col) or "").strip()
         phone_raw = (row.get(phone_col) or "").strip()
         if not name or not phone_raw:
@@ -331,44 +332,72 @@ async def upload_leads_csv(
         if not phone.startswith("+"):
             phone = "+91" + phone if len(phone) == 10 else "+" + phone
 
-        # Check existing lead by phone
-        result = await db.execute(
-            select(Lead).where(Lead.company_id == company_id, Lead.phone == phone, Lead.is_deleted == False)
-        )
-        lead = result.scalar_one_or_none()
+        email = (row.get(email_col) or "").strip() if email_col else None
+        if email and email.lower() in ("nan", "none", ""):
+            email = None
 
-        if lead:
-            stats["existing_leads_added"] += 1
-        else:
-            email = (row.get(email_col) or "").strip() if email_col else None
-            if email and email.lower() in ("nan", "none", ""):
-                email = None
+        parsed.append({
+            "name": name, "phone": phone, "email": email or None,
+            "city": ((row.get(city_col) or "").strip() or None) if city_col else None,
+            "state": ((row.get(state_col) or "").strip() or None) if state_col else None,
+            "notes": ((row.get(notes_col) or "").strip() or None) if notes_col else None,
+        })
+
+    if not parsed:
+        return {"success": True, "message": "No valid rows", **stats}
+
+    # ── STEP 2: Batch lookup existing leads by phone (1 query) ──
+    all_phones = list({r["phone"] for r in parsed})
+    result = await db.execute(
+        select(Lead).where(Lead.company_id == company_id, Lead.phone.in_(all_phones), Lead.is_deleted == False)
+    )
+    existing_leads = {lead.phone: lead for lead in result.scalars().all()}
+
+    # ── STEP 3: Create missing leads in batch ──
+    new_leads = []
+    for r in parsed:
+        if r["phone"] not in existing_leads:
             lead = Lead(
-                company_id=company_id, full_name=name, phone=phone, email=email or None,
-                city=((row.get(city_col) or "").strip() or None) if city_col else None,
-                state=((row.get(state_col) or "").strip() or None) if state_col else None,
-                notes=((row.get(notes_col) or "").strip() or None) if notes_col else None,
-                current_stage="lead",
+                company_id=company_id, full_name=r["name"], phone=r["phone"],
+                email=r["email"], city=r["city"], state=r["state"],
+                notes=r["notes"], current_stage="lead",
             )
             db.add(lead)
-            await db.flush()
-            stats["new_leads_created"] += 1
+            new_leads.append(lead)
 
-        # Check if already in campaign
-        existing_cl = await db.execute(
-            select(CampaignLead.id).where(
-                CampaignLead.campaign_id == campaign_id, CampaignLead.lead_id == lead.id,
-            )
+    if new_leads:
+        await db.flush()  # single flush for all new leads
+        for lead in new_leads:
+            existing_leads[lead.phone] = lead
+    stats["new_leads_created"] = len(new_leads)
+
+    # ── STEP 4: Batch lookup existing campaign_leads (1 query) ──
+    all_lead_ids = [existing_leads[r["phone"]].id for r in parsed if r["phone"] in existing_leads]
+    result = await db.execute(
+        select(CampaignLead.lead_id).where(
+            CampaignLead.campaign_id == campaign_id, CampaignLead.lead_id.in_(all_lead_ids),
         )
-        if existing_cl.scalar_one_or_none():
+    )
+    already_in_campaign = {row[0] for row in result.all()}
+
+    # ── STEP 5: Create campaign_leads in batch ──
+    for r in parsed:
+        lead = existing_leads.get(r["phone"])
+        if not lead:
+            continue
+        if lead.id in already_in_campaign:
             stats["duplicates_skipped"] += 1
             continue
-
         db.add(CampaignLead(
             campaign_id=campaign_id, lead_id=lead.id, company_id=company_id, status="pending",
         ))
+        already_in_campaign.add(lead.id)  # prevent intra-CSV dupes
+        if lead.phone in {nl.phone for nl in new_leads}:
+            pass  # already counted
+        else:
+            stats["existing_leads_added"] += 1
 
-    total_added = stats["new_leads_created"] + stats["existing_leads_added"] - stats["duplicates_skipped"]
+    total_added = stats["new_leads_created"] + stats["existing_leads_added"]
     campaign.total_leads = (campaign.total_leads or 0) + total_added
     await db.commit()
 
