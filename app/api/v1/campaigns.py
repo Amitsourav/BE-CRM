@@ -32,7 +32,7 @@ async def create_campaign(
 ):
     service = CampaignService(db, company_id)
     campaign = await service.create(user_id=current_user.id, data=data)
-    return {"success": True, "campaign_id": str(campaign.id), "message": "Campaign created"}
+    return {"success": True, "id": str(campaign.id), "campaign_id": str(campaign.id), "message": "Campaign created"}
 
 
 @router.get("")
