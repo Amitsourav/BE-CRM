@@ -81,6 +81,7 @@ class PlivoHandler:
                 hangup_method="POST",
                 time_limit=time_limit,
                 ring_timeout=ring_timeout,
+                record=True,
             )
 
             return {
