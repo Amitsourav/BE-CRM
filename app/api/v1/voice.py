@@ -1191,6 +1191,19 @@ async def _save_summary_background(call_id: str, transcript: str):
             except Exception as e:
                 logger.warning("activity log write failed: %s", e)
 
+            # ── Campaign Lead Update ──
+            if call.call_type == "ai_campaign":
+                try:
+                    from app.workers.campaign_worker import campaign_worker
+                    success = (
+                        call.call_status == "ended"
+                        and call.call_duration_seconds
+                        and call.call_duration_seconds > 10
+                    )
+                    await campaign_worker.handle_call_completed(call_id, bool(success))
+                except Exception as e:
+                    logger.warning("campaign lead update failed: %s", e)
+
     except Exception as e:
         logger.error("post-call automation failed for %s: %s", call_id, e)
 
