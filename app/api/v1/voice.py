@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db.session import AsyncSessionLocal, get_db
 from app.dependencies import get_current_user
+from app.core.tenant import get_current_company_id
 from app.core.rate_limit import limiter
 from app.models.ai_agent import AIAgent
 from app.models.call_attempt import CallAttempt
@@ -1055,6 +1056,70 @@ async def handle_hangup(
         content="<?xml version='1.0'?><Response/>",
         media_type="application/xml",
     )
+
+
+# ─────────────────────────────────────────────
+# POST /voice/call/{call_id}/end  (frontend end-call button)
+# ─────────────────────────────────────────────
+
+
+@router.post("/call/{call_id}/end")
+async def end_call(
+    call_id: str,
+    current_user: Profile = Depends(get_current_user),
+    company_id = Depends(get_current_company_id),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: AsyncSession = Depends(get_db),
+):
+    """End an active call from the frontend UI.
+
+    Triggers Plivo hangup, saves transcript/duration, and kicks off
+    summary generation — same post-call flow as the Plivo /hangup webhook
+    but initiated by the user instead of Plivo.
+    """
+    # Verify call belongs to this company
+    result = await db.execute(
+        select(CallAttempt).where(
+            CallAttempt.id == uuid.UUID(call_id),
+            CallAttempt.company_id == company_id,
+        )
+    )
+    call = result.scalar_one_or_none()
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+
+    if call.call_status == "ended":
+        return {"success": True, "message": "Call already ended", "call_id": call_id}
+
+    # Hang up via Plivo
+    hung_up = await plivo_handler.hangup_call(call_id)
+
+    # Save transcript and duration from in-memory state
+    state = call_state_manager.get(call_id)
+    call.call_status = "ended"
+    call.ended_at = datetime.utcnow()
+    if state:
+        call.transcript = state.get_full_transcript()
+        call.call_duration_seconds = state.get_duration_seconds()
+    await db.commit()
+
+    # Generate summary in background
+    if state and state.transcript_segments:
+        background_tasks.add_task(
+            _save_summary_background,
+            call_id=call_id,
+            transcript=state.get_full_transcript(),
+        )
+
+    if state:
+        call_state_manager.remove(call_id)
+
+    return {
+        "success": True,
+        "message": "Call ended" if hung_up else "Call ended (Plivo hangup may have already occurred)",
+        "call_id": call_id,
+        "duration": call.call_duration_seconds,
+    }
 
 
 async def _save_summary_background(call_id: str, transcript: str):

@@ -221,6 +221,7 @@ class CallService:
         user: Profile,
         skip: int = 0,
         limit: int = 50,
+        search: str | None = None,
         telecaller_id: uuid.UUID | None = None,
         call_status: str | None = None,
         call_type: str | None = None,
@@ -241,6 +242,16 @@ class CallService:
         elif telecaller_id:
             query = query.where(CallAttempt.telecaller_id == telecaller_id)
 
+        if search:
+            from sqlalchemy import or_
+            pattern = f"%{search}%"
+            query = query.where(
+                or_(
+                    CallAttempt.transcript.ilike(pattern),
+                    CallAttempt.phone_number.ilike(pattern),
+                    CallAttempt.summary.ilike(pattern),
+                )
+            )
         if call_status:
             query = query.where(CallAttempt.call_status == call_status)
         if call_type:

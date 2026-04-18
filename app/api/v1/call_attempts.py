@@ -123,6 +123,7 @@ async def list_calls(
     db: AsyncSession = Depends(get_db),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
+    search: str | None = Query(None, description="Search transcript, phone, or lead name"),
     telecaller_id: uuid.UUID | None = Query(None),
     call_status: str | None = Query(None),
     call_type: str | None = Query(None),
@@ -134,6 +135,7 @@ async def list_calls(
     return await service.get_all_calls(
         user=current_user,
         skip=skip, limit=limit,
+        search=search,
         telecaller_id=telecaller_id,
         call_status=call_status,
         call_type=call_type,
