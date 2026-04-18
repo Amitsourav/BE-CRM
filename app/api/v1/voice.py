@@ -32,6 +32,9 @@ from app.core.rate_limit import limiter
 from app.models.ai_agent import AIAgent
 from app.models.call_attempt import CallAttempt
 from app.models.profile import Profile
+from app.models.activity_log import ActivityLog
+from app.models.lead_stage_log import LeadStageLog
+from app.services.voice_engine.http_clients import get_openrouter_client
 from app.services.voice_engine import (
     call_state_manager,
     plivo_handler,
@@ -1123,21 +1126,73 @@ async def end_call(
 
 
 async def _save_summary_background(call_id: str, transcript: str):
-    """Generate summary then persist — runs after Plivo gets its response."""
-    summary = await _generate_summary(transcript)
-    if not summary:
-        return
+    """Post-call automation: summary + sentiment + cost + lead status update.
+
+    Runs as a background task after Plivo gets its /hangup response.
+    Single LLM call produces summary, sentiment, and interest level together.
+    """
+    post_call = await _analyze_call(transcript)
     try:
         async with AsyncSessionLocal() as db:
             result = await db.execute(
                 select(CallAttempt).where(CallAttempt.id == uuid.UUID(call_id))
             )
             call = result.scalar_one_or_none()
-            if call:
-                call.summary = summary
+            if not call:
+                return
+
+            # ── Summary + Sentiment ──
+            call.summary = post_call.get("summary", "")
+            call.sentiment = post_call.get("sentiment", "neutral")
+            call.sentiment_score = post_call.get("confidence", 0) / 100.0
+
+            # ── Cost Calculation ──
+            if call.call_duration_seconds and call.ai_agent_id:
+                try:
+                    from app.services.pricing_service import calculate_agent_pricing
+                    agent_result = await db.execute(
+                        select(AIAgent).where(AIAgent.id == call.ai_agent_id)
+                    )
+                    agent = agent_result.scalar_one_or_none()
+                    if agent:
+                        pricing = calculate_agent_pricing(agent)
+                        minutes = call.call_duration_seconds / 60.0
+                        call.cost = round(pricing["total_usd"] * minutes, 4)
+                except Exception as e:
+                    logger.warning("cost calc failed for call %s: %s", call_id, e)
+
+            await db.commit()
+
+            # ── Lead Status Auto-Update ──
+            interest = post_call.get("interest_level", "low")
+            sentiment = post_call.get("sentiment", "neutral")
+            await _auto_update_lead_stage(
+                db, call_id, str(call.lead_id), str(call.company_id),
+                sentiment, interest, call.call_status or "ended",
+            )
+
+            # ── Activity Log ──
+            try:
+                activity = ActivityLog(
+                    company_id=call.company_id,
+                    actor_id=None,  # system
+                    action="call_ended",
+                    entity_type="call",
+                    entity_id=call.id,
+                    new_values={
+                        "sentiment": sentiment,
+                        "interest_level": interest,
+                        "duration": call.call_duration_seconds,
+                        "cost_usd": call.cost,
+                    },
+                )
+                db.add(activity)
                 await db.commit()
+            except Exception as e:
+                logger.warning("activity log write failed: %s", e)
+
     except Exception as e:
-        logger.error("background summary save failed: %s", e)
+        logger.error("post-call automation failed for %s: %s", call_id, e)
 
 
 # ─────────────────────────────────────────────
@@ -1224,41 +1279,136 @@ async def get_call_status(
 # ─────────────────────────────────────────────
 
 
-async def _generate_summary(transcript: str) -> str:
+async def _analyze_call(transcript: str) -> dict:
+    """Single LLM call: summary + sentiment + interest level.
+
+    Returns dict with keys: summary, sentiment, confidence, interest_level.
+    """
+    empty = {"summary": "", "sentiment": "neutral", "confidence": 0, "interest_level": "low"}
     if not transcript:
-        return ""
+        return empty
 
     settings = get_settings()
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.openrouter_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "openai/gpt-4o-mini",
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a call summarizer. Summarize this sales "
-                                "call transcript in 3-4 sentences. Include: "
-                                "1) What the lead wants 2) Key info shared "
-                                "3) Next steps agreed. Be concise and factual."
-                            ),
-                        },
-                        {"role": "user", "content": transcript},
-                    ],
-                    "max_tokens": 200,
-                    "temperature": 0.3,
+        client = get_openrouter_client()
+        response = await client.post(
+            "/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.openrouter_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "openai/gpt-4o-mini",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Analyze this sales call transcript. Return ONLY valid JSON with:\n"
+                            '- "summary": 3-4 sentence summary (what lead wants, info shared, next steps)\n'
+                            '- "sentiment": "positive", "neutral", or "negative"\n'
+                            '- "confidence": 0-100 integer\n'
+                            '- "interest_level": "high", "medium", or "low"\n'
+                            "No markdown, no explanation, just JSON."
+                        ),
+                    },
+                    {"role": "user", "content": transcript},
+                ],
+                "max_tokens": 400,
+                "temperature": 0.3,
+                "response_format": {"type": "json_object"},
+            },
+        )
+        if response.status_code == 200:
+            import json as _json
+            data = response.json()
+            text = data["choices"][0]["message"]["content"].strip()
+            result = _json.loads(text)
+            if result.get("sentiment") not in ("positive", "neutral", "negative"):
+                result["sentiment"] = "neutral"
+            if result.get("interest_level") not in ("high", "medium", "low"):
+                result["interest_level"] = "low"
+            return result
+    except Exception as e:
+        logger.warning("call analysis failed: %s", e)
+
+    return empty
+
+
+async def _auto_update_lead_stage(
+    db, call_id: str, lead_id: str, company_id: str,
+    sentiment: str, interest_level: str, call_status: str,
+):
+    """Auto-update lead stage based on call outcome."""
+    try:
+        from app.models.lead import Lead
+
+        result = await db.execute(
+            select(Lead).where(Lead.id == uuid.UUID(lead_id))
+        )
+        lead = result.scalar_one_or_none()
+        if not lead:
+            return
+
+        old_stage = lead.current_stage
+
+        # Don't touch won/lost leads
+        if old_stage in ("won", "lost"):
+            return
+
+        # Determine new stage
+        new_stage = old_stage
+        if call_status == "failed" and old_stage == "lead":
+            new_stage = "called"
+        elif sentiment == "positive" and interest_level == "high":
+            if old_stage in ("lead", "called"):
+                new_stage = "qualified_lead"
+        elif sentiment == "positive":
+            if old_stage == "lead":
+                new_stage = "called"
+        elif sentiment == "negative":
+            if old_stage in ("lead", "called"):
+                new_stage = "connected"
+        elif sentiment == "neutral":
+            if old_stage == "lead":
+                new_stage = "called"
+
+        if new_stage != old_stage:
+            lead.current_stage = new_stage
+
+            # Log stage change
+            stage_log = LeadStageLog(
+                lead_id=lead.id,
+                company_id=uuid.UUID(company_id),
+                from_stage=old_stage,
+                to_stage=new_stage,
+                changed_by=lead.assigned_agent_id or lead.id,  # system fallback
+                conversation_notes=(
+                    f"Auto-updated from AI call. "
+                    f"Sentiment: {sentiment}, Interest: {interest_level}"
+                ),
+            )
+            db.add(stage_log)
+
+            # Activity log
+            activity = ActivityLog(
+                company_id=uuid.UUID(company_id),
+                actor_id=None,
+                action="stage_changed",
+                entity_type="lead",
+                entity_id=lead.id,
+                new_values={
+                    "from": old_stage,
+                    "to": new_stage,
+                    "sentiment": sentiment,
+                    "call_id": call_id,
                 },
             )
-            if response.status_code == 200:
-                data = response.json()
-                return data["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        logger.warning("summary generation failed: %s", e)
+            db.add(activity)
+            await db.commit()
 
-    return ""
+            logger.info(
+                "LEAD_AUTO_UPDATE lead=%s %s→%s sentiment=%s interest=%s call=%s",
+                lead_id, old_stage, new_stage, sentiment, interest_level, call_id,
+            )
+    except Exception as e:
+        logger.warning("lead auto-update failed for %s: %s", lead_id, e)
