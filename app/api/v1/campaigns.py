@@ -81,6 +81,7 @@ async def get_campaign(
     service = CampaignService(db, company_id)
     campaign = await service.get(campaign_id)
     stats = await service.get_stats(campaign_id)
+    total = stats.get("total_leads", 0)
     return {
         "id": str(campaign.id),
         "name": campaign.name,
@@ -95,6 +96,14 @@ async def get_campaign(
         "max_retries": campaign.max_retries,
         "retry_gap_hours": campaign.retry_gap_hours,
         "max_concurrent_calls": campaign.max_concurrent_calls,
+        # Top-level stats (frontend reads these for the overview cards)
+        "total_leads": total,
+        "calls_made": campaign.calls_made or 0,
+        "calls_connected": campaign.calls_connected or 0,
+        "calls_failed": campaign.calls_failed or 0,
+        "total_cost": campaign.total_cost_usd or 0,
+        "progress_pct": round((campaign.calls_made or 0) / total * 100, 1) if total > 0 else 0,
+        # Detailed breakdown
         "stats": stats,
         "created_at": campaign.created_at,
         "started_at": campaign.started_at,
