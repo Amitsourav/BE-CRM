@@ -10,6 +10,8 @@ from app.models.notification import Notification
 from app.models.csv_import import CSVImport
 from app.models.activity_log import ActivityLog
 from app.models.ai_agent import AIAgent
+from app.models.campaign import Campaign
+from app.models.campaign_lead import CampaignLead
 
 __all__ = [
     "Base",
@@ -24,4 +26,6 @@ __all__ = [
     "CSVImport",
     "ActivityLog",
     "AIAgent",
+    "Campaign",
+    "CampaignLead",
 ]

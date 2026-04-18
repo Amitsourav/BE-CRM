@@ -23,3 +23,4 @@ class Company(Base, TimestampMixin):
     profiles = relationship("Profile", back_populates="company")
     leads = relationship("Lead", back_populates="company")
     ai_agents = relationship("AIAgent", back_populates="company")
+    campaigns = relationship("Campaign", back_populates="company")
