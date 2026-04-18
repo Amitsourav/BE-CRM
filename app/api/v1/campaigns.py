@@ -82,6 +82,18 @@ async def get_campaign(
     campaign = await service.get(campaign_id)
     stats = await service.get_stats(campaign_id)
     total = stats.get("total_leads", 0)
+
+    # Estimated cost: agent per-min rate × avg 3 min/call × total leads
+    estimated_cost = 0.0
+    try:
+        from app.services.pricing_service import calculate_agent_pricing, INR_RATE
+        if campaign.agent:
+            pricing = calculate_agent_pricing(campaign.agent)
+            avg_call_minutes = 3.0
+            estimated_cost = round(pricing["total_usd"] * avg_call_minutes * total * INR_RATE, 2)
+    except Exception:
+        pass
+
     return {
         "id": str(campaign.id),
         "name": campaign.name,
@@ -102,6 +114,7 @@ async def get_campaign(
         "calls_connected": campaign.calls_connected or 0,
         "calls_failed": campaign.calls_failed or 0,
         "total_cost": campaign.total_cost_usd or 0,
+        "estimated_cost_inr": estimated_cost,
         "progress_pct": round((campaign.calls_made or 0) / total * 100, 1) if total > 0 else 0,
         # Detailed breakdown
         "stats": stats,
