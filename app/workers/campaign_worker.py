@@ -33,8 +33,6 @@ logger = logging.getLogger(__name__)
 class CampaignWorker:
     def __init__(self):
         self._running = False
-        # {campaign_id: int} — in-flight calls per campaign
-        self._active: dict[str, int] = {}
 
     # ── Calling hours ──────────────────────────────────────
 
@@ -65,17 +63,21 @@ class CampaignWorker:
 
         return True, "ok"
 
-    # ── Active call tracking ───────────────────────────────
+    # ── Active call tracking (DB-based, no in-memory counter) ──
 
-    def _active_count(self, cid: str) -> int:
-        return self._active.get(cid, 0)
+    async def _active_count_db(self, db, campaign_id) -> int:
+        """Count leads currently in 'calling' status from DB.
 
-    def _inc(self, cid: str):
-        self._active[cid] = self._active.get(cid, 0) + 1
-
-    def _dec(self, cid: str):
-        v = self._active.get(cid, 0)
-        self._active[cid] = max(0, v - 1)
+        Replaces the in-memory counter which got out of sync on deploys,
+        exceptions, and missed hangup callbacks.
+        """
+        result = await db.execute(
+            select(func.count()).where(
+                CampaignLead.campaign_id == campaign_id,
+                CampaignLead.status == "calling",
+            )
+        )
+        return result.scalar() or 0
 
     # ── Main cycle ─────────────────────────────────────────
 
@@ -116,10 +118,10 @@ class CampaignWorker:
             logger.info("[CAMPAIGN %s] Skipped: %s", short, reason)
             return
 
-        active = self._active_count(cid)
+        active = await self._active_count_db(db, campaign.id)
         slots = (campaign.max_concurrent_calls or 5) - active
         if slots <= 0:
-            logger.debug("[CAMPAIGN %s] No slots (active=%d, max=%d)", short, active, campaign.max_concurrent_calls)
+            logger.info("[CAMPAIGN %s] No slots (calling=%d, max=%d)", short, active, campaign.max_concurrent_calls)
             return
 
         agent = campaign.agent
@@ -247,7 +249,7 @@ class CampaignWorker:
             asyncio.create_task(self._warmup_llm(agent))
             asyncio.create_task(self._warmup_stt(agent))
 
-            self._inc(str(campaign.id))
+            # No in-memory counter — DB "calling" count is authoritative
 
             # Fire call via Plivo
             from app.services.voice_engine.plivo_handler import plivo_handler
@@ -268,7 +270,7 @@ class CampaignWorker:
                 if cl.attempt_count < campaign.max_retries:
                     cl.next_retry_at = datetime.utcnow() + timedelta(hours=campaign.retry_gap_hours)
                 campaign.calls_failed = (campaign.calls_failed or 0) + 1
-                self._dec(str(campaign.id))
+                # DB status already set — no counter to decrement
                 call_state_manager.remove(str(call_id))
                 await db.commit()
                 logger.warning(
@@ -325,9 +327,6 @@ class CampaignWorker:
                         cl.status = "failed"
                     if campaign:
                         campaign.calls_failed = (campaign.calls_failed or 0) + 1
-
-                if campaign:
-                    self._dec(str(campaign.id))
 
                 await db.commit()
                 logger.info(
