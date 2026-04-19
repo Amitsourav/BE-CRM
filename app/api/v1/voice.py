@@ -1063,6 +1063,15 @@ async def handle_hangup(
             call_id=call_id,
             transcript=state.get_full_transcript(),
         )
+    elif call and call.call_type == "ai_campaign":
+        # Unanswered/short campaign calls: no transcript but still need to
+        # update campaign_lead status. Without this, unanswered calls stay
+        # in "calling" forever because _save_summary_background never runs.
+        background_tasks.add_task(
+            _handle_campaign_call_ended,
+            call_id=call_id,
+            call_duration=call.call_duration_seconds or 0,
+        )
 
     if state:
         call_state_manager.remove(call_id)
@@ -1135,6 +1144,16 @@ async def end_call(
         "call_id": call_id,
         "duration": call.call_duration_seconds,
     }
+
+
+async def _handle_campaign_call_ended(call_id: str, call_duration: int):
+    """Update campaign_lead for unanswered/short calls with no transcript."""
+    try:
+        from app.workers.campaign_worker import campaign_worker
+        success = call_duration > 10
+        await campaign_worker.handle_call_completed(call_id, success)
+    except Exception as e:
+        logger.warning("campaign call ended handler failed: %s", e)
 
 
 async def _save_summary_background(call_id: str, transcript: str):
