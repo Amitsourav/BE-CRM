@@ -1178,10 +1178,15 @@ async def _save_summary_background(call_id: str, transcript: str):
             # ── Lead Status Auto-Update ──
             interest = post_call.get("interest_level", "low")
             sentiment = post_call.get("sentiment", "neutral")
-            await _auto_update_lead_stage(
-                db, call_id, str(call.lead_id), str(call.company_id),
-                sentiment, interest, call.call_status or "ended",
-            )
+            try:
+                await _auto_update_lead_stage(
+                    db, call_id, str(call.lead_id), str(call.company_id),
+                    sentiment, interest, call.call_status or "ended",
+                    call_agent_id=call.agent_id or call.telecaller_id,
+                )
+            except Exception as e:
+                logger.warning("lead stage update failed (non-fatal): %s", e)
+                await db.rollback()  # recover session for subsequent operations
 
             # ── Activity Log ──
             try:
@@ -1362,6 +1367,7 @@ async def _analyze_call(transcript: str) -> dict:
 async def _auto_update_lead_stage(
     db, call_id: str, lead_id: str, company_id: str,
     sentiment: str, interest_level: str, call_status: str,
+    call_agent_id=None,
 ):
     """Auto-update lead stage based on call outcome."""
     try:
@@ -1406,7 +1412,7 @@ async def _auto_update_lead_stage(
                 company_id=uuid.UUID(company_id),
                 from_stage=old_stage,
                 to_stage=new_stage,
-                changed_by=lead.assigned_agent_id or lead.id,  # system fallback
+                changed_by=lead.assigned_agent_id or call_agent_id,
                 conversation_notes=(
                     f"Auto-updated from AI call. "
                     f"Sentiment: {sentiment}, Interest: {interest_level}"
