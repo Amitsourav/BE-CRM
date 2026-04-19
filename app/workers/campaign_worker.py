@@ -118,20 +118,8 @@ class CampaignWorker:
             logger.info("[CAMPAIGN %s] Skipped: %s", short, reason)
             return
 
-        active = await self._active_count_db(db, campaign.id)
-        slots = (campaign.max_concurrent_calls or 5) - active
-        if slots <= 0:
-            logger.info("[CAMPAIGN %s] No slots (calling=%d, max=%d)", short, active, campaign.max_concurrent_calls)
-            return
-
-        agent = campaign.agent
-        if not agent:
-            logger.error("[CAMPAIGN %s] Agent missing", short)
-            return
-
-        # Recover stuck "calling" leads — if a lead has been "calling" for
-        # >5 minutes, the call likely failed silently (e.g. deploy during call,
-        # Plivo error not caught). Reset to "failed" so retry logic picks them up.
+        # Recover stuck "calling" leads FIRST — before checking slots.
+        # If a lead has been "calling" for >5 min, the call failed silently.
         now = datetime.utcnow()
         stuck_cutoff = now - timedelta(minutes=5)
         stuck_result = await db.execute(
@@ -150,6 +138,17 @@ class CampaignWorker:
                     s.next_retry_at = now + timedelta(minutes=1)
             await db.commit()
             logger.info("[CAMPAIGN %s] Recovered %d stuck leads", short, len(stuck))
+
+        active = await self._active_count_db(db, campaign.id)
+        slots = (campaign.max_concurrent_calls or 5) - active
+        if slots <= 0:
+            logger.info("[CAMPAIGN %s] No slots (calling=%d, max=%d)", short, active, campaign.max_concurrent_calls)
+            return
+
+        agent = campaign.agent
+        if not agent:
+            logger.error("[CAMPAIGN %s] Agent missing", short)
+            return
 
         # Pick leads: pending OR (failed + under retry limit + retry time passed)
         result = await db.execute(
