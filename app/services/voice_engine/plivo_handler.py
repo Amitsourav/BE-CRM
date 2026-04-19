@@ -168,15 +168,16 @@ class PlivoHandler:
     def verify_signature(
         self,
         url: str,
-        params: dict,
         signature: str,
+        nonce: str = "",
+        **_kwargs,
     ) -> bool:
-        """Verify Plivo webhook signature."""
+        """Verify Plivo webhook signature V2."""
         settings = get_settings()
         try:
             return plivo.utils.validate_signature(
-                url=url,
-                params=params,
+                uri=url,
+                nonce=nonce,
                 signature=signature,
                 auth_token=settings.plivo_auth_token,
             )

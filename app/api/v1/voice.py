@@ -109,14 +109,26 @@ def verify_plivo_webhook(request: Request) -> bool:
         return True
 
     signature = request.headers.get("X-Plivo-Signature-V2", "")
+    nonce = request.headers.get("X-Plivo-Signature-V2-Nonce", "")
     if not signature:
         return False
 
-    return plivo_handler.verify_signature(
-        url=str(request.url),
-        params=dict(request.query_params),
-        signature=signature,
-    )
+    # Reconstruct the public URL — behind Railway's proxy, request.url
+    # shows the internal address (http://0.0.0.0:8000/...) but Plivo
+    # signed with the public URL. Use backend_url + path + query.
+    public_url = f"{settings.backend_url}{request.url.path}"
+    if request.url.query:
+        public_url = f"{public_url}?{request.url.query}"
+
+    try:
+        return plivo_handler.verify_signature(
+            url=public_url,
+            signature=signature,
+            nonce=nonce,
+        )
+    except Exception as e:
+        logger.warning("Plivo signature check error: %s (url=%s)", e, public_url)
+        return False
 
 
 # ─────────────────────────────────────────────
