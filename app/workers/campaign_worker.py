@@ -119,6 +119,7 @@ class CampaignWorker:
         active = self._active_count(cid)
         slots = (campaign.max_concurrent_calls or 5) - active
         if slots <= 0:
+            logger.debug("[CAMPAIGN %s] No slots (active=%d, max=%d)", short, active, campaign.max_concurrent_calls)
             return
 
         agent = campaign.agent
@@ -126,8 +127,29 @@ class CampaignWorker:
             logger.error("[CAMPAIGN %s] Agent missing", short)
             return
 
-        # Pick leads: pending OR (failed + under retry limit + retry time passed)
+        # Recover stuck "calling" leads — if a lead has been "calling" for
+        # >5 minutes, the call likely failed silently (e.g. deploy during call,
+        # Plivo error not caught). Reset to "failed" so retry logic picks them up.
         now = datetime.utcnow()
+        stuck_cutoff = now - timedelta(minutes=5)
+        stuck_result = await db.execute(
+            select(CampaignLead).where(
+                CampaignLead.campaign_id == campaign.id,
+                CampaignLead.status == "calling",
+                CampaignLead.last_attempt_at < stuck_cutoff,
+            )
+        )
+        stuck = stuck_result.scalars().all()
+        if stuck:
+            for s in stuck:
+                s.status = "failed"
+                s.last_error = "Stuck in calling (recovered)"
+                if s.attempt_count < campaign.max_retries:
+                    s.next_retry_at = now + timedelta(minutes=1)
+            await db.commit()
+            logger.info("[CAMPAIGN %s] Recovered %d stuck leads", short, len(stuck))
+
+        # Pick leads: pending OR (failed + under retry limit + retry time passed)
         result = await db.execute(
             select(CampaignLead)
             .where(
@@ -148,6 +170,8 @@ class CampaignWorker:
             .limit(slots)
         )
         leads_to_call = result.scalars().all()
+
+        logger.info("[CAMPAIGN %s] slots=%d eligible_leads=%d", short, slots, len(leads_to_call))
 
         if not leads_to_call:
             await self._check_completion(db, campaign, short)
