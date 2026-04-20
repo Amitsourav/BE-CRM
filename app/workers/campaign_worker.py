@@ -309,6 +309,18 @@ class CampaignWorker:
                 )
                 campaign = result.scalar_one_or_none()
 
+                # Roll up call cost to campaign total
+                try:
+                    from app.models.call_attempt import CallAttempt
+                    call_result = await db.execute(
+                        select(CallAttempt.cost).where(CallAttempt.id == _uuid.UUID(call_id))
+                    )
+                    call_cost = call_result.scalar_one_or_none()
+                    if campaign and call_cost:
+                        campaign.total_cost_usd = (campaign.total_cost_usd or 0) + call_cost
+                except Exception:
+                    pass
+
                 if success:
                     cl.status = "completed"
                     cl.completed_at = datetime.utcnow()

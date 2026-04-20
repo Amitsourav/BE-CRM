@@ -217,6 +217,7 @@ async def get_campaign_leads(
                 "lead_id": str(cl.lead_id),
                 "lead_name": cl.lead.full_name if cl.lead else None,
                 "lead_phone": cl.lead.phone if cl.lead else None,
+                "lead_stage": cl.lead.current_stage if cl.lead else None,
                 "status": cl.status,
                 "attempt_count": cl.attempt_count,
                 "last_attempt_at": cl.last_attempt_at,

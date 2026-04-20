@@ -1157,14 +1157,25 @@ async def _handle_campaign_call_ended(call_id: str, call_duration: int):
 
 
 async def _save_summary_background(call_id: str, transcript: str):
-    """Post-call automation: summary + sentiment + cost + lead status update.
+    """Post-call automation — runs as background task after hangup.
 
-    Runs as a background task after Plivo gets its /hangup response.
-    Single LLM call produces summary, sentiment, and interest level together.
+    Single pipeline: LLM analysis → update call → update lead → stage
+    transition → notifications → follow-up task → campaign update.
     """
+    from app.models.lead import Lead
+    from app.models.task import Task
+    from app.models.notification import Notification
+    from app.services.pricing_service import calculate_agent_pricing
+    from app.utils.date_helpers import now_utc, add_business_days
+
     post_call = await _analyze_call(transcript)
+    sentiment = post_call.get("sentiment", "neutral")
+    interest = post_call.get("interest_level", "low")
+    summary = post_call.get("summary", "")
+
     try:
         async with AsyncSessionLocal() as db:
+            # ── Load call ──
             result = await db.execute(
                 select(CallAttempt).where(CallAttempt.id == uuid.UUID(call_id))
             )
@@ -1172,46 +1183,58 @@ async def _save_summary_background(call_id: str, transcript: str):
             if not call:
                 return
 
-            # ── Summary + Sentiment ──
-            call.summary = post_call.get("summary", "")
-            call.sentiment = post_call.get("sentiment", "neutral")
+            # ── Load lead ──
+            lead_result = await db.execute(select(Lead).where(Lead.id == call.lead_id))
+            lead = lead_result.scalar_one_or_none()
+
+            # ── Update call: summary + sentiment + cost ──
+            call.summary = summary
+            call.sentiment = sentiment
             call.sentiment_score = post_call.get("confidence", 0) / 100.0
 
-            # ── Cost Calculation ──
             if call.call_duration_seconds and call.ai_agent_id:
                 try:
-                    from app.services.pricing_service import calculate_agent_pricing
                     agent_result = await db.execute(
                         select(AIAgent).where(AIAgent.id == call.ai_agent_id)
                     )
                     agent = agent_result.scalar_one_or_none()
                     if agent:
                         pricing = calculate_agent_pricing(agent)
-                        minutes = call.call_duration_seconds / 60.0
-                        call.cost = round(pricing["total_usd"] * minutes, 4)
+                        call.cost = round(pricing["total_usd"] * call.call_duration_seconds / 60.0, 4)
                 except Exception as e:
                     logger.warning("cost calc failed for call %s: %s", call_id, e)
 
+            # ── Update lead tracking fields ──
+            if lead:
+                lead.call_attempt_count = Lead.call_attempt_count + 1
+                lead.last_contacted_at = now_utc()
+                if summary:
+                    ts = now_utc().strftime("%Y-%m-%d %H:%M")
+                    entry = f"\n\n--- AI Call ({ts}) ---\n{summary}\nSentiment: {sentiment} | Interest: {interest}"
+                    lead.notes = (lead.notes or "") + entry
+
             await db.commit()
 
-            # ── Lead Status Auto-Update ──
-            interest = post_call.get("interest_level", "low")
-            sentiment = post_call.get("sentiment", "neutral")
-            try:
-                await _auto_update_lead_stage(
-                    db, call_id, str(call.lead_id), str(call.company_id),
-                    sentiment, interest, call.call_status or "ended",
-                    call_agent_id=call.agent_id or call.telecaller_id,
-                )
-            except Exception as e:
-                logger.warning("lead stage update failed (non-fatal): %s", e)
-                await db.rollback()  # recover session for subsequent operations
+            # ── Lead stage auto-update ──
+            if lead and lead.current_stage not in ("won", "lost"):
+                try:
+                    call_agent = call.agent_id or call.telecaller_id
+                    await _auto_update_lead_stage(
+                        db, call, lead, sentiment, interest, summary,
+                        call_agent_id=call_agent,
+                    )
+                except Exception as e:
+                    logger.warning("lead stage update failed (non-fatal): %s", e)
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        pass
 
-            # ── Activity Log ──
+            # ── Activity log ──
             try:
-                activity = ActivityLog(
+                db.add(ActivityLog(
                     company_id=call.company_id,
-                    actor_id=None,  # system
+                    actor_id=None,
                     action="call_ended",
                     entity_type="call",
                     entity_id=call.id,
@@ -1221,22 +1244,21 @@ async def _save_summary_background(call_id: str, transcript: str):
                         "duration": call.call_duration_seconds,
                         "cost_usd": call.cost,
                     },
-                )
-                db.add(activity)
+                ))
                 await db.commit()
             except Exception as e:
                 logger.warning("activity log write failed: %s", e)
 
-            # ── Campaign Lead Update ──
+            # ── Campaign lead update ──
             if call.call_type == "ai_campaign":
                 try:
                     from app.workers.campaign_worker import campaign_worker
-                    success = (
+                    success = bool(
                         call.call_status == "ended"
                         and call.call_duration_seconds
                         and call.call_duration_seconds > 10
                     )
-                    await campaign_worker.handle_call_completed(call_id, bool(success))
+                    await campaign_worker.handle_call_completed(call_id, success)
                 except Exception as e:
                     logger.warning("campaign lead update failed: %s", e)
 
@@ -1383,82 +1405,137 @@ async def _analyze_call(transcript: str) -> dict:
     return empty
 
 
+_STAGE_ORDER = {"lead": 0, "called": 1, "connected": 2, "qualified_lead": 3, "won": 4, "lost": -1}
+
+
 async def _auto_update_lead_stage(
-    db, call_id: str, lead_id: str, company_id: str,
-    sentiment: str, interest_level: str, call_status: str,
-    call_agent_id=None,
+    db, call, lead, sentiment: str, interest_level: str,
+    call_summary: str = "", call_agent_id=None,
 ):
-    """Auto-update lead stage based on call outcome."""
-    try:
-        from app.models.lead import Lead
+    """Auto-update lead stage based on call outcome.
 
-        result = await db.execute(
-            select(Lead).where(Lead.id == uuid.UUID(lead_id))
-        )
-        lead = result.scalar_one_or_none()
-        if not lead:
-            return
+    Respects VALID_TRANSITIONS: lead→called→connected→qualified_lead→won.
+    Never moves backward. Never auto-marks lost. Steps through stages
+    one at a time (lead→called→connected, not lead→connected directly).
+    """
+    from app.models.lead import Lead
+    from app.models.task import Task
+    from app.models.notification import Notification
+    from app.utils.date_helpers import now_utc, add_business_days
 
-        old_stage = lead.current_stage
+    old_stage = lead.current_stage
+    call_connected = bool(
+        call.call_duration_seconds and call.call_duration_seconds > 0
+        and call.call_status == "ended"
+    )
 
-        # Don't touch won/lost leads
-        if old_stage in ("won", "lost"):
-            return
+    # Determine target stage
+    if not call_connected:
+        # No answer — at minimum mark as "called" (we tried)
+        target = "called"
+    elif sentiment == "positive" and interest_level == "high":
+        target = "qualified_lead"
+    elif sentiment == "positive" or call_connected:
+        target = "connected"
+    else:
+        target = "called"
 
-        # Determine new stage
-        new_stage = old_stage
-        if call_status == "failed" and old_stage == "lead":
-            new_stage = "called"
-        elif sentiment == "positive" and interest_level == "high":
-            if old_stage in ("lead", "called"):
-                new_stage = "qualified_lead"
-        elif sentiment == "positive":
-            if old_stage == "lead":
-                new_stage = "called"
-        elif sentiment == "negative":
-            if old_stage in ("lead", "called"):
-                new_stage = "connected"
-        elif sentiment == "neutral":
-            if old_stage == "lead":
-                new_stage = "called"
+    # Never move backward
+    if _STAGE_ORDER.get(target, 0) <= _STAGE_ORDER.get(old_stage, 0):
+        return
 
-        if new_stage != old_stage:
-            lead.current_stage = new_stage
+    # Step through stages one at a time
+    stage_path = ["lead", "called", "connected", "qualified_lead"]
+    start_idx = stage_path.index(old_stage) if old_stage in stage_path else -1
+    end_idx = stage_path.index(target) if target in stage_path else -1
+    if start_idx < 0 or end_idx < 0 or end_idx <= start_idx:
+        return
 
-            # Log stage change
-            stage_log = LeadStageLog(
-                lead_id=lead.id,
-                company_id=uuid.UUID(company_id),
-                from_stage=old_stage,
-                to_stage=new_stage,
-                changed_by=lead.assigned_agent_id or call_agent_id,
-                conversation_notes=(
-                    f"Auto-updated from AI call. "
-                    f"Sentiment: {sentiment}, Interest: {interest_level}"
-                ),
-            )
-            db.add(stage_log)
+    changed_by = call_agent_id or lead.assigned_agent_id
+    if not changed_by:
+        logger.warning("LEAD_AUTO_UPDATE skipped — no changed_by for lead %s", lead.id)
+        return
 
-            # Activity log
-            activity = ActivityLog(
-                company_id=uuid.UUID(company_id),
-                actor_id=None,
-                action="stage_changed",
-                entity_type="lead",
-                entity_id=lead.id,
-                new_values={
-                    "from": old_stage,
-                    "to": new_stage,
-                    "sentiment": sentiment,
-                    "call_id": call_id,
-                },
-            )
-            db.add(activity)
-            await db.commit()
+    company_id = lead.company_id
+    final_stage = old_stage
 
-            logger.info(
-                "LEAD_AUTO_UPDATE lead=%s %s→%s sentiment=%s interest=%s call=%s",
-                lead_id, old_stage, new_stage, sentiment, interest_level, call_id,
-            )
-    except Exception as e:
-        logger.warning("lead auto-update failed for %s: %s", lead_id, e)
+    for i in range(start_idx + 1, end_idx + 1):
+        from_stage = stage_path[i - 1]
+        to_stage = stage_path[i]
+
+        lead.current_stage = to_stage
+        final_stage = to_stage
+
+        # Set timestamps
+        if to_stage == "connected":
+            lead.connected_time = now_utc()
+        if to_stage == "qualified_lead":
+            lead.due_date = add_business_days(now_utc(), 1)
+
+        # Stage log for each step
+        db.add(LeadStageLog(
+            lead_id=lead.id,
+            company_id=company_id,
+            from_stage=from_stage,
+            to_stage=to_stage,
+            changed_by=changed_by,
+            conversation_notes=(
+                f"Auto: AI call. Sentiment={sentiment}, Interest={interest_level}"
+            ),
+        ))
+
+    # Activity log (one entry for the full transition)
+    db.add(ActivityLog(
+        company_id=company_id,
+        actor_id=None,
+        action="stage_changed",
+        entity_type="lead",
+        entity_id=lead.id,
+        new_values={
+            "from": old_stage, "to": final_stage,
+            "sentiment": sentiment, "interest": interest_level,
+            "call_id": str(call.id),
+        },
+    ))
+
+    # Notification to assigned agent
+    notify_user = lead.assigned_agent_id or changed_by
+    if notify_user:
+        db.add(Notification(
+            company_id=company_id,
+            user_id=notify_user,
+            type="stage_changed",
+            title=f"Lead moved: {old_stage} → {final_stage}",
+            message=f"{lead.full_name} auto-updated after AI call. Sentiment: {sentiment}.",
+            lead_id=lead.id,
+        ))
+
+    # Auto-create follow-up task for qualified leads
+    if final_stage == "qualified_lead":
+        assignee = lead.assigned_agent_id or changed_by
+        db.add(Task(
+            company_id=company_id,
+            lead_id=lead.id,
+            assigned_to=assignee,
+            created_by=assignee,
+            task_type="follow_up",
+            title=f"Follow up: {lead.full_name} — Qualified Lead",
+            description=f"AI call showed high interest. Summary: {call_summary[:300] if call_summary else 'N/A'}",
+            status="pending",
+            due_date=add_business_days(now_utc(), 1),
+        ))
+        db.add(Notification(
+            company_id=company_id,
+            user_id=assignee,
+            type="task_created",
+            title=f"Follow-up task: {lead.full_name}",
+            message="Auto-created for qualified lead after AI call.",
+            lead_id=lead.id,
+        ))
+
+    await db.commit()
+
+    logger.info(
+        "LEAD_AUTO_UPDATE lead=%s %s→%s sentiment=%s interest=%s call=%s",
+        str(lead.id)[:8], old_stage, final_stage, sentiment, interest_level, str(call.id)[:8],
+    )

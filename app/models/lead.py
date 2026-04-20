@@ -46,6 +46,7 @@ class Lead(Base, TimestampMixin):
     lead_source_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("lead_sources.id", ondelete="SET NULL"), nullable=True)
     call_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     due_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_contacted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     connected_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     won_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     lost_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

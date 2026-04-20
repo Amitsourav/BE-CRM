@@ -276,6 +276,7 @@ class CallService:
         for call in calls:
             call.lead_name = call.lead.full_name if call.lead else None
             call.lead_phone = call.lead.phone if call.lead else None
+            call.lead_stage = call.lead.current_stage if call.lead else None
             call.agent_name = call.ai_agent.name if call.ai_agent else None
         return calls
 
