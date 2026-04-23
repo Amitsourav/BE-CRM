@@ -128,6 +128,7 @@ async def test_agent_cannot_call_other_agents_lead(
     from app.core.constants import LeadStage
 
     lead = Lead(
+        company_id=agent2_user.company_id,
         full_name="Other Lead",
         phone="+919999999997",
         current_stage=LeadStage.LEAD,
@@ -181,6 +182,7 @@ async def test_cannot_exceed_max_attempts(agent_client, db_session, agent_user):
     from app.core.constants import LeadStage
 
     lead = Lead(
+        company_id=agent_user.company_id,
         full_name="Max Attempts Lead",
         phone="+919999999996",
         current_stage=LeadStage.CALLED,

@@ -40,7 +40,11 @@ class CallService:
         **extra_fields,
     ) -> CallAttempt:
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:
@@ -125,7 +129,11 @@ class CallService:
 
     async def get_calls_for_lead(self, lead_id: uuid.UUID, user: Profile) -> list[CallAttempt]:
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:
@@ -148,9 +156,13 @@ class CallService:
         """Create a new call record (for Bolna AI or live calls)."""
         lead_id = data["lead_id"]
 
-        # Verify lead exists in company
+        # Verify lead exists in company (and isn't soft-deleted)
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:
@@ -390,9 +402,13 @@ class CallService:
     # ── Internal helpers ──────────────────────────────────────────────
 
     async def _get_lead(self, lead_id: uuid.UUID) -> Lead:
-        """Get lead by ID, scoped to company."""
+        """Get lead by ID, scoped to company (excludes soft-deleted)."""
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import uuid
 import logging
-from datetime import datetime
 from typing import Optional, List
 
 from sqlalchemy import select, func
@@ -14,6 +13,7 @@ from app.models.campaign_lead import CampaignLead
 from app.models.lead import Lead
 from app.models.ai_agent import AIAgent
 from app.core.exceptions import NotFoundError, BadRequestError
+from app.utils.date_helpers import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -150,15 +150,27 @@ class CampaignService:
         if campaign.status not in ("draft", "paused", "scheduled"):
             raise BadRequestError(f"Cannot start {campaign.status} campaign")
 
-        count = (await self.db.execute(
-            select(func.count()).where(CampaignLead.campaign_id == campaign_id)
+        # Only count leads that are actually dialable:
+        # not soft-deleted, have a phone number, and haven't already been closed.
+        dialable = (await self.db.execute(
+            select(func.count())
+            .select_from(CampaignLead)
+            .join(Lead, Lead.id == CampaignLead.lead_id)
+            .where(
+                CampaignLead.campaign_id == campaign_id,
+                CampaignLead.status.in_(["pending", "queued", "failed"]),
+                Lead.is_deleted == False,  # noqa: E712
+                Lead.phone.isnot(None),
+            )
         )).scalar() or 0
-        if count == 0:
-            raise BadRequestError("No leads assigned to campaign")
+        if dialable == 0:
+            raise BadRequestError(
+                "No dialable leads assigned to campaign (must be non-deleted with a phone number)"
+            )
 
         campaign.status = "active"
         if not campaign.started_at:
-            campaign.started_at = datetime.utcnow()
+            campaign.started_at = now_utc()
         await self.db.commit()
         return campaign
 
@@ -173,16 +185,22 @@ class CampaignService:
     async def stop(self, campaign_id: uuid.UUID) -> Campaign:
         campaign = await self.get(campaign_id)
         campaign.status = "stopped"
-        campaign.completed_at = datetime.utcnow()
+        campaign.completed_at = now_utc()
         await self.db.commit()
         return campaign
 
     async def get_stats(self, campaign_id: uuid.UUID) -> dict:
         await self.get(campaign_id)  # verify access
 
+        # Exclude soft-deleted leads from stats so the dashboard reflects what
+        # the worker will actually dial — see the matching filter in campaign_worker.
         result = await self.db.execute(
             select(CampaignLead.status, func.count(CampaignLead.id))
-            .where(CampaignLead.campaign_id == campaign_id)
+            .join(Lead, Lead.id == CampaignLead.lead_id)
+            .where(
+                CampaignLead.campaign_id == campaign_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
             .group_by(CampaignLead.status)
         )
         stats = {s: 0 for s in ("pending", "queued", "calling", "completed", "failed", "dnd", "opted_out")}

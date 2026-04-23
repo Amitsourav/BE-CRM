@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 import logging
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.csv_import import CSVImport
 from app.models.lead import Lead
@@ -81,6 +81,34 @@ class CSVImportService:
         csv_import.lead_source_id = lead_source_id
         await self.db.commit()
 
+        # Serialize concurrent imports for the same company so the
+        # "check existing phones then insert" dance can't race between two
+        # uploads and produce duplicate leads. Advisory lock is cheap, scoped
+        # to this tenant, and released explicitly in the finally block.
+        lock_key = f"csv_import:{self.company_id}"
+        await self.db.execute(
+            text("SELECT pg_advisory_lock(hashtext(:key))"), {"key": lock_key}
+        )
+
+        try:
+            return await self._process_locked(
+                csv_import, user, column_mapping, content,
+                assigned_agent_id, lead_source_id,
+            )
+        finally:
+            await self.db.execute(
+                text("SELECT pg_advisory_unlock(hashtext(:key))"), {"key": lock_key}
+            )
+
+    async def _process_locked(
+        self,
+        csv_import: CSVImport,
+        user: Profile,
+        column_mapping: dict[str, str],
+        content: bytes,
+        assigned_agent_id: uuid.UUID | None,
+        lead_source_id: uuid.UUID | None,
+    ) -> CSVImport:
         headers, rows = parse_csv_content(content, self.settings.csv_max_rows)
 
         success = 0
@@ -137,15 +165,22 @@ class CSVImportService:
         existing_emails: set[str] = set()
 
         if all_phones:
-            from sqlalchemy import or_
             result = await self.db.execute(
-                select(Lead.phone).where(Lead.phone.in_(all_phones), Lead.company_id == self.company_id)
+                select(Lead.phone).where(
+                    Lead.phone.in_(all_phones),
+                    Lead.company_id == self.company_id,
+                    Lead.is_deleted == False,  # noqa: E712
+                )
             )
             existing_phones = {r[0] for r in result.fetchall() if r[0]}
 
         if all_emails:
             result = await self.db.execute(
-                select(Lead.email).where(Lead.email.in_(all_emails), Lead.company_id == self.company_id)
+                select(Lead.email).where(
+                    Lead.email.in_(all_emails),
+                    Lead.company_id == self.company_id,
+                    Lead.is_deleted == False,  # noqa: E712
+                )
             )
             existing_emails = {r[0] for r in result.fetchall() if r[0]}
 

@@ -36,7 +36,11 @@ class StageMachine:
         lost_reason: str | None = None,
     ) -> Lead:
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:
@@ -109,7 +113,11 @@ class StageMachine:
 
     async def get_stage_history(self, lead_id: uuid.UUID, user: Profile) -> list[LeadStageLog]:
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:

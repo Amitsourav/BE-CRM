@@ -114,6 +114,7 @@ async def test_get_today_tasks(agent_client, db_session, agent_user, sample_lead
     from app.core.constants import TaskStatus
 
     task = Task(
+        company_id=agent_user.company_id,
         lead_id=sample_lead.id,
         assigned_to=agent_user.id,
         created_by=agent_user.id,
@@ -141,6 +142,7 @@ async def test_get_completed_today(admin_client, db_session, admin_user):
     from app.core.constants import TaskStatus
 
     task = Task(
+        company_id=admin_user.company_id,
         assigned_to=admin_user.id,
         created_by=admin_user.id,
         task_type="other",

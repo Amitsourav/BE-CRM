@@ -56,6 +56,10 @@ async def admin_user(db_session: AsyncSession) -> Profile:
 async def agent_user(db_session: AsyncSession) -> Profile:
     result = await db_session.execute(select(Profile).where(Profile.id == AGENT_USER_ID))
     user = result.scalar_one()
+    # The live DB row has drifted to role=admin; tests assume a telecaller.
+    # The fixture rolls back its transaction, so this mutation doesn't escape.
+    user.role = UserRole.TELECALLER
+    await db_session.flush()
     return user
 
 
@@ -63,6 +67,8 @@ async def agent_user(db_session: AsyncSession) -> Profile:
 async def agent2_user(db_session: AsyncSession) -> Profile:
     result = await db_session.execute(select(Profile).where(Profile.id == AGENT2_USER_ID))
     user = result.scalar_one()
+    user.role = UserRole.TELECALLER
+    await db_session.flush()
     return user
 
 
@@ -121,8 +127,9 @@ async def unauth_client():
 # ── Data Fixtures ──────────────────────────────────────────────────────
 
 @pytest.fixture
-async def sample_lead_source(db_session: AsyncSession) -> LeadSource:
+async def sample_lead_source(db_session: AsyncSession, agent_user: Profile) -> LeadSource:
     source = LeadSource(
+        company_id=agent_user.company_id,
         name=f"Test Source {uuid.uuid4().hex[:8]}",
         source_type="manual",
         is_active=True,
@@ -135,6 +142,7 @@ async def sample_lead_source(db_session: AsyncSession) -> LeadSource:
 @pytest.fixture
 async def sample_lead(db_session: AsyncSession, agent_user: Profile, sample_lead_source: LeadSource) -> Lead:
     lead = Lead(
+        company_id=agent_user.company_id,
         full_name="Test Lead",
         email=f"lead-{uuid.uuid4().hex[:6]}@example.com",
         phone=f"+91{uuid.uuid4().int % 10**10:010d}",
@@ -150,6 +158,7 @@ async def sample_lead(db_session: AsyncSession, agent_user: Profile, sample_lead
     await db_session.flush()
 
     stage_log = LeadStageLog(
+        company_id=agent_user.company_id,
         lead_id=lead.id,
         from_stage=None,
         to_stage=LeadStage.LEAD,
@@ -163,6 +172,7 @@ async def sample_lead(db_session: AsyncSession, agent_user: Profile, sample_lead
 @pytest.fixture
 async def sample_lead_unassigned(db_session: AsyncSession, admin_user: Profile) -> Lead:
     lead = Lead(
+        company_id=admin_user.company_id,
         full_name="Unassigned Lead",
         email=f"unassigned-{uuid.uuid4().hex[:6]}@example.com",
         phone=f"+91{uuid.uuid4().int % 10**10:010d}",
@@ -178,6 +188,7 @@ async def sample_lead_unassigned(db_session: AsyncSession, admin_user: Profile) 
 @pytest.fixture
 async def called_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
     lead = Lead(
+        company_id=agent_user.company_id,
         full_name="Called Lead",
         phone=f"+91{uuid.uuid4().int % 10**10:010d}",
         current_stage=LeadStage.CALLED,
@@ -193,6 +204,7 @@ async def called_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
 @pytest.fixture
 async def connected_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
     lead = Lead(
+        company_id=agent_user.company_id,
         full_name="Connected Lead",
         phone=f"+91{uuid.uuid4().int % 10**10:010d}",
         current_stage=LeadStage.CONNECTED,
@@ -209,6 +221,7 @@ async def connected_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
 @pytest.fixture
 async def qualified_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
     lead = Lead(
+        company_id=agent_user.company_id,
         full_name="Qualified Lead",
         phone=f"+91{uuid.uuid4().int % 10**10:010d}",
         current_stage=LeadStage.QUALIFIED_LEAD,
@@ -225,6 +238,7 @@ async def qualified_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
 @pytest.fixture
 async def lost_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
     lead = Lead(
+        company_id=agent_user.company_id,
         full_name="Lost Lead",
         phone=f"+91{uuid.uuid4().int % 10**10:010d}",
         current_stage=LeadStage.LOST,
@@ -241,6 +255,7 @@ async def lost_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
 @pytest.fixture
 async def won_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
     lead = Lead(
+        company_id=agent_user.company_id,
         full_name="Won Lead",
         phone=f"+91{uuid.uuid4().int % 10**10:010d}",
         current_stage=LeadStage.WON,
@@ -257,6 +272,7 @@ async def won_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
 async def dnp_4_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
     """Lead with 4 DNP attempts — next DNP triggers warning."""
     lead = Lead(
+        company_id=agent_user.company_id,
         full_name="DNP Warning Lead",
         phone=f"+91{uuid.uuid4().int % 10**10:010d}",
         current_stage=LeadStage.CALLED,
@@ -273,6 +289,7 @@ async def dnp_4_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
 async def dnp_5_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
     """Lead with 5 DNP attempts — next DNP triggers auto-lost."""
     lead = Lead(
+        company_id=agent_user.company_id,
         full_name="DNP Auto-Lost Lead",
         phone=f"+91{uuid.uuid4().int % 10**10:010d}",
         current_stage=LeadStage.CALLED,
@@ -288,6 +305,7 @@ async def dnp_5_lead(db_session: AsyncSession, agent_user: Profile) -> Lead:
 @pytest.fixture
 async def sample_task(db_session: AsyncSession, agent_user: Profile, sample_lead: Lead) -> Task:
     task = Task(
+        company_id=agent_user.company_id,
         lead_id=sample_lead.id,
         assigned_to=agent_user.id,
         created_by=agent_user.id,
@@ -305,6 +323,7 @@ async def sample_task(db_session: AsyncSession, agent_user: Profile, sample_lead
 @pytest.fixture
 async def overdue_task(db_session: AsyncSession, agent_user: Profile, sample_lead: Lead) -> Task:
     task = Task(
+        company_id=agent_user.company_id,
         lead_id=sample_lead.id,
         assigned_to=agent_user.id,
         created_by=agent_user.id,
@@ -321,6 +340,7 @@ async def overdue_task(db_session: AsyncSession, agent_user: Profile, sample_lea
 @pytest.fixture
 async def sample_notification(db_session: AsyncSession, agent_user: Profile) -> Notification:
     notif = Notification(
+        company_id=agent_user.company_id,
         user_id=agent_user.id,
         type=NotificationType.GENERAL,
         title="Test Notification",
