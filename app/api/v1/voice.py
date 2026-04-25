@@ -1354,12 +1354,40 @@ async def _analyze_call(transcript: str) -> dict:
     """Single LLM call: summary + sentiment + interest level.
 
     Returns dict with keys: summary, sentiment, confidence, interest_level.
+
+    On failure, returns the empty default but with a marker summary so the
+    UI can distinguish 'AI didn't run' from 'AI ran and had nothing to say'.
+    Every failure path logs the actual root cause — the previous catch-all
+    exception swallowed JSON parse errors, rate limits, and auth failures
+    indistinguishably, leaving 'No summary available' in the dashboard with
+    no breadcrumb trail.
     """
-    empty = {"summary": "", "sentiment": "neutral", "confidence": 0, "interest_level": "low"}
+    import json as _json
+
+    def _empty(reason: str) -> dict:
+        # Marker prefix lets the FE detect 'AI failed' state without changing
+        # the schema. Reason is kept short for log greppability.
+        return {
+            "summary": f"[AI summary unavailable: {reason}]",
+            "sentiment": "neutral",
+            "confidence": 0,
+            "interest_level": "low",
+        }
+
     if not transcript:
-        return empty
+        return _empty("empty transcript")
+
+    # Guard rail — Sarvam STT occasionally returns 1-3 char transcripts on
+    # noisy / dropped calls. Asking the LLM to summarize "ok" produces noise.
+    if len(transcript.strip()) < 20:
+        logger.info("call analysis: transcript too short (%d chars), skipping LLM", len(transcript.strip()))
+        return _empty("transcript too short")
 
     settings = get_settings()
+    if not settings.openrouter_api_key:
+        logger.error("call analysis: OPENROUTER_API_KEY not configured")
+        return _empty("API key missing")
+
     try:
         client = get_openrouter_client()
         response = await client.post(
@@ -1389,20 +1417,86 @@ async def _analyze_call(transcript: str) -> dict:
                 "response_format": {"type": "json_object"},
             },
         )
-        if response.status_code == 200:
-            import json as _json
-            data = response.json()
-            text = data["choices"][0]["message"]["content"].strip()
-            result = _json.loads(text)
-            if result.get("sentiment") not in ("positive", "neutral", "negative"):
-                result["sentiment"] = "neutral"
-            if result.get("interest_level") not in ("high", "medium", "low"):
-                result["interest_level"] = "low"
-            return result
+    except httpx.TimeoutException as e:
+        logger.error("call analysis: OpenRouter timeout: %s", e)
+        return _empty("LLM timeout")
+    except httpx.HTTPError as e:
+        logger.error("call analysis: OpenRouter HTTP error: %s", e)
+        return _empty("LLM network error")
     except Exception as e:
-        logger.warning("call analysis failed: %s", e)
+        # Truly unexpected — let it surface in Sentry but still degrade gracefully.
+        logger.exception("call analysis: unexpected error calling OpenRouter: %s", e)
+        return _empty("LLM unexpected error")
 
-    return empty
+    # Distinguish HTTP-level failures (rate limit, auth, 5xx) from parse failures.
+    if response.status_code != 200:
+        body_preview = response.text[:300] if response.text else ""
+        logger.error(
+            "call analysis: OpenRouter returned %d for transcript len=%d. Body: %s",
+            response.status_code, len(transcript), body_preview,
+        )
+        if response.status_code == 401:
+            return _empty("LLM auth error")
+        if response.status_code == 429:
+            return _empty("LLM rate limited")
+        if response.status_code >= 500:
+            return _empty(f"LLM server error {response.status_code}")
+        return _empty(f"LLM HTTP {response.status_code}")
+
+    try:
+        data = response.json()
+        text = data["choices"][0]["message"]["content"].strip()
+    except (ValueError, KeyError, IndexError) as e:
+        logger.error(
+            "call analysis: malformed OpenRouter response: %s | preview=%s",
+            e, response.text[:300],
+        )
+        return _empty("LLM malformed response")
+
+    if not text:
+        logger.warning("call analysis: empty content in OpenRouter response")
+        return _empty("LLM empty response")
+
+    try:
+        result = _json.loads(text)
+    except _json.JSONDecodeError as e:
+        # Some models wrap JSON in markdown despite response_format=json_object.
+        # Try to extract once before giving up.
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        try:
+            result = _json.loads(cleaned)
+        except _json.JSONDecodeError:
+            logger.error(
+                "call analysis: LLM returned non-JSON: %s | preview=%s",
+                e, text[:300],
+            )
+            return _empty("LLM JSON parse error")
+
+    # Validate + sanitize — wrong values silently coerced to safe defaults.
+    if not isinstance(result, dict):
+        logger.error("call analysis: LLM returned non-dict: %r", text[:200])
+        return _empty("LLM bad shape")
+
+    summary = (result.get("summary") or "").strip()
+    if not summary:
+        # The LLM returned valid JSON but no summary — still better than nothing,
+        # log it so we can see if a particular model has this pattern.
+        logger.warning("call analysis: LLM returned empty summary for transcript len=%d", len(transcript))
+        result["summary"] = "[AI summary unavailable: LLM returned empty]"
+    if result.get("sentiment") not in ("positive", "neutral", "negative"):
+        result["sentiment"] = "neutral"
+    if result.get("interest_level") not in ("high", "medium", "low"):
+        result["interest_level"] = "low"
+
+    confidence = result.get("confidence", 0)
+    try:
+        result["confidence"] = max(0, min(100, int(confidence)))
+    except (TypeError, ValueError):
+        result["confidence"] = 0
+
+    return result
 
 
 _STAGE_ORDER = {"lead": 0, "called": 1, "connected": 2, "qualified_lead": 3, "won": 4, "lost": -1}
