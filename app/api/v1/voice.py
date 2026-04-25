@@ -1390,8 +1390,12 @@ async def _analyze_call(transcript: str) -> dict:
 
     try:
         client = get_openrouter_client()
+        # Path MUST include /api/v1 — get_openrouter_client uses base_url
+        # https://openrouter.ai (no /api/v1 prefix). Hitting just
+        # /chat/completions returns the OpenRouter marketing site's HTML,
+        # which is what was breaking every AI summary in production.
         response = await client.post(
-            "/chat/completions",
+            "/api/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {settings.openrouter_api_key}",
                 "Content-Type": "application/json",
