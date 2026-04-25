@@ -368,23 +368,31 @@ class ReportService:
             .group_by(cast(Lead.created_at, Date))
         )).all()
 
-        # Query 2: Won leads by date
+        # Query 2: Won leads by date (skip soft-deleted)
         won_rows = (await self.db.execute(
             select(
                 cast(Lead.won_time, Date).label("day"),
                 func.count().label("cnt"),
             )
-            .where(Lead.company_id == self.company_id, Lead.won_time >= start_date)
+            .where(
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                Lead.won_time >= start_date,
+            )
             .group_by(cast(Lead.won_time, Date))
         )).all()
 
-        # Query 3: Lost leads by date
+        # Query 3: Lost leads by date (skip soft-deleted)
         lost_rows = (await self.db.execute(
             select(
                 cast(Lead.lost_time, Date).label("day"),
                 func.count().label("cnt"),
             )
-            .where(Lead.company_id == self.company_id, Lead.lost_time >= start_date)
+            .where(
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                Lead.lost_time >= start_date,
+            )
             .group_by(cast(Lead.lost_time, Date))
         )).all()
 
