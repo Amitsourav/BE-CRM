@@ -46,25 +46,35 @@ async def list_campaigns(
 ):
     service = CampaignService(db, company_id)
     campaigns, total = await service.list(status=status, page=page, page_size=page_size)
+    # Progress is "fraction of unique leads we got in front of", not "attempts /
+    # leads". calls_made counts every dial including retries, so a campaign
+    # with max_retries=3 can have calls_made = 3 * total_leads and the old
+    # ratio went past 100% (the 115% screenshot). Cap at 100% and approximate
+    # progress as connected / total — connected is monotonic and unique-lead.
+    items = []
+    for c in campaigns:
+        attempts = c.calls_made or 0
+        connected = c.calls_connected or 0
+        total_leads_c = c.total_leads or 0
+        progress_pct = round(min(connected / total_leads_c * 100, 100.0), 1) if total_leads_c > 0 else 0
+        items.append({
+            "id": str(c.id),
+            "name": c.name,
+            "description": c.description,
+            "status": c.status,
+            "ai_agent_id": str(c.ai_agent_id),
+            "agent_name": c.agent.name if c.agent else None,
+            "total_leads": total_leads_c,
+            "calls_made": attempts,
+            "attempts": attempts,
+            "calls_connected": connected,
+            "calls_failed": c.calls_failed or 0,
+            "created_at": c.created_at,
+            "started_at": c.started_at,
+            "progress_pct": progress_pct,
+        })
     return {
-        "items": [
-            {
-                "id": str(c.id),
-                "name": c.name,
-                "description": c.description,
-                "status": c.status,
-                "ai_agent_id": str(c.ai_agent_id),
-                "agent_name": c.agent.name if c.agent else None,
-                "total_leads": c.total_leads,
-                "calls_made": c.calls_made,
-                "calls_connected": c.calls_connected,
-                "calls_failed": c.calls_failed,
-                "created_at": c.created_at,
-                "started_at": c.started_at,
-                "progress_pct": round(c.calls_made / c.total_leads * 100, 1) if c.total_leads > 0 else 0,
-            }
-            for c in campaigns
-        ],
+        "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -108,14 +118,19 @@ async def get_campaign(
         "max_retries": campaign.max_retries,
         "retry_gap_hours": campaign.retry_gap_hours,
         "max_concurrent_calls": campaign.max_concurrent_calls,
-        # Top-level stats (frontend reads these for the overview cards)
+        # Top-level stats (frontend reads these for the overview cards).
+        # See list_campaigns above for why progress is connected/total, capped.
         "total_leads": total,
         "calls_made": campaign.calls_made or 0,
+        "attempts": campaign.calls_made or 0,
         "calls_connected": campaign.calls_connected or 0,
         "calls_failed": campaign.calls_failed or 0,
         "total_cost": campaign.total_cost_usd or 0,
         "estimated_cost_inr": estimated_cost,
-        "progress_pct": round((campaign.calls_made or 0) / total * 100, 1) if total > 0 else 0,
+        "progress_pct": (
+            round(min((campaign.calls_connected or 0) / total * 100, 100.0), 1)
+            if total > 0 else 0
+        ),
         # Detailed breakdown
         "stats": stats,
         "created_at": campaign.created_at,

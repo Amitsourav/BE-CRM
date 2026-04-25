@@ -24,13 +24,17 @@ class ReportService:
     async def dashboard(self) -> dict:
         today_start = start_of_today()
 
-        # Query 1: All lead stats in one query (total, new today, by stage)
+        # Query 1: All lead stats in one query (total, new today, by stage).
+        # Soft-deleted leads must not inflate dashboard totals.
         lead_rows = (await self.db.execute(
             select(
                 Lead.current_stage,
                 func.count().label("cnt"),
                 func.count(case((Lead.created_at >= today_start, 1))).label("new_today"),
-            ).where(Lead.company_id == self.company_id).group_by(Lead.current_stage)
+            ).where(
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            ).group_by(Lead.current_stage)
         )).all()
 
         leads_by_stage = {}
@@ -60,8 +64,13 @@ class ReportService:
             ).where(Profile.role == UserRole.TELECALLER, Profile.company_id == self.company_id)
         )).one()
 
+        # Win-rate of closed deals, not "wins as a fraction of every lead in the
+        # pipeline". The latter looked permanently near-zero because a healthy
+        # pipeline is mostly open leads.
         won = leads_by_stage.get(LeadStage.WON, 0)
-        conversion_rate = (won / total * 100) if total > 0 else 0.0
+        lost = leads_by_stage.get(LeadStage.LOST, 0)
+        closed = won + lost
+        conversion_rate = (won / closed * 100) if closed > 0 else 0.0
 
         return {
             "total_leads": total,
@@ -80,7 +89,10 @@ class ReportService:
     async def pipeline(self) -> dict:
         stage_counts = (await self.db.execute(
             select(Lead.current_stage, func.count())
-            .where(Lead.company_id == self.company_id)
+            .where(
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
             .group_by(Lead.current_stage)
         )).all()
 
@@ -108,14 +120,18 @@ class ReportService:
 
         agent_ids = [a.id for a in agents]
 
-        # Batch query 1: Leads by stage per agent
+        # Batch query 1: Leads by stage per agent (skip soft-deleted).
         lead_rows = (await self.db.execute(
             select(
                 Lead.assigned_agent_id,
                 Lead.current_stage,
                 func.count().label("cnt"),
             )
-            .where(Lead.assigned_agent_id.in_(agent_ids))
+            .where(
+                Lead.assigned_agent_id.in_(agent_ids),
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
             .group_by(Lead.assigned_agent_id, Lead.current_stage)
         )).all()
 
@@ -124,15 +140,22 @@ class ReportService:
         for row in lead_rows:
             lead_map[row.assigned_agent_id][row.current_stage] = row.cnt
 
-        # Batch query 2: Call stats per agent
+        # Batch query 2: Call stats per agent.
+        # call_status is the authoritative outcome (set by webhooks). disposition
+        # is hardcoded to "connected" by the campaign worker for AI calls, so
+        # using it for connected/dnp would silently inflate AI campaigns and
+        # hide DNP entirely. Use started_at (caller picked up) for connected.
         call_rows = (await self.db.execute(
             select(
                 CallAttempt.agent_id,
                 func.count().label("total"),
                 func.count(case((CallAttempt.disposition == CallDisposition.DNP, 1))).label("dnp"),
-                func.count(case((CallAttempt.disposition == CallDisposition.CONNECTED, 1))).label("connected"),
+                func.count(case((CallAttempt.started_at.isnot(None), 1))).label("connected"),
             )
-            .where(CallAttempt.agent_id.in_(agent_ids))
+            .where(
+                CallAttempt.agent_id.in_(agent_ids),
+                CallAttempt.company_id == self.company_id,
+            )
             .group_by(CallAttempt.agent_id)
         )).all()
 
@@ -150,7 +173,10 @@ class ReportService:
                 func.count(case((Task.status == TaskStatus.COMPLETED, 1))).label("completed"),
                 func.count(case((Task.status == TaskStatus.OVERDUE, 1))).label("overdue"),
             )
-            .where(Task.assigned_to.in_(agent_ids))
+            .where(
+                Task.assigned_to.in_(agent_ids),
+                Task.company_id == self.company_id,
+            )
             .group_by(Task.assigned_to)
         )).all()
 
@@ -168,8 +194,11 @@ class ReportService:
             calls = call_map.get(agent.id, {"total": 0, "dnp": 0, "connected": 0})
             tasks = task_map.get(agent.id, {"total": 0, "completed": 0, "overdue": 0})
 
+            # Win-rate among closed deals (won + lost), not pipeline-wide.
             won = leads_by_stage.get(LeadStage.WON, 0)
-            conversion_rate = (won / total_leads * 100) if total_leads > 0 else 0.0
+            lost = leads_by_stage.get(LeadStage.LOST, 0)
+            closed = won + lost
+            conversion_rate = (won / closed * 100) if closed > 0 else 0.0
 
             summaries.append({
                 "agent_id": agent.id,
@@ -197,21 +226,32 @@ class ReportService:
             from app.core.exceptions import NotFoundError
             raise NotFoundError("Agent not found")
 
-        # For a single agent, use the same batch approach with 1 agent
+        # For a single agent, use the same batch approach with 1 agent.
+        # Tenant filter is required even though agent.company_id == self.company_id
+        # — joined tables (leads, calls, tasks) must enforce tenant isolation
+        # independently in case agent_id is ever reused across tenants.
         stage_counts = (await self.db.execute(
             select(Lead.current_stage, func.count())
-            .where(Lead.assigned_agent_id == agent.id)
+            .where(
+                Lead.assigned_agent_id == agent.id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
             .group_by(Lead.current_stage)
         )).all()
         leads_by_stage = {stage: count for stage, count in stage_counts}
         total_leads = sum(leads_by_stage.values())
 
+        # Same call_status / started_at fix as agents_summary above.
         call_row = (await self.db.execute(
             select(
                 func.count().label("total"),
                 func.count(case((CallAttempt.disposition == CallDisposition.DNP, 1))).label("dnp"),
-                func.count(case((CallAttempt.disposition == CallDisposition.CONNECTED, 1))).label("connected"),
-            ).where(CallAttempt.agent_id == agent.id)
+                func.count(case((CallAttempt.started_at.isnot(None), 1))).label("connected"),
+            ).where(
+                CallAttempt.agent_id == agent.id,
+                CallAttempt.company_id == self.company_id,
+            )
         )).one()
 
         task_row = (await self.db.execute(
@@ -219,11 +259,17 @@ class ReportService:
                 func.count().label("total"),
                 func.count(case((Task.status == TaskStatus.COMPLETED, 1))).label("completed"),
                 func.count(case((Task.status == TaskStatus.OVERDUE, 1))).label("overdue"),
-            ).where(Task.assigned_to == agent.id)
+            ).where(
+                Task.assigned_to == agent.id,
+                Task.company_id == self.company_id,
+            )
         )).one()
 
+        # Win-rate among closed deals.
         won = leads_by_stage.get(LeadStage.WON, 0)
-        conversion_rate = (won / total_leads * 100) if total_leads > 0 else 0.0
+        lost = leads_by_stage.get(LeadStage.LOST, 0)
+        closed = won + lost
+        conversion_rate = (won / closed * 100) if closed > 0 else 0.0
 
         return {
             "agent_id": agent.id,
@@ -242,6 +288,10 @@ class ReportService:
     # ── Sources: 61 queries → 1 ───────────────────────────────────────
 
     async def sources(self) -> list[dict]:
+        # Move tenant + soft-delete filters into the JOIN's ON clause so
+        # sources with zero matching leads still appear (they keep total=0,
+        # not vanish). Putting these filters in WHERE would convert the
+        # outer join into an inner join and hide unused sources.
         rows = (await self.db.execute(
             select(
                 LeadSource.id,
@@ -250,7 +300,12 @@ class ReportService:
                 func.count(case((Lead.current_stage == LeadStage.WON, Lead.id))).label("won"),
                 func.count(case((Lead.current_stage == LeadStage.LOST, Lead.id))).label("lost"),
             )
-            .outerjoin(Lead, Lead.lead_source_id == LeadSource.id)
+            .outerjoin(
+                Lead,
+                (Lead.lead_source_id == LeadSource.id)
+                & (Lead.company_id == self.company_id)
+                & (Lead.is_deleted == False),  # noqa: E712
+            )
             .where(LeadSource.company_id == self.company_id)
             .group_by(LeadSource.id, LeadSource.name)
             .order_by(LeadSource.name)
@@ -258,13 +313,16 @@ class ReportService:
 
         stats = []
         for row in rows:
+            # Conversion = wins / closed deals from this source.
+            closed = (row.won or 0) + (row.lost or 0)
+            conv = (row.won / closed * 100) if closed > 0 else 0.0
             stats.append({
                 "source_id": row.id,
                 "source_name": row.name,
-                "total_leads": row.total,
-                "won": row.won,
-                "lost": row.lost,
-                "conversion_rate": round((row.won / row.total * 100) if row.total > 0 else 0, 2),
+                "total_leads": row.total or 0,
+                "won": row.won or 0,
+                "lost": row.lost or 0,
+                "conversion_rate": round(conv, 2),
             })
         return stats
 
@@ -296,13 +354,17 @@ class ReportService:
             hour=0, minute=0, second=0, microsecond=0
         )
 
-        # Query 1: New leads by date
+        # Query 1: New leads by date (skip soft-deleted)
         new_rows = (await self.db.execute(
             select(
                 cast(Lead.created_at, Date).label("day"),
                 func.count().label("cnt"),
             )
-            .where(Lead.company_id == self.company_id, Lead.created_at >= start_date)
+            .where(
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                Lead.created_at >= start_date,
+            )
             .group_by(cast(Lead.created_at, Date))
         )).all()
 

@@ -340,11 +340,19 @@ class CallService:
         if date_to:
             filters.append(func.date(CallAttempt.created_at) <= date_to)
 
-        # Main stats in one query
+        # Main stats in one query.
+        #
+        # call_status is a *lifecycle* column: initiated → ringing → connected
+        # → ended. After hangup it becomes 'ended' and stays there. Counting
+        # rows where call_status == 'connected' therefore returns only the
+        # tiny set of calls happening at this exact moment, not "successfully
+        # connected calls ever". The reliable signal that a call actually
+        # connected is started_at being non-null — set when the caller picks
+        # up. Failed dispatches and unanswered rings never set it.
         row = (await self.db.execute(
             select(
                 func.count().label("total"),
-                func.count().filter(CallAttempt.call_status == "connected").label("connected"),
+                func.count().filter(CallAttempt.started_at.isnot(None)).label("connected"),
                 func.count().filter(CallAttempt.call_status == "failed").label("failed"),
                 func.count().filter(CallAttempt.call_status == "no_answer").label("no_answer"),
                 func.avg(CallAttempt.call_duration_seconds).label("avg_duration"),
