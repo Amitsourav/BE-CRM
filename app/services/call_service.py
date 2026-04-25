@@ -40,7 +40,11 @@ class CallService:
         **extra_fields,
     ) -> CallAttempt:
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:
@@ -125,7 +129,11 @@ class CallService:
 
     async def get_calls_for_lead(self, lead_id: uuid.UUID, user: Profile) -> list[CallAttempt]:
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:
@@ -148,9 +156,13 @@ class CallService:
         """Create a new call record (for Bolna AI or live calls)."""
         lead_id = data["lead_id"]
 
-        # Verify lead exists in company
+        # Verify lead exists in company (and isn't soft-deleted)
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:
@@ -328,11 +340,19 @@ class CallService:
         if date_to:
             filters.append(func.date(CallAttempt.created_at) <= date_to)
 
-        # Main stats in one query
+        # Main stats in one query.
+        #
+        # call_status is a *lifecycle* column: initiated → ringing → connected
+        # → ended. After hangup it becomes 'ended' and stays there. Counting
+        # rows where call_status == 'connected' therefore returns only the
+        # tiny set of calls happening at this exact moment, not "successfully
+        # connected calls ever". The reliable signal that a call actually
+        # connected is started_at being non-null — set when the caller picks
+        # up. Failed dispatches and unanswered rings never set it.
         row = (await self.db.execute(
             select(
                 func.count().label("total"),
-                func.count().filter(CallAttempt.call_status == "connected").label("connected"),
+                func.count().filter(CallAttempt.started_at.isnot(None)).label("connected"),
                 func.count().filter(CallAttempt.call_status == "failed").label("failed"),
                 func.count().filter(CallAttempt.call_status == "no_answer").label("no_answer"),
                 func.avg(CallAttempt.call_duration_seconds).label("avg_duration"),
@@ -390,9 +410,13 @@ class CallService:
     # ── Internal helpers ──────────────────────────────────────────────
 
     async def _get_lead(self, lead_id: uuid.UUID) -> Lead:
-        """Get lead by ID, scoped to company."""
+        """Get lead by ID, scoped to company (excludes soft-deleted)."""
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:

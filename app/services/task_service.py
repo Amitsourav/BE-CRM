@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 import logging
+from datetime import timedelta
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.task import Task
@@ -10,7 +11,7 @@ from app.models.profile import Profile
 from app.models.notification import Notification
 from app.core.constants import TaskStatus, UserRole, NotificationType
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
-from app.utils.date_helpers import now_utc, start_of_today, end_of_today
+from app.utils.date_helpers import now_utc, start_of_today, end_of_today, add_business_days
 from app.utils.pagination import paginate
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,12 @@ class TaskService:
     async def create_task(self, data: dict, created_by: uuid.UUID) -> Task:
         assigned_to = data.get("assigned_to") or created_by
         data["company_id"] = self.company_id
+        # due_date is NOT NULL in the DB. The public API enforces it via the
+        # TaskCreate Pydantic schema, but internal callers (e.g. stage machine
+        # hooks) pass a plain dict — default to one business day out so a
+        # missing key doesn't produce a cryptic IntegrityError at insert time.
+        if not data.get("due_date"):
+            data["due_date"] = add_business_days(now_utc(), 1)
         task = Task(**data, created_by=created_by, assigned_to=assigned_to)
         self.db.add(task)
 
@@ -136,7 +143,11 @@ class TaskService:
 
     async def get_tasks_for_lead(self, lead_id: uuid.UUID, user: Profile) -> list[Task]:
         result = await self.db.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
         )
         lead = result.scalar_one_or_none()
         if not lead:

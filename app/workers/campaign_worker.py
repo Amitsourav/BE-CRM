@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import pytz
-from sqlalchemy import select, or_, and_, func
+from sqlalchemy import select, or_, and_, func, update as sql_update
 from sqlalchemy.orm import selectinload
 
 from app.db.session import AsyncSessionLocal
@@ -26,6 +26,9 @@ from app.models.campaign_lead import CampaignLead
 from app.models.lead import Lead
 from app.models.ai_agent import AIAgent
 from app.models.call_attempt import CallAttempt
+from app.models.notification import Notification
+from app.core.constants import NotificationType
+from app.utils.date_helpers import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +57,12 @@ class CampaignWorker:
             if not (start <= current_time <= end):
                 return False, f"outside hours ({current_time.strftime('%H:%M')} not in {start}-{end})"
 
-        # Campaign date range
-        now_naive = now.replace(tzinfo=None)
-        if campaign.start_date and now_naive < campaign.start_date:
+        # Campaign date range — compare tz-aware to tz-aware.
+        # SQLAlchemy + asyncpg returns TIMESTAMPTZ columns as aware datetimes,
+        # so no .replace(tzinfo=None) is needed.
+        if campaign.start_date and now < campaign.start_date:
             return False, f"before start_date ({campaign.start_date})"
-        if campaign.end_date and now_naive > campaign.end_date:
+        if campaign.end_date and now > campaign.end_date:
             return False, f"after end_date ({campaign.end_date})"
 
         return True, "ok"
@@ -120,7 +124,7 @@ class CampaignWorker:
 
         # Recover stuck "calling" leads FIRST — before checking slots.
         # If a lead has been "calling" for >5 min, the call failed silently.
-        now = datetime.utcnow()
+        now = now_utc()
         stuck_cutoff = now - timedelta(minutes=5)
         stuck_result = await db.execute(
             select(CampaignLead).where(
@@ -146,15 +150,29 @@ class CampaignWorker:
             return
 
         agent = campaign.agent
-        if not agent:
-            logger.error("[CAMPAIGN %s] Agent missing", short)
+        if not agent or not getattr(agent, "is_active", True) or getattr(agent, "deleted_at", None) is not None:
+            await self._pause_for_missing_agent(db, campaign, short)
+            return
+
+        if campaign.created_by is None:
+            # agent_id on call_attempts is NOT NULL and must point at a real profile.
+            # Without a creator we have no one to attribute the call to.
+            await self._pause_for_missing_agent(
+                db, campaign, short,
+                message="Campaign has no creator — cannot dispatch calls. Reassign before resuming.",
+                title="Campaign paused — no owner",
+            )
             return
 
         # Pick leads: pending OR (failed + under retry limit + retry time passed)
+        # Join to leads so soft-deleted / phone-less leads are skipped entirely.
         result = await db.execute(
             select(CampaignLead)
+            .join(Lead, Lead.id == CampaignLead.lead_id)
             .where(
                 CampaignLead.campaign_id == campaign.id,
+                Lead.is_deleted == False,  # noqa: E712
+                Lead.phone.isnot(None),
                 or_(
                     CampaignLead.status == "pending",
                     and_(
@@ -185,24 +203,28 @@ class CampaignWorker:
     # ── Dispatch a single call ─────────────────────────────
 
     async def _dispatch_call(self, db, campaign, cl: CampaignLead, agent: AIAgent, short: str):
+        call_id: Optional[_uuid.UUID] = None
+        committed_calling = False
         try:
             # Load lead
             result = await db.execute(select(Lead).where(Lead.id == cl.lead_id))
             lead = result.scalar_one_or_none()
-            if not lead or not lead.phone:
+            if not lead or not lead.phone or lead.is_deleted:
                 cl.status = "failed"
-                cl.last_error = "No phone number"
+                cl.last_error = "No phone number" if (lead and not lead.phone) else "Lead unavailable"
                 await db.commit()
                 return
 
             call_id = _uuid.uuid4()
+            dispatched_at = now_utc()
 
-            # Create CallAttempt
+            # Create CallAttempt — agent_id must be a real profile; campaign.created_by is
+            # guaranteed non-null here (checked in _process_campaign).
             call = CallAttempt(
                 id=call_id,
                 company_id=campaign.company_id,
                 lead_id=lead.id,
-                agent_id=campaign.created_by or lead.id,  # fallback
+                agent_id=campaign.created_by,
                 telecaller_id=campaign.created_by,
                 ai_agent_id=agent.id,
                 phone_number=lead.phone,
@@ -212,17 +234,22 @@ class CampaignWorker:
                 agent_agenda="",
                 call_type="ai_campaign",
                 call_status="initiated",
-                started_at=datetime.utcnow(),
+                started_at=dispatched_at,
             )
             db.add(call)
 
-            # Update campaign lead
+            # Update campaign lead + atomic counter bump (avoids read-modify-write drift).
             cl.status = "calling"
             cl.attempt_count += 1
-            cl.last_attempt_at = datetime.utcnow()
+            cl.last_attempt_at = dispatched_at
             cl.last_call_id = call_id
-            campaign.calls_made = (campaign.calls_made or 0) + 1
+            await db.execute(
+                sql_update(Campaign)
+                .where(Campaign.id == campaign.id)
+                .values(calls_made=Campaign.calls_made + 1)
+            )
             await db.commit()
+            committed_calling = True
 
             # Create in-memory call state for voice pipeline
             from app.services.voice_engine.call_state import call_state_manager
@@ -236,10 +263,17 @@ class CampaignWorker:
                 )
                 state.agent = agent
             except RuntimeError:
-                # Global concurrent cap hit
-                cl.status = "pending" if cl.attempt_count <= 1 else "failed"
+                # Global concurrent cap hit — rewind
+                cl.status = "pending"
                 cl.attempt_count = max(0, cl.attempt_count - 1)
-                campaign.calls_made = max(0, (campaign.calls_made or 1) - 1)
+                cl.last_attempt_at = None
+                cl.last_call_id = None
+                await db.execute(
+                    sql_update(Campaign)
+                    .where(Campaign.id == campaign.id)
+                    .values(calls_made=func.greatest(Campaign.calls_made - 1, 0))
+                )
+                await db.delete(call)
                 await db.commit()
                 return
 
@@ -247,8 +281,6 @@ class CampaignWorker:
             asyncio.create_task(self._pregen_welcome(state, agent, lead))
             asyncio.create_task(self._warmup_llm(agent))
             asyncio.create_task(self._warmup_stt(agent))
-
-            # No in-memory counter — DB "calling" count is authoritative
 
             # Fire call via Plivo
             from app.services.voice_engine.plivo_handler import plivo_handler
@@ -267,9 +299,12 @@ class CampaignWorker:
                 cl.last_error = plivo_response.get("error", "Plivo error")
                 cl.last_call_status = "failed"
                 if cl.attempt_count < campaign.max_retries:
-                    cl.next_retry_at = datetime.utcnow() + timedelta(hours=campaign.retry_gap_hours)
-                campaign.calls_failed = (campaign.calls_failed or 0) + 1
-                # DB status already set — no counter to decrement
+                    cl.next_retry_at = dispatched_at + timedelta(hours=campaign.retry_gap_hours)
+                await db.execute(
+                    sql_update(Campaign)
+                    .where(Campaign.id == campaign.id)
+                    .values(calls_failed=Campaign.calls_failed + 1)
+                )
                 call_state_manager.remove(str(call_id))
                 await db.commit()
                 logger.warning(
@@ -288,8 +323,68 @@ class CampaignWorker:
             )
 
         except Exception as e:
-            logger.error("[CAMPAIGN %s] Dispatch error: %s", short, e)
+            logger.exception("[CAMPAIGN %s] Dispatch error: %s", short, e)
             await db.rollback()
+            # If we already committed with status='calling', the rollback above
+            # won't undo it. Explicitly mark the lead failed + schedule retry so
+            # it doesn't stay stuck occupying a slot until the 5-min sweep.
+            if committed_calling and call_id is not None:
+                try:
+                    await db.execute(
+                        sql_update(CampaignLead)
+                        .where(CampaignLead.id == cl.id)
+                        .values(
+                            status="failed",
+                            last_error=f"Dispatch error: {e}"[:500],
+                            last_call_status="failed",
+                            next_retry_at=(
+                                now_utc() + timedelta(hours=campaign.retry_gap_hours)
+                                if cl.attempt_count < campaign.max_retries else None
+                            ),
+                        )
+                    )
+                    await db.execute(
+                        sql_update(Campaign)
+                        .where(Campaign.id == campaign.id)
+                        .values(calls_failed=Campaign.calls_failed + 1)
+                    )
+                    # Drop the in-memory state if we created it
+                    from app.services.voice_engine.call_state import call_state_manager
+                    call_state_manager.remove(str(call_id))
+                    await db.commit()
+                except Exception:
+                    logger.exception("[CAMPAIGN %s] Failed to mark lead as failed after dispatch error", short)
+                    await db.rollback()
+
+    async def _pause_for_missing_agent(
+        self,
+        db,
+        campaign: Campaign,
+        short: str,
+        *,
+        title: str = "Campaign paused — agent unavailable",
+        message: Optional[str] = None,
+    ):
+        """Pause the campaign and notify its creator when the agent is gone.
+
+        Without this, the worker would silently skip every cycle and the user
+        would have no visible signal that the campaign stopped making progress.
+        """
+        if campaign.status != "paused":
+            campaign.status = "paused"
+        if campaign.created_by is not None:
+            db.add(Notification(
+                company_id=campaign.company_id,
+                user_id=campaign.created_by,
+                type=NotificationType.GENERAL.value,
+                title=title,
+                message=message or (
+                    f"Campaign '{campaign.name}' was paused because its AI agent is "
+                    f"missing or inactive. Reassign an agent and resume the campaign."
+                ),
+            ))
+        await db.commit()
+        logger.error("[CAMPAIGN %s] Paused — agent missing or inactive", short)
 
     # ── Call completion hook (called from hangup handler) ──
 
@@ -309,35 +404,46 @@ class CampaignWorker:
                 )
                 campaign = result.scalar_one_or_none()
 
-                # Roll up call cost to campaign total
+                now = now_utc()
+
+                # Roll up call cost to campaign total (atomic SQL increment)
                 try:
-                    from app.models.call_attempt import CallAttempt
                     call_result = await db.execute(
                         select(CallAttempt.cost).where(CallAttempt.id == _uuid.UUID(call_id))
                     )
                     call_cost = call_result.scalar_one_or_none()
                     if campaign and call_cost:
-                        campaign.total_cost_usd = (campaign.total_cost_usd or 0) + call_cost
+                        await db.execute(
+                            sql_update(Campaign)
+                            .where(Campaign.id == campaign.id)
+                            .values(total_cost_usd=Campaign.total_cost_usd + float(call_cost))
+                        )
                 except Exception:
-                    pass
+                    logger.exception("[CAMPAIGN] Failed to roll up call cost for %s", call_id)
 
                 if success:
                     cl.status = "completed"
-                    cl.completed_at = datetime.utcnow()
+                    cl.completed_at = now
                     cl.last_call_status = "completed"
                     if campaign:
-                        campaign.calls_connected = (campaign.calls_connected or 0) + 1
+                        await db.execute(
+                            sql_update(Campaign)
+                            .where(Campaign.id == campaign.id)
+                            .values(calls_connected=Campaign.calls_connected + 1)
+                        )
                 else:
                     cl.last_call_status = "failed"
+                    cl.status = "failed"
                     if cl.attempt_count < (campaign.max_retries if campaign else 3):
-                        cl.status = "failed"
-                        cl.next_retry_at = datetime.utcnow() + timedelta(
+                        cl.next_retry_at = now + timedelta(
                             hours=(campaign.retry_gap_hours if campaign else 2)
                         )
-                    else:
-                        cl.status = "failed"
                     if campaign:
-                        campaign.calls_failed = (campaign.calls_failed or 0) + 1
+                        await db.execute(
+                            sql_update(Campaign)
+                            .where(Campaign.id == campaign.id)
+                            .values(calls_failed=Campaign.calls_failed + 1)
+                        )
 
                 await db.commit()
                 logger.info(
@@ -346,7 +452,7 @@ class CampaignWorker:
                     "completed" if success else "failed",
                 )
         except Exception as e:
-            logger.error("CAMPAIGN call completion error: %s", e)
+            logger.exception("CAMPAIGN call completion error: %s", e)
 
     # ── Check if campaign should auto-complete ─────────────
 
@@ -368,9 +474,10 @@ class CampaignWorker:
             )
         )).scalar() or 0
 
-        if remaining == 0 and retryable == 0 and self._active_count(str(campaign.id)) == 0:
+        active = await self._active_count_db(db, campaign.id)
+        if remaining == 0 and retryable == 0 and active == 0:
             campaign.status = "completed"
-            campaign.completed_at = datetime.utcnow()
+            campaign.completed_at = now_utc()
             await db.commit()
             logger.info("[CAMPAIGN %s] Completed — all leads processed", short)
 

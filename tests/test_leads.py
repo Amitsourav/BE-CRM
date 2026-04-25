@@ -88,6 +88,7 @@ async def test_get_lead_agent_forbidden_other_agent(
     from app.core.constants import LeadStage
 
     lead = Lead(
+        company_id=agent2_user.company_id,
         full_name="Other Agent Lead",
         phone="+919999999999",
         current_stage=LeadStage.LEAD,
@@ -142,6 +143,7 @@ async def test_update_lead_agent_cannot_update_other(
     from app.core.constants import LeadStage
 
     lead = Lead(
+        company_id=agent2_user.company_id,
         full_name="Other Lead",
         phone="+919999999998",
         current_stage=LeadStage.LEAD,
