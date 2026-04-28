@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 
 # Sentinels we use as fallbacks when the lead has no name on file.
 # The LLM should treat these as 'no name known' and ask politely once.
-_NAME_PLACEHOLDERS = {"", "there", "you", "sir", "ma'am", "madam", "user"}
+# 'lead' is the placeholder the campaign CSV upload writes when a row has
+# no Name column filled — the post-call pipeline overwrites it with the
+# real name once the user says it.
+_NAME_PLACEHOLDERS = {
+    "", "there", "you", "sir", "ma'am", "madam", "user", "lead",
+}
 
 
 def _build_system_prompt(agent, lead_name: str) -> str:

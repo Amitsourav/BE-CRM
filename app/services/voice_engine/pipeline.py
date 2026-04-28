@@ -419,13 +419,16 @@ class VoicePipeline:
 def _is_real_name(name) -> bool:
     """True when 'name' looks like a real person's name, not a placeholder.
 
-    The codebase uses 'there' / 'you' as sentinels when the lead record had
-    no full_name. Treat those (and empty / whitespace) as 'no name known'.
+    The codebase uses 'there' / 'you' / 'lead' as sentinels when a lead
+    record has no real full_name (empty CSV upload, etc). Treat those
+    (and empty / whitespace) as 'no name known' so the agent asks for it.
     """
     if not name:
         return False
     cleaned = str(name).strip().lower()
-    return cleaned not in {"", "there", "you", "sir", "ma'am", "madam", "user"}
+    return cleaned not in {
+        "", "there", "you", "sir", "ma'am", "madam", "user", "lead",
+    }
 
 
 voice_pipeline = VoicePipeline()

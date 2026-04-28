@@ -1220,8 +1220,12 @@ async def _save_summary_background(call_id: str, transcript: str):
                 # We do NOT overwrite a name that already exists — humans set
                 # those deliberately and the LLM extraction can be wrong.
                 existing = (lead.full_name or "").strip()
+                # Same set of placeholders we treat as 'no name' across the
+                # voice pipeline. Keep these in sync with _NAME_PLACEHOLDERS
+                # in llm_service.py and _is_real_name in pipeline.py.
                 existing_is_placeholder = (not existing) or existing.lower() in (
-                    "unknown", "no name", "n/a", "lead", "user"
+                    "", "unknown", "no name", "n/a", "lead", "user",
+                    "there", "you", "sir", "ma'am", "madam",
                 )
                 if learned_name and existing_is_placeholder:
                     logger.info(

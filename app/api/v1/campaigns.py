@@ -331,15 +331,18 @@ async def upload_leads_csv(
     col_map = _map_columns(raw_headers)
     log.info("CSV_UPLOAD campaign=%s file=%s headers=%s mapped=%s", campaign_id, file.filename, raw_headers, col_map)
 
-    if "name" not in col_map or "phone" not in col_map:
+    # Phone is required; name is optional. WhatsApp / Facebook ad exports
+    # often give us only phone numbers. The AI agent now asks for the name
+    # during the call and writes it back to the lead, so empty-name rows
+    # are perfectly acceptable as long as we have a phone.
+    if "phone" not in col_map:
         return {
             "success": False,
-            "error": f"CSV must have name and phone columns. Found headers: {raw_headers}. "
-                     f"Accepted name columns: {_COL_ALIASES['name']}. "
+            "error": f"CSV must have a phone column. Found headers: {raw_headers}. "
                      f"Accepted phone columns: {_COL_ALIASES['phone']}.",
         }
 
-    name_col = col_map["name"]
+    name_col = col_map.get("name")  # may be missing
     phone_col = col_map["phone"]
     email_col = col_map.get("email")
     city_col = col_map.get("city")
@@ -355,11 +358,14 @@ async def upload_leads_csv(
     parsed = []  # list of {name, phone, email, city, state, notes}
     for row_num, row in enumerate(reader, start=2):
         stats["total_rows"] += 1
-        name = (row.get(name_col) or "").strip()
+        # Name is optional — we use a placeholder if missing so the agent
+        # asks for the name during the call and saves it back via the
+        # post-call pipeline.
+        name = (row.get(name_col) or "").strip() if name_col else ""
         phone_raw = (row.get(phone_col) or "").strip()
-        if not name or not phone_raw:
+        if not phone_raw:
             stats["invalid_rows"] += 1
-            stats["errors"].append({"row": row_num, "error": "Missing name or phone"})
+            stats["errors"].append({"row": row_num, "error": "Missing phone"})
             continue
 
         phone = re.sub(r"[^\d+]", "", phone_raw)
@@ -369,6 +375,12 @@ async def upload_leads_csv(
             continue
         if not phone.startswith("+"):
             phone = "+91" + phone if len(phone) == 10 else "+" + phone
+
+        # leads.full_name is NOT NULL — fall back to "Lead" placeholder.
+        # The voice pipeline's _is_real_name() treats this as 'no name'
+        # and the agent's no-name welcome triggers ("May I know your name?").
+        if not name:
+            name = "Lead"
 
         email = (row.get(email_col) or "").strip() if email_col else None
         if email and email.lower() in ("nan", "none", ""):
