@@ -1174,6 +1174,18 @@ async def _save_summary_background(call_id: str, transcript: str):
     summary = post_call.get("summary", "")
     learned_name = post_call.get("user_name")  # may be None
 
+    # Structured facts the LLM extracted (any can be None / [])
+    extracted = {
+        "loan_amount": post_call.get("loan_amount"),
+        "college": post_call.get("college"),
+        "study_location": post_call.get("study_location"),
+        "course": post_call.get("course"),
+        "intake": post_call.get("intake"),
+        "banks_tried": post_call.get("banks_tried") or [],
+        "objections": post_call.get("objections") or [],
+        "next_action": post_call.get("next_action"),
+    }
+
     try:
         async with AsyncSessionLocal() as db:
             # ── Load call ──
@@ -1211,8 +1223,51 @@ async def _save_summary_background(call_id: str, transcript: str):
                 lead.last_contacted_at = now_utc()
                 if summary:
                     ts = now_utc().strftime("%Y-%m-%d %H:%M")
-                    entry = f"\n\n--- AI Call ({ts}) ---\n{summary}\nSentiment: {sentiment} | Interest: {interest}"
+                    # Build a human-readable "Key Details" block from the
+                    # structured extraction so reviewers can scan at a glance
+                    # without parsing the full transcript.
+                    details = []
+                    if extracted.get("loan_amount"):
+                        details.append(f"  Amount: {extracted['loan_amount']}")
+                    if extracted.get("college"):
+                        loc = (
+                            f" ({extracted['study_location']})"
+                            if extracted.get("study_location") else ""
+                        )
+                        details.append(f"  College: {extracted['college']}{loc}")
+                    if extracted.get("course"):
+                        details.append(f"  Course: {extracted['course']}")
+                    if extracted.get("intake"):
+                        details.append(f"  Intake: {extracted['intake']}")
+                    if extracted.get("banks_tried"):
+                        details.append(f"  Banks tried: {', '.join(extracted['banks_tried'])}")
+                    if extracted.get("objections"):
+                        details.append(f"  Concerns: {'; '.join(extracted['objections'])}")
+                    if extracted.get("next_action"):
+                        details.append(f"  Next: {extracted['next_action']}")
+                    details_block = ("\n" + "\n".join(details)) if details else ""
+
+                    entry = (
+                        f"\n\n--- AI Call ({ts}) ---\n"
+                        f"{summary}\n"
+                        f"Sentiment: {sentiment} | Interest: {interest}"
+                        f"{details_block}"
+                    )
                     lead.notes = (lead.notes or "") + entry
+
+                # Persist the structured extraction into lead.custom_fields
+                # under "ai_last_call" so the FE can render it as a summary
+                # widget. Overwrites previous call's snapshot — full history
+                # remains in lead.notes (append-only).
+                custom = dict(lead.custom_fields or {})
+                custom["ai_last_call"] = {
+                    "at": now_utc().isoformat(),
+                    "call_id": str(call.id),
+                    "sentiment": sentiment,
+                    "interest_level": interest,
+                    **extracted,
+                }
+                lead.custom_fields = custom
 
                 # Save the user's name back to the lead record if we learned
                 # one and didn't have one before. Next time we call this lead,
@@ -1427,28 +1482,76 @@ async def _analyze_call(transcript: str) -> dict:
                     {
                         "role": "system",
                         "content": (
-                            "Analyze this sales call transcript. Return ONLY valid JSON with:\n"
-                            '- "summary": 3-4 sentence summary of what the USER said and committed to. '
-                            'Do not summarize what the agent asked.\n'
-                            '- "sentiment": "positive" only if the USER expressed clear interest or '
-                            'agreement; "negative" if they declined or pushed back; "neutral" otherwise.\n'
-                            '- "confidence": 0-100 integer (your confidence in the assessment).\n'
-                            '- "interest_level": "high" ONLY if the user explicitly asked about loan '
-                            'amount, college, rates, or said yes to next steps. '
-                            '"medium" if user shared some details but no commitment. '
-                            '"low" if user gave minimal info ("hello", "ok", "who is this") or no '
-                            'concrete signal. Default to "low" when in doubt.\n'
-                            '- "user_name": the user\'s name if they explicitly said it '
-                            '(e.g., "I am Rajesh", "main Rajesh hoon", "Rajesh speaking"). '
-                            'Use null if the user did not say their name. '
-                            'Do NOT use the agent\'s name (Priya).\n'
-                            "No markdown, no explanation, just JSON."
+                            "You analyse sales call transcripts for FundMyCampus, an Indian "
+                            "education-loan consultancy. The agent is Priya. Calls happen in "
+                            "Hinglish (Hindi+English). Focus on what the USER (the lead) said, "
+                            "NOT what Priya asked. Return ONLY valid JSON with these fields:\n\n"
+
+                            '- "summary": 3-5 sentences IN ENGLISH. Mention specific facts the '
+                            'user revealed: loan amount, college/university, course, country, '
+                            'intake, banks already tried, co-applicant. Avoid generic phrasing '
+                            'like "the user expressed interest" — quote specifics. If the call '
+                            'was very short or the user said almost nothing, write a one-line '
+                            'summary stating that.\n'
+
+                            '- "sentiment": "positive" if user clearly engaged, asked questions, '
+                            'agreed to next steps, or shared loan details. "negative" if user '
+                            'declined, asked not to be called, or was hostile. "neutral" for '
+                            'short / inconclusive / unclear calls. Default to "neutral" in doubt.\n'
+
+                            '- "confidence": integer 0-100. Your confidence in the sentiment / '
+                            'interest assessment given the transcript length and clarity. '
+                            'For transcripts under 200 chars, max confidence is 40.\n'
+
+                            '- "interest_level": "high" ONLY if user EXPLICITLY did 2+ of: '
+                            'asked about rates/amounts, named a college/course, asked next steps, '
+                            'said yes to WhatsApp/callback, or shared specific timeline. '
+                            '"medium" if user shared 1 concrete detail but no commitment. '
+                            '"low" otherwise — including if user only said "hello"/"ok"/'
+                            '"haan"/"who is this". When in doubt, choose lower tier.\n'
+
+                            '- "user_name": the user\'s name if they explicitly said it (e.g. '
+                            '"I am Rajesh", "main Rajesh hoon", "Rajesh speaking"). null '
+                            'otherwise. Do NOT use Priya / Priya from FundMyCampus / agent.\n'
+
+                            '- "loan_amount": amount the user mentioned, e.g. "15 lakhs", '
+                            '"1 crore", "50 lakhs". null if not mentioned. Use the user\'s '
+                            'phrasing — do not normalise to digits.\n'
+
+                            '- "college": college / university the user named, e.g. '
+                            '"IIT Delhi", "Sheffield", "GLIM Gurgaon". null if not mentioned. '
+                            'If the user named a city by mistake (Sheffield is a city, not a '
+                            'university), still capture what they said.\n'
+
+                            '- "study_location": "india", "abroad", or null. Infer from college '
+                            'name or explicit statement.\n'
+
+                            '- "course": e.g. "MBA", "B.Tech CS", "MS", "MBBS". null if not '
+                            'mentioned.\n'
+
+                            '- "intake": admission intake the user mentioned, e.g. '
+                            '"September 2026", "Jan 2027". null if not mentioned.\n'
+
+                            '- "banks_tried": array of bank names the user said they applied '
+                            'with already, e.g. ["SBI", "Axis"]. Empty array if none.\n'
+
+                            '- "objections": array of specific concerns the user raised, e.g. '
+                            '["interest rate too high", "doesn\'t want collateral"]. Empty '
+                            'array if none.\n'
+
+                            '- "next_action": what was agreed at the end, e.g. '
+                            '"Priya will send WhatsApp message with loan link", "callback '
+                            'at 5pm", "user will check rates and respond". null if no '
+                            'concrete action was agreed.\n\n'
+
+                            "No markdown, no explanation, just the JSON object."
                         ),
                     },
                     {"role": "user", "content": transcript},
                 ],
-                "max_tokens": 400,
-                "temperature": 0.3,
+                # Bumped from 400 — we now ask for ~10 fields instead of 4.
+                "max_tokens": 600,
+                "temperature": 0.2,  # tighter — extraction, not creative writing
                 "response_format": {"type": "json_object"},
             },
         )
@@ -1547,6 +1650,49 @@ async def _analyze_call(transcript: str) -> dict:
             result["user_name"] = None
     else:
         result["user_name"] = None
+
+    # Helper: clean up free-text string fields. The LLM sometimes returns
+    # "null" / "none" / "N/A" as actual strings; coerce them to None.
+    def _clean_text(value, max_len=200):
+        if not isinstance(value, str):
+            return None
+        v = value.strip()
+        if not v or v.lower() in {"null", "none", "n/a", "na", "unknown", "not mentioned"}:
+            return None
+        return v[:max_len]
+
+    result["loan_amount"] = _clean_text(result.get("loan_amount"), 60)
+    result["college"] = _clean_text(result.get("college"), 120)
+    result["course"] = _clean_text(result.get("course"), 60)
+    result["intake"] = _clean_text(result.get("intake"), 60)
+    result["next_action"] = _clean_text(result.get("next_action"), 200)
+
+    # study_location: enum
+    sl = result.get("study_location")
+    if isinstance(sl, str) and sl.strip().lower() in {"india", "abroad"}:
+        result["study_location"] = sl.strip().lower()
+    else:
+        result["study_location"] = None
+
+    # banks_tried: list of short strings
+    banks = result.get("banks_tried")
+    if isinstance(banks, list):
+        result["banks_tried"] = [
+            b.strip()[:30] for b in banks
+            if isinstance(b, str) and b.strip() and b.strip().lower() not in {"null", "none"}
+        ][:10]
+    else:
+        result["banks_tried"] = []
+
+    # objections: list of short strings
+    objs = result.get("objections")
+    if isinstance(objs, list):
+        result["objections"] = [
+            o.strip()[:120] for o in objs
+            if isinstance(o, str) and o.strip() and o.strip().lower() not in {"null", "none"}
+        ][:10]
+    else:
+        result["objections"] = []
 
     return result
 
