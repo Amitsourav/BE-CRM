@@ -13,6 +13,43 @@ from app.services.voice_engine.http_clients import get_openrouter_client
 logger = logging.getLogger(__name__)
 
 
+# Sentinels we use as fallbacks when the lead has no name on file.
+# The LLM should treat these as 'no name known' and ask politely once.
+_NAME_PLACEHOLDERS = {"", "there", "you", "sir", "ma'am", "madam", "user"}
+
+
+def _build_system_prompt(agent, lead_name: str) -> str:
+    """Inject the agent's system prompt with name-handling guidance.
+
+    {name} substitution: use the real name if available, otherwise blank
+    so the prompt doesn't say "Hi there" awkwardly. The trailing
+    NAME_HANDLING block tells the LLM how to behave when name is unknown
+    (ask once, remember once given, never use 'there' as a name).
+    """
+    cleaned = (lead_name or "").strip()
+    has_name = cleaned and cleaned.lower() not in _NAME_PLACEHOLDERS
+    display_name = cleaned if has_name else ""
+    raw = (agent.system_prompt or "").replace("{name}", display_name)
+
+    if has_name:
+        rules = (
+            f"\n\n[NAME HANDLING]\n"
+            f"- The user's name is {display_name}. Address them by it sparingly "
+            "(once or twice in the conversation, not every reply).\n"
+            "- Do not introduce yourself again if the call is in progress."
+        )
+    else:
+        rules = (
+            "\n\n[NAME HANDLING]\n"
+            "- You don't know the user's name yet. Politely ask once early on: "
+            "'May I know your name?' or in Hinglish: 'Aapka naam jaan sakta hoon?'\n"
+            "- Once they tell you, remember it and use it occasionally — never "
+            "every turn. If they refuse, don't ask again.\n"
+            "- Never use 'there', 'you' or any placeholder as if it were a name."
+        )
+    return raw + rules
+
+
 # Sentence terminators: English + Hindi (।)
 _SENTENCE_ENDS = ".!?।"
 # Early-flush boundaries for the FIRST chunk only — used to start TTS
@@ -182,10 +219,10 @@ class LLMService:
                 enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
             # System prompt already contains role, tone, and length rules
-            # from the dashboard. No need to inject persona_rule/length_rule
-            # on every turn — that added ~300 redundant tokens per request,
-            # costing 150-250ms of TTFB.
-            raw_prompt = (agent.system_prompt or "").replace("{name}", lead_name)
+            # from the dashboard. We only add a small NAME HANDLING block
+            # so the LLM behaves correctly when the lead has no name on
+            # file (asks once, remembers once given, doesn't say 'there').
+            raw_prompt = _build_system_prompt(agent, lead_name)
 
             messages = [
                 {"role": "system", "content": raw_prompt},
@@ -278,7 +315,7 @@ class LLMService:
             )
             enhanced_message = f"{lang_instruction}\n\nUser: {message}"
 
-        raw_prompt = (agent.system_prompt or "").replace("{name}", lead_name)
+        raw_prompt = _build_system_prompt(agent, lead_name)
 
         messages = [
             {"role": "system", "content": raw_prompt},

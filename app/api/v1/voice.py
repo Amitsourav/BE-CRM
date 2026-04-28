@@ -1172,6 +1172,7 @@ async def _save_summary_background(call_id: str, transcript: str):
     sentiment = post_call.get("sentiment", "neutral")
     interest = post_call.get("interest_level", "low")
     summary = post_call.get("summary", "")
+    learned_name = post_call.get("user_name")  # may be None
 
     try:
         async with AsyncSessionLocal() as db:
@@ -1212,6 +1213,22 @@ async def _save_summary_background(call_id: str, transcript: str):
                     ts = now_utc().strftime("%Y-%m-%d %H:%M")
                     entry = f"\n\n--- AI Call ({ts}) ---\n{summary}\nSentiment: {sentiment} | Interest: {interest}"
                     lead.notes = (lead.notes or "") + entry
+
+                # Save the user's name back to the lead record if we learned
+                # one and didn't have one before. Next time we call this lead,
+                # the welcome audio will use their real name instead of asking.
+                # We do NOT overwrite a name that already exists — humans set
+                # those deliberately and the LLM extraction can be wrong.
+                existing = (lead.full_name or "").strip()
+                existing_is_placeholder = (not existing) or existing.lower() in (
+                    "unknown", "no name", "n/a", "lead", "user"
+                )
+                if learned_name and existing_is_placeholder:
+                    logger.info(
+                        "POST-CALL learned lead name '%s' for lead %s (was %r)",
+                        learned_name, lead.id, lead.full_name,
+                    )
+                    lead.full_name = learned_name
 
             await db.commit()
 
@@ -1407,10 +1424,20 @@ async def _analyze_call(transcript: str) -> dict:
                         "role": "system",
                         "content": (
                             "Analyze this sales call transcript. Return ONLY valid JSON with:\n"
-                            '- "summary": 3-4 sentence summary (what lead wants, info shared, next steps)\n'
-                            '- "sentiment": "positive", "neutral", or "negative"\n'
-                            '- "confidence": 0-100 integer\n'
-                            '- "interest_level": "high", "medium", or "low"\n'
+                            '- "summary": 3-4 sentence summary of what the USER said and committed to. '
+                            'Do not summarize what the agent asked.\n'
+                            '- "sentiment": "positive" only if the USER expressed clear interest or '
+                            'agreement; "negative" if they declined or pushed back; "neutral" otherwise.\n'
+                            '- "confidence": 0-100 integer (your confidence in the assessment).\n'
+                            '- "interest_level": "high" ONLY if the user explicitly asked about loan '
+                            'amount, college, rates, or said yes to next steps. '
+                            '"medium" if user shared some details but no commitment. '
+                            '"low" if user gave minimal info ("hello", "ok", "who is this") or no '
+                            'concrete signal. Default to "low" when in doubt.\n'
+                            '- "user_name": the user\'s name if they explicitly said it '
+                            '(e.g., "I am Rajesh", "main Rajesh hoon", "Rajesh speaking"). '
+                            'Use null if the user did not say their name. '
+                            'Do NOT use the agent\'s name (Priya).\n'
                             "No markdown, no explanation, just JSON."
                         ),
                     },
@@ -1500,6 +1527,23 @@ async def _analyze_call(transcript: str) -> dict:
     except (TypeError, ValueError):
         result["confidence"] = 0
 
+    # user_name normalisation: strip, title-case, sanity-check.
+    # The LLM occasionally returns the agent's name ("Priya"), the literal
+    # word "user", or a fragment like "speaking" — filter those out.
+    raw_name = result.get("user_name")
+    if isinstance(raw_name, str):
+        cleaned = raw_name.strip()
+        bad = {
+            "", "null", "none", "user", "agent", "priya", "speaking",
+            "the user", "the lead", "n/a", "unknown",
+        }
+        if 2 <= len(cleaned) <= 60 and cleaned.lower() not in bad:
+            result["user_name"] = cleaned.title()
+        else:
+            result["user_name"] = None
+    else:
+        result["user_name"] = None
+
     return result
 
 
@@ -1527,11 +1571,28 @@ async def _auto_update_lead_stage(
         and call.call_status == "ended"
     )
 
+    # Evidence threshold for "qualified_lead":
+    # the LLM hallucinates "high interest" on transcripts where the user
+    # only said "Can you speak?" — because the agent's intro line mentions
+    # education loans. We block that by requiring real engagement: a
+    # substantial transcript AND multiple user turns. Without these
+    # gates, every connected call with the agent's standard opening got
+    # qualified, regardless of what the user actually said.
+    transcript = call.transcript or ""
+    transcript_len = len(transcript)
+    user_turns = transcript.count("User:")
+    qualified_eligible = (
+        sentiment == "positive"
+        and interest_level == "high"
+        and transcript_len >= 500
+        and user_turns >= 3
+    )
+
     # Determine target stage
     if not call_connected:
         # No answer — at minimum mark as "called" (we tried)
         target = "called"
-    elif sentiment == "positive" and interest_level == "high":
+    elif qualified_eligible:
         target = "qualified_lead"
     elif sentiment == "positive" or call_connected:
         target = "connected"

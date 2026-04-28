@@ -111,16 +111,19 @@ async def fetch_candidates(
     return result.scalars().all()
 
 
-async def process_one(db, call: CallAttempt, *, apply: bool, reanalyze: bool) -> dict:
-    """Process a single call. Returns a row for the report."""
+async def process_one_id(call_id: uuid.UUID, *, apply: bool, reanalyze: bool) -> dict:
+    """Process a single call by ID with its own DB session.
+
+    Per-call sessions are slower but resilient to Supabase connection drops
+    (the Korea region tends to drop idle / long-held connections from
+    laptops). A drop now affects one call, not the whole batch.
+    """
+    # Capture string IDs upfront so even if the session detaches mid-run,
+    # the report row still has identifiers.
     row = {
-        "call_id": str(call.id),
-        "lead_id": str(call.lead_id),
-        "started_at": call.started_at.isoformat() if call.started_at else None,
-        "duration": call.call_duration_seconds,
-        "transcript_len": len(call.transcript or ""),
-        "old_summary_len": len(call.summary or ""),
-        "old_sentiment": call.sentiment,
+        "call_id": str(call_id),
+        "lead_id": None,
+        "transcript_len": 0,
         "lead_stage_before": None,
         "lead_stage_after": None,
         "ran_llm": False,
@@ -130,76 +133,102 @@ async def process_one(db, call: CallAttempt, *, apply: bool, reanalyze: bool) ->
         "skipped_reason": None,
     }
 
-    lead = call.lead
-    if not lead:
-        row["skipped_reason"] = "lead missing"
-        return row
-    if lead.is_deleted:
-        row["skipped_reason"] = "lead soft-deleted"
-        return row
-    if lead.current_stage in TERMINAL_STAGES:
-        row["skipped_reason"] = f"lead in terminal stage ({lead.current_stage})"
-        return row
-
-    row["lead_stage_before"] = lead.current_stage
-
-    # Decide whether to run LLM
-    needs_llm = reanalyze or not (call.summary and call.summary.strip())
-    if needs_llm:
-        row["ran_llm"] = True
-        analysis = await _analyze_call(call.transcript)
-        row["ai_sentiment"] = analysis.get("sentiment")
-        row["ai_interest"] = analysis.get("interest_level")
-        if apply:
-            call.summary = analysis.get("summary", "") or call.summary
-            call.sentiment = analysis.get("sentiment") or call.sentiment
-            confidence = analysis.get("confidence", 0)
-            try:
-                call.sentiment_score = max(0.0, min(1.0, float(confidence) / 100.0))
-            except (TypeError, ValueError):
-                call.sentiment_score = 0.0
-        sentiment = analysis.get("sentiment", "neutral")
-        interest = analysis.get("interest_level", "low")
-    else:
-        sentiment = call.sentiment or "neutral"
-        # We don't store interest_level on CallAttempt — infer conservatively
-        # from sentiment + score so existing rows don't get falsely qualified.
-        if sentiment == "positive" and (call.sentiment_score or 0) >= 0.75:
-            interest = "high"
-        elif sentiment == "positive":
-            interest = "medium"
-        else:
-            interest = "low"
-        row["ai_sentiment"] = sentiment
-        row["ai_interest"] = interest
-
-    if apply:
-        # _auto_update_lead_stage is the same function the live hangup handler
-        # uses for new calls. It will:
-        #   - never move stage backward
-        #   - step through (lead→called→connected→qualified) one at a time
-        #   - write a LeadStageLog row per step with conversation_notes
+    # Up to 3 attempts on connection-reset errors.
+    for attempt in range(3):
         try:
-            call_agent = call.agent_id or call.telecaller_id
-            await _auto_update_lead_stage(
-                db, call, lead,
-                sentiment=sentiment,
-                interest_level=interest,
-                call_summary=call.summary or "",
-                call_agent_id=call_agent,
-            )
+            async with AsyncSessionLocal() as db:
+                # Reload eager — avoid lazy loads that detach later.
+                result = await db.execute(
+                    select(CallAttempt)
+                    .options(selectinload(CallAttempt.lead))
+                    .where(CallAttempt.id == call_id)
+                )
+                call = result.scalar_one_or_none()
+                if not call:
+                    row["skipped_reason"] = "call disappeared"
+                    return row
+
+                lead = call.lead
+                row["lead_id"] = str(call.lead_id)
+                row["transcript_len"] = len(call.transcript or "")
+
+                if not lead:
+                    row["skipped_reason"] = "lead missing"
+                    return row
+                if lead.is_deleted:
+                    row["skipped_reason"] = "lead soft-deleted"
+                    return row
+                if lead.current_stage in TERMINAL_STAGES:
+                    row["skipped_reason"] = f"terminal ({lead.current_stage})"
+                    return row
+
+                row["lead_stage_before"] = lead.current_stage
+
+                needs_llm = reanalyze or not (call.summary and call.summary.strip())
+                if needs_llm:
+                    row["ran_llm"] = True
+                    analysis = await _analyze_call(call.transcript)
+                    row["ai_sentiment"] = analysis.get("sentiment")
+                    row["ai_interest"] = analysis.get("interest_level")
+                    sentiment = analysis.get("sentiment", "neutral")
+                    interest = analysis.get("interest_level", "low")
+                    if apply:
+                        call.summary = analysis.get("summary", "") or call.summary
+                        call.sentiment = sentiment
+                        confidence = analysis.get("confidence", 0)
+                        try:
+                            call.sentiment_score = max(0.0, min(1.0, float(confidence) / 100.0))
+                        except (TypeError, ValueError):
+                            call.sentiment_score = 0.0
+                else:
+                    sentiment = call.sentiment or "neutral"
+                    if sentiment == "positive" and (call.sentiment_score or 0) >= 0.75:
+                        interest = "high"
+                    elif sentiment == "positive":
+                        interest = "medium"
+                    else:
+                        interest = "low"
+                    row["ai_sentiment"] = sentiment
+                    row["ai_interest"] = interest
+
+                if apply:
+                    try:
+                        call_agent = call.agent_id or call.telecaller_id
+                        await _auto_update_lead_stage(
+                            db, call, lead,
+                            sentiment=sentiment,
+                            interest_level=interest,
+                            call_summary=call.summary or "",
+                            call_agent_id=call_agent,
+                        )
+                        await db.commit()
+                    except Exception as e:
+                        row["skipped_reason"] = f"stage error: {str(e)[:80]}"
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            pass
+                        return row
+
+                row["lead_stage_after"] = lead.current_stage
+                row["stage_advanced"] = (
+                    row["lead_stage_after"] != row["lead_stage_before"]
+                )
+                return row
+
         except Exception as e:
-            row["skipped_reason"] = f"stage update error: {e}"
-            await db.rollback()
+            err_msg = str(e)[:120]
+            # Retry transient connection errors; bail on real bugs.
+            if any(s in err_msg for s in (
+                "ConnectionDoesNotExist", "Connection reset", "timeout",
+                "MissingGreenlet", "connection was closed", "PoolTimeout",
+            )) and attempt < 2:
+                await asyncio.sleep(1 + attempt)  # 1s, 2s
+                continue
+            row["skipped_reason"] = f"unexpected: {err_msg}"
             return row
 
-        await db.commit()
-        await db.refresh(lead)
-
-    row["lead_stage_after"] = lead.current_stage
-    row["stage_advanced"] = (
-        row["lead_stage_after"] != row["lead_stage_before"]
-    )
+    row["skipped_reason"] = "exhausted retries"
     return row
 
 
@@ -248,84 +277,80 @@ async def main():
     print(f"  Limit:                {args.limit or 'no limit'}")
     print(f"{'='*70}\n")
 
+    # Fetch only the IDs upfront. Cheap query that finishes quickly even
+    # on a flaky connection. Then close the session before the long loop.
+    candidate_ids: list[uuid.UUID] = []
     async with AsyncSessionLocal() as db:
-        candidates = await fetch_candidates(
-            db,
-            since_days=args.since_days,
-            company_id=company_id,
-            limit=args.limit,
-            reanalyze=args.reanalyze,
+        # Build the same predicate as fetch_candidates but project only id.
+        q = (
+            select(CallAttempt.id)
+            .where(
+                CallAttempt.transcript.isnot(None),
+                CallAttempt.transcript != "",
+                CallAttempt.call_duration_seconds.isnot(None),
+                CallAttempt.call_duration_seconds > 10,
+            )
+            .order_by(CallAttempt.created_at.desc())
         )
-        print(f"Found {len(candidates)} candidate calls.\n")
+        if args.since_days:
+            cutoff = now_utc() - timedelta(days=args.since_days)
+            q = q.where(CallAttempt.created_at >= cutoff)
+        if company_id:
+            q = q.where(CallAttempt.company_id == company_id)
+        if not args.reanalyze:
+            q = q.where(
+                CallAttempt.summary.is_(None) | (CallAttempt.summary == "")
+            )
+        if args.limit:
+            q = q.limit(args.limit)
+        result = await db.execute(q)
+        candidate_ids = [r[0] for r in result.all()]
 
-        if not candidates:
-            return
+    print(f"Found {len(candidate_ids)} candidate calls.\n")
+    if not candidate_ids:
+        return
 
-        # Cost preview if we'd run LLM on all of them
-        will_run_llm = sum(
-            1 for c in candidates
-            if args.reanalyze or not (c.summary and c.summary.strip())
-        )
-        # gpt-4o-mini ≈ $0.0002/call worst-case (transcript 3000 chars in, 400 tokens out)
-        est_cost = will_run_llm * 0.0002
-        print(f"Expected LLM calls: {will_run_llm}  (estimated cost: ${est_cost:.2f})\n")
+    est_cost = len(candidate_ids) * 0.0002
+    print(f"Expected LLM calls: ~{len(candidate_ids)}  (estimated cost: ${est_cost:.2f})\n")
 
-        if not args.apply:
-            print("⚠️  Dry run — no DB writes, no LLM calls. Showing first 25 candidates:\n")
-            preview = []
-            for c in candidates[:25]:
-                preview.append({
-                    "call_id": str(c.id),
-                    "lead_stage_before": c.lead.current_stage if c.lead else None,
-                    "lead_stage_after": "(would advance)",
-                    "ai_sentiment": c.sentiment or "(needs LLM)",
-                    "ai_interest": "?",
-                    "ran_llm": "would" if (args.reanalyze or not c.summary) else "no",
-                    "stage_advanced": "?",
-                    "transcript_len": len(c.transcript or ""),
-                    "skipped_reason": (
-                        "lead missing" if not c.lead else
-                        "lead deleted" if c.lead.is_deleted else
-                        "terminal stage" if c.lead.current_stage in TERMINAL_STAGES else
-                        ""
-                    ),
-                })
-            print(fmt_table(preview))
-            print(f"\n  → Run with --apply to actually process all {len(candidates)} calls.")
-            return
+    if not args.apply:
+        print("⚠️  Dry run — no DB writes, no LLM calls.\n")
+        print(f"  → Run with --apply to actually process all {len(candidate_ids)} calls.")
+        return
 
-        # APPLY — process each call, commit per-call so a single failure
-        # doesn't unwind the whole batch.
-        rows = []
-        advanced = 0
-        ran_llm = 0
-        skipped = 0
-        for i, call in enumerate(candidates, 1):
-            try:
-                row = await process_one(db, call, apply=True, reanalyze=args.reanalyze)
-            except Exception as e:
-                row = {"call_id": str(call.id), "skipped_reason": f"unexpected: {e}"}
-                await db.rollback()
-            rows.append(row)
-            if row.get("ran_llm"):
-                ran_llm += 1
-            if row.get("stage_advanced"):
-                advanced += 1
-            if row.get("skipped_reason"):
-                skipped += 1
-            if i % 10 == 0:
-                print(f"  ...processed {i}/{len(candidates)}")
+    # APPLY — each call uses its own session; a connection drop affects
+    # only that one call (with retry).
+    rows = []
+    advanced = 0
+    ran_llm = 0
+    skipped = 0
+    qualified = 0
+    for i, cid in enumerate(candidate_ids, 1):
+        row = await process_one_id(cid, apply=True, reanalyze=args.reanalyze)
+        rows.append(row)
+        if row.get("ran_llm"):
+            ran_llm += 1
+        if row.get("stage_advanced"):
+            advanced += 1
+            if row.get("lead_stage_after") == "qualified_lead":
+                qualified += 1
+        if row.get("skipped_reason"):
+            skipped += 1
+        if i % 10 == 0 or i == len(candidate_ids):
+            print(f"  ...processed {i}/{len(candidate_ids)}  "
+                  f"(advanced {advanced}, qualified {qualified}, skipped {skipped})")
 
-        print(f"\n{fmt_table(rows[:50])}")
-        if len(rows) > 50:
-            print(f"\n  (showing first 50 of {len(rows)} rows)")
+    print(f"\n{fmt_table(rows[:50])}")
+    if len(rows) > 50:
+        print(f"\n  (showing first 50 of {len(rows)} rows)")
 
-        print(f"\n{'='*70}")
-        print(f"  Total processed:  {len(rows)}")
-        print(f"  LLM calls made:   {ran_llm}")
-        print(f"  Stages advanced:  {advanced}")
-        print(f"  Skipped:          {skipped}")
-        print(f"{'='*70}\n")
+    print(f"\n{'='*70}")
+    print(f"  Total processed:    {len(rows)}")
+    print(f"  LLM calls made:     {ran_llm}")
+    print(f"  Stages advanced:    {advanced}")
+    print(f"  → Qualified leads:  {qualified}")
+    print(f"  Skipped/errored:    {skipped}")
+    print(f"{'='*70}\n")
 
 
 if __name__ == "__main__":

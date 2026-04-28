@@ -204,9 +204,17 @@ class VoicePipeline:
         # so the LLM knows a greeting already happened. Add it to the
         # PERMANENT state.conversation_history so ALL future turns
         # see the welcome context too (not just turn 1).
-        if not state.conversation_history and state.lead_name:
-            welcome_text = (agent.welcome_message or "Hello, am I speaking with {name}?")
-            welcome_text = welcome_text.replace("{name}", state.lead_name)
+        # Mirror the welcome-audio logic so the LLM sees the same opener
+        # the user just heard (with-name vs no-name variants).
+        if not state.conversation_history:
+            if _is_real_name(state.lead_name):
+                welcome_text = (agent.welcome_message or "Hello, am I speaking with {name}?")
+                welcome_text = welcome_text.replace("{name}", state.lead_name)
+            else:
+                welcome_text = getattr(agent, "welcome_message_no_name", None) or (
+                    f"Hello! This is {getattr(agent, 'name', 'a counselor')} "
+                    "from FundMyCampus. May I know your name first?"
+                )
             state.conversation_history.append(
                 {"role": "assistant", "content": welcome_text}
             )
@@ -384,14 +392,40 @@ class VoicePipeline:
         agent,
         lead_name: str = "there",
     ) -> bytes:
-        """Welcome message audio when lead picks up."""
-        welcome = agent.welcome_message or f"Hello! Am I speaking with {lead_name}?"
-        welcome = welcome.replace("{name}", lead_name)
+        """Welcome message audio when lead picks up.
+
+        If we don't have a real name (lead.full_name was empty), ask for
+        it instead of saying "Am I speaking with there?". The LLM picks
+        up the answer from conversation_history on subsequent turns and
+        addresses the user by name naturally.
+        """
+        if _is_real_name(lead_name):
+            welcome = agent.welcome_message or "Hello! Am I speaking with {name}?"
+            welcome = welcome.replace("{name}", lead_name)
+        else:
+            # Use the agent's no-name welcome if configured, else a sensible
+            # default that introduces the agent and asks for the name.
+            welcome = getattr(agent, "welcome_message_no_name", None) or (
+                f"Hello! This is {getattr(agent, 'name', 'a counselor')} "
+                "from FundMyCampus. May I know your name first?"
+            )
         return await self._get_tts_audio(
             text=welcome,
             language="en",
             agent=agent,
         )
+
+
+def _is_real_name(name) -> bool:
+    """True when 'name' looks like a real person's name, not a placeholder.
+
+    The codebase uses 'there' / 'you' as sentinels when the lead record had
+    no full_name. Treat those (and empty / whitespace) as 'no name known'.
+    """
+    if not name:
+        return False
+    cleaned = str(name).strip().lower()
+    return cleaned not in {"", "there", "you", "sir", "ma'am", "madam", "user"}
 
 
 voice_pipeline = VoicePipeline()
