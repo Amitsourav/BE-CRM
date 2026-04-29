@@ -1760,10 +1760,34 @@ async def _auto_update_lead_stage(
     if start_idx < 0 or end_idx < 0 or end_idx <= start_idx:
         return
 
-    changed_by = call_agent_id or lead.assigned_agent_id
+    changed_by = call_agent_id or lead.assigned_agent_id or lead.created_by
     if not changed_by:
-        logger.warning("LEAD_AUTO_UPDATE skipped — no changed_by for lead %s", lead.id)
-        return
+        # Lead has no owner on file (CSV import without created_by, agent
+        # deactivated since assignment, etc). Fall back to any active
+        # admin / manager in the company so the auto-stage update isn't
+        # silently dropped — previously 17% of leads sat in 'lead' forever
+        # because of this skip.
+        from app.models.profile import Profile
+        from app.core.constants import UserRole
+        fb_result = await db.execute(
+            select(Profile)
+            .where(
+                Profile.company_id == lead.company_id,
+                Profile.role.in_([UserRole.ADMIN, UserRole.MANAGER]),
+                Profile.is_active == True,  # noqa: E712
+            )
+            .limit(1)
+        )
+        fb = fb_result.scalar_one_or_none()
+        if fb:
+            changed_by = fb.id
+        else:
+            logger.warning(
+                "LEAD_AUTO_UPDATE skipped — no owner and no admin/manager "
+                "fallback for lead %s in company %s",
+                lead.id, lead.company_id,
+            )
+            return
 
     company_id = lead.company_id
     final_stage = old_stage

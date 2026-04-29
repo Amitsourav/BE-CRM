@@ -21,7 +21,12 @@ class LeadStageLog(Base):
     conversation_notes: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     agent_agenda: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     due_date_set: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"), nullable=False)
+    # clock_timestamp() returns the actual wall-clock time per row insertion,
+    # so multi-step transitions written in one transaction (lead→called and
+    # called→connected together) get distinct timestamps. Using now() here
+    # gave both rows the transaction-start time, breaking timeline ordering
+    # and audit queries.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("clock_timestamp()"), nullable=False)
 
     lead = relationship("Lead", back_populates="stage_logs")
     changed_by_user = relationship("Profile", foreign_keys=[changed_by])
