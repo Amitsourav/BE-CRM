@@ -39,16 +39,16 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting Admitverse CRM Backend (%s)", settings.app_env)
+    logger.info("Starting FundMyCampus CRM Backend (%s)", settings.app_env)
     start_scheduler()
     yield
     stop_scheduler()
-    logger.info("Shutting down Admitverse CRM Backend")
+    logger.info("Shutting down FundMyCampus CRM Backend")
 
 
 app = FastAPI(
-    title="Admitverse CRM API",
-    description="Admission Counselling CRM Backend — Lead Management, Pipeline, Call Tracking, Tasks & Reports",
+    title="FundMyCampus CRM API",
+    description="FundMyCampus CRM Backend — Education Loan Lead Management, Pipeline, AI Voice Calls, Tasks & Reports",
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs",

@@ -1,7 +1,7 @@
 [project]
-name = "admitverse-crm"
+name = "fundmycampus-crm"
 version = "1.0.0"
-description = "Admitverse CRM Backend — Admission Counselling Lead Management"
+description = "FundMyCampus CRM Backend — Education Loan Consultancy Lead Management"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
