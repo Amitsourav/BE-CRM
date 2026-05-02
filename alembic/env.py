@@ -54,10 +54,19 @@ def do_run_migrations(connection: Connection) -> None:
 async def run_async_migrations() -> None:
     """Run migrations in 'online' mode with an async engine."""
     # Build engine directly from our settings URL — avoids ConfigParser
-    # interpolation issues with special characters in passwords
+    # interpolation issues with special characters in passwords.
+    #
+    # statement_cache_size=0 is required when going through Supabase's
+    # transaction-mode pgbouncer pool. Without it, asyncpg's
+    # auto-prepared statements collide across requests because pgbouncer
+    # re-uses connections for different statements.
     connectable = create_async_engine(
         settings.async_database_url,
         poolclass=pool.NullPool,
+        connect_args={
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+        },
     )
 
     async with connectable.connect() as connection:
