@@ -45,40 +45,83 @@ import os
 APP_NAME = os.environ.get("APP_NAME", "FundMyCampus CRM")
 
 
+async def _is_fresh_db() -> bool:
+    """True if the public schema has no `alembic_version` table — i.e.
+    this DB has never been touched by alembic and likely has no app
+    tables at all (fresh Supabase project)."""
+    from sqlalchemy import text
+    from app.db.session import engine
+    async with engine.connect() as conn:
+        result = await conn.execute(text(
+            "SELECT EXISTS ("
+            "  SELECT 1 FROM information_schema.tables "
+            "  WHERE table_schema = 'public' AND table_name = 'alembic_version'"
+            ")"
+        ))
+        return not bool(result.scalar())
+
+
+async def _bootstrap_fresh_db() -> None:
+    """Create all tables from SQLAlchemy models in one shot. Used only
+    on a brand-new Supabase project where the historical alembic
+    baseline (which assumed tables already existed) can't apply."""
+    from app.db.session import engine
+    from app.models.base import Base
+    # Import all models so Base.metadata sees them — same set as alembic/env.py
+    from app.models import (  # noqa: F401
+        Company, Profile, LeadSource, Lead, LeadStageLog,
+        CallAttempt, Task, Notification, CSVImport, ActivityLog, AIAgent,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+def _run_alembic(args: list[str], timeout: int = 180) -> int:
+    """Run an alembic CLI command, mirror its output to our logs, return exit code."""
+    import subprocess
+    cmd = ["alembic"] + args
+    logger.info("AUTO_MIGRATE: running %s", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    for line in (result.stdout + result.stderr).splitlines():
+        if line.strip():
+            logger.info("AUTO_MIGRATE | %s", line)
+    return result.returncode
+
+
 def _run_pending_migrations() -> None:
-    """Apply any pending Alembic migrations on startup.
+    """Bring the DB schema up to head on startup.
 
-    Idempotent — `upgrade head` is a no-op when the DB is already at
-    the latest revision, so this runs safely on every boot. Set
-    AUTO_MIGRATE=false on a Railway service to opt out (e.g., if a
+    Two paths:
+    - Fresh DB (no `alembic_version` table): create all tables from
+      current models via `Base.metadata.create_all`, then `alembic stamp head`
+      so subsequent boots are no-ops. This sidesteps the empty baseline
+      migration that assumes tables already exist.
+    - Existing DB: just `alembic upgrade head` as normal.
+
+    Set AUTO_MIGRATE=false on a Railway service to opt out (e.g., if a
     DBA is managing migrations manually for that environment).
-
-    Implementation note: shells out to `alembic` rather than calling
-    the Python API directly. Our alembic/env.py uses asyncio.run()
-    internally, which can't nest inside the FastAPI event loop.
-    Subprocess sidesteps that cleanly.
     """
     if os.environ.get("AUTO_MIGRATE", "true").lower() in ("0", "false", "no"):
         logger.info("AUTO_MIGRATE disabled — skipping migration step")
         return
     try:
-        import subprocess
-        logger.info("AUTO_MIGRATE: running 'alembic upgrade head'...")
-        result = subprocess.run(
-            ["alembic", "upgrade", "head"],
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        for line in (result.stdout + result.stderr).splitlines():
-            if line.strip():
-                logger.info("AUTO_MIGRATE | %s", line)
-        if result.returncode == 0:
+        import asyncio
+        fresh = asyncio.run(_is_fresh_db())
+        if fresh:
+            logger.info("AUTO_MIGRATE: fresh DB detected — bootstrapping schema from models")
+            asyncio.run(_bootstrap_fresh_db())
+            stamp_rc = _run_alembic(["stamp", "head"])
+            if stamp_rc == 0:
+                logger.info("AUTO_MIGRATE: ✅ fresh DB bootstrapped & stamped at head")
+            else:
+                logger.error("AUTO_MIGRATE: ❌ stamp head failed (exit %d)", stamp_rc)
+            return
+
+        rc = _run_alembic(["upgrade", "head"])
+        if rc == 0:
             logger.info("AUTO_MIGRATE: ✅ migrations applied (or already at head)")
         else:
-            logger.error("AUTO_MIGRATE: ❌ exit code %d — see lines above", result.returncode)
-    except subprocess.TimeoutExpired:
-        logger.error("AUTO_MIGRATE: ❌ timed out after 180s")
+            logger.error("AUTO_MIGRATE: ❌ exit code %d — see lines above", rc)
     except Exception as e:
         # Don't crash the app if migrations fail — ops can handle via
         # Railway shell. Just log loudly so they notice.
