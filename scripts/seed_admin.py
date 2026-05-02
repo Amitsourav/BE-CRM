@@ -131,22 +131,27 @@ async def _seed_company_and_profile(
         },
     )
 
+    # URL-safe slug for the company (used as a unique key in companies).
+    # Lowercased, alphanumerics + hyphens only.
+    import re
+    company_slug = re.sub(r"[^a-z0-9]+", "-", company_name.lower()).strip("-")
+
     try:
         async with engine.begin() as conn:
-            # 1. Company
+            # 1. Company — keyed by slug because that's the unique column
             row = (await conn.execute(
-                text("SELECT id FROM companies WHERE name = :n"),
-                {"n": company_name},
+                text("SELECT id FROM companies WHERE slug = :s"),
+                {"s": company_slug},
             )).first()
             if row:
                 company_id = row[0]
-                print(f"  ℹ company '{company_name}' already exists → {company_id}")
+                print(f"  ℹ company '{company_name}' (slug={company_slug}) already exists → {company_id}")
             else:
                 company_id = (await conn.execute(
-                    text("INSERT INTO companies (name) VALUES (:n) RETURNING id"),
-                    {"n": company_name},
+                    text("INSERT INTO companies (name, slug) VALUES (:n, :s) RETURNING id"),
+                    {"n": company_name, "s": company_slug},
                 )).scalar_one()
-                print(f"  ✓ created company '{company_name}' → {company_id}")
+                print(f"  ✓ created company '{company_name}' (slug={company_slug}) → {company_id}")
 
             # 2. Profile linked to the auth user
             existing = (await conn.execute(
