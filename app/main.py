@@ -45,37 +45,6 @@ import os
 APP_NAME = os.environ.get("APP_NAME", "FundMyCampus CRM")
 
 
-async def _is_fresh_db() -> bool:
-    """True if the public schema has no `alembic_version` table — i.e.
-    this DB has never been touched by alembic and likely has no app
-    tables at all (fresh Supabase project)."""
-    from sqlalchemy import text
-    from app.db.session import engine
-    async with engine.connect() as conn:
-        result = await conn.execute(text(
-            "SELECT EXISTS ("
-            "  SELECT 1 FROM information_schema.tables "
-            "  WHERE table_schema = 'public' AND table_name = 'alembic_version'"
-            ")"
-        ))
-        return not bool(result.scalar())
-
-
-async def _bootstrap_fresh_db() -> None:
-    """Create all tables from SQLAlchemy models in one shot. Used only
-    on a brand-new Supabase project where the historical alembic
-    baseline (which assumed tables already existed) can't apply."""
-    from app.db.session import engine
-    from app.models.base import Base
-    # Import all models so Base.metadata sees them — same set as alembic/env.py
-    from app.models import (  # noqa: F401
-        Company, Profile, LeadSource, Lead, LeadStageLog,
-        CallAttempt, Task, Notification, CSVImport, ActivityLog, AIAgent,
-    )
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
 def _run_alembic(args: list[str], timeout: int = 180) -> int:
     """Run an alembic CLI command, mirror its output to our logs, return exit code."""
     import subprocess
@@ -105,10 +74,13 @@ async def _run_pending_migrations() -> None:
         logger.info("AUTO_MIGRATE disabled — skipping migration step")
         return
     try:
-        fresh = await _is_fresh_db()
+        from app.db.session import engine
+        from app.db.bootstrap import is_fresh_db, bootstrap_schema
+
+        fresh = await is_fresh_db(engine)
         if fresh:
             logger.info("AUTO_MIGRATE: fresh DB detected — bootstrapping schema from models")
-            await _bootstrap_fresh_db()
+            await bootstrap_schema(engine)
             stamp_rc = _run_alembic(["stamp", "head"])
             if stamp_rc == 0:
                 logger.info("AUTO_MIGRATE: ✅ fresh DB bootstrapped & stamped at head")
