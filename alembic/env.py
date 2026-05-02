@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from logging.config import fileConfig
 
+import asyncpg.connection as _asyncpg_conn
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -9,9 +10,15 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from alembic import context
 
 
-def _unique_stmt_name() -> str:
-    """Unique prepared-statement names — see app/db/session.py for context."""
-    return f"__asyncpg_{uuid.uuid4().hex}__"
+# Patch asyncpg statement-name generator so prepared statements don't
+# collide on Supabase's transaction-mode pgbouncer. See
+# app/db/session.py for the full explanation.
+def _unique_id(self, prefix):  # noqa: ARG001
+    return f"__asyncpg_{prefix}_{uuid.uuid4().hex}__"
+
+
+_asyncpg_conn.Connection._get_unique_id = _unique_id
+
 
 # -- Load app settings & models ------------------------------------------------
 from app.config import get_settings
@@ -59,20 +66,12 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     """Run migrations in 'online' mode with an async engine."""
-    # Build engine directly from our settings URL — avoids ConfigParser
-    # interpolation issues with special characters in passwords.
-    #
-    # statement_cache_size=0 is required when going through Supabase's
-    # transaction-mode pgbouncer pool. Without it, asyncpg's
-    # auto-prepared statements collide across requests because pgbouncer
-    # re-uses connections for different statements.
     connectable = create_async_engine(
         settings.async_database_url,
         poolclass=pool.NullPool,
         connect_args={
             "statement_cache_size": 0,
             "prepared_statement_cache_size": 0,
-            "prepared_statement_name_func": _unique_stmt_name,
         },
     )
 
