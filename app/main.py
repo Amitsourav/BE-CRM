@@ -37,18 +37,29 @@ logger = logging.getLogger(__name__)
 # Rate limiter is defined in app.core.rate_limit (shared instance)
 
 
+# Brand-aware logs + API title — same codebase serves both FundMyCampus
+# and Admitverse from separate Railway deployments. The deployment's
+# APP_NAME env var (default: "FundMyCampus CRM") drives this. Set
+# APP_NAME="Admitverse CRM" on the Admitverse Railway service.
+import os
+APP_NAME = os.environ.get("APP_NAME", "FundMyCampus CRM")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting FundMyCampus CRM Backend (%s)", settings.app_env)
+    logger.info("Starting %s Backend (%s)", APP_NAME, settings.app_env)
     start_scheduler()
     yield
     stop_scheduler()
-    logger.info("Shutting down FundMyCampus CRM Backend")
+    logger.info("Shutting down %s Backend", APP_NAME)
 
 
 app = FastAPI(
-    title="FundMyCampus CRM API",
-    description="FundMyCampus CRM Backend — Education Loan Lead Management, Pipeline, AI Voice Calls, Tasks & Reports",
+    title=f"{APP_NAME} API",
+    description=(
+        f"{APP_NAME} Backend — Lead Management, Pipeline, AI Voice Calls, "
+        "Tasks & Reports"
+    ),
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs",
