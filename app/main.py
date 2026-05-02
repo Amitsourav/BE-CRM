@@ -45,9 +45,50 @@ import os
 APP_NAME = os.environ.get("APP_NAME", "FundMyCampus CRM")
 
 
+def _run_pending_migrations() -> None:
+    """Apply any pending Alembic migrations on startup.
+
+    Idempotent — `upgrade head` is a no-op when the DB is already at
+    the latest revision, so this runs safely on every boot. Set
+    AUTO_MIGRATE=false on a Railway service to opt out (e.g., if a
+    DBA is managing migrations manually for that environment).
+
+    Implementation note: shells out to `alembic` rather than calling
+    the Python API directly. Our alembic/env.py uses asyncio.run()
+    internally, which can't nest inside the FastAPI event loop.
+    Subprocess sidesteps that cleanly.
+    """
+    if os.environ.get("AUTO_MIGRATE", "true").lower() in ("0", "false", "no"):
+        logger.info("AUTO_MIGRATE disabled — skipping migration step")
+        return
+    try:
+        import subprocess
+        logger.info("AUTO_MIGRATE: running 'alembic upgrade head'...")
+        result = subprocess.run(
+            ["alembic", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        for line in (result.stdout + result.stderr).splitlines():
+            if line.strip():
+                logger.info("AUTO_MIGRATE | %s", line)
+        if result.returncode == 0:
+            logger.info("AUTO_MIGRATE: ✅ migrations applied (or already at head)")
+        else:
+            logger.error("AUTO_MIGRATE: ❌ exit code %d — see lines above", result.returncode)
+    except subprocess.TimeoutExpired:
+        logger.error("AUTO_MIGRATE: ❌ timed out after 180s")
+    except Exception as e:
+        # Don't crash the app if migrations fail — ops can handle via
+        # Railway shell. Just log loudly so they notice.
+        logger.error("AUTO_MIGRATE: ❌ unexpected error: %s", e, exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s Backend (%s)", APP_NAME, settings.app_env)
+    _run_pending_migrations()
     start_scheduler()
     yield
     stop_scheduler()
