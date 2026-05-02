@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -6,6 +7,11 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
+
+
+def _unique_stmt_name() -> str:
+    """Unique prepared-statement names — see app/db/session.py for context."""
+    return f"__asyncpg_{uuid.uuid4().hex}__"
 
 # -- Load app settings & models ------------------------------------------------
 from app.config import get_settings
@@ -66,6 +72,7 @@ async def run_async_migrations() -> None:
         connect_args={
             "statement_cache_size": 0,
             "prepared_statement_cache_size": 0,
+            "prepared_statement_name_func": _unique_stmt_name,
         },
     )
 
