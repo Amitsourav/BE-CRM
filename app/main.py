@@ -88,7 +88,7 @@ def _run_alembic(args: list[str], timeout: int = 180) -> int:
     return result.returncode
 
 
-def _run_pending_migrations() -> None:
+async def _run_pending_migrations() -> None:
     """Bring the DB schema up to head on startup.
 
     Two paths:
@@ -105,11 +105,10 @@ def _run_pending_migrations() -> None:
         logger.info("AUTO_MIGRATE disabled — skipping migration step")
         return
     try:
-        import asyncio
-        fresh = asyncio.run(_is_fresh_db())
+        fresh = await _is_fresh_db()
         if fresh:
             logger.info("AUTO_MIGRATE: fresh DB detected — bootstrapping schema from models")
-            asyncio.run(_bootstrap_fresh_db())
+            await _bootstrap_fresh_db()
             stamp_rc = _run_alembic(["stamp", "head"])
             if stamp_rc == 0:
                 logger.info("AUTO_MIGRATE: ✅ fresh DB bootstrapped & stamped at head")
@@ -131,7 +130,7 @@ def _run_pending_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s Backend (%s)", APP_NAME, settings.app_env)
-    _run_pending_migrations()
+    await _run_pending_migrations()
     start_scheduler()
     yield
     stop_scheduler()
