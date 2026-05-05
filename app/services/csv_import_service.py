@@ -4,11 +4,15 @@ import uuid
 import logging
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.company import Company
 from app.models.csv_import import CSVImport
 from app.models.lead import Lead
 from app.models.notification import Notification
 from app.models.profile import Profile
-from app.core.constants import CSVImportStatus, LeadStage, NotificationType, UserRole
+from app.core.constants import (
+    CSVImportStatus, LeadStage, NotificationType, UserRole,
+    get_initial_stage_for_brand,
+)
 from app.core.exceptions import NotFoundError, BadRequestError, ForbiddenError
 from app.utils.csv_parser import parse_csv_content, suggest_column_mapping, normalize_phone
 from app.config import get_settings
@@ -111,6 +115,11 @@ class CSVImportService:
     ) -> CSVImport:
         headers, rows = parse_csv_content(content, self.settings.csv_max_rows)
 
+        slug_result = await self.db.execute(
+            select(Company.slug).where(Company.id == self.company_id)
+        )
+        initial_stage = get_initial_stage_for_brand(slug_result.scalar_one_or_none()).value
+
         success = 0
         failures = 0
         duplicates = 0
@@ -211,7 +220,7 @@ class CSVImportService:
                     seen_emails.add(email)
 
                 lead_data["company_id"] = self.company_id
-                lead_data["current_stage"] = LeadStage.LEAD
+                lead_data["current_stage"] = initial_stage
                 lead_data["assigned_agent_id"] = assigned_agent_id
                 lead_data["lead_source_id"] = lead_source_id
                 lead_data["created_by"] = user.id

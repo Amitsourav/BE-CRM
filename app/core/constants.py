@@ -10,12 +10,38 @@ class UserRole(str, enum.Enum):
 
 
 class LeadStage(str, enum.Enum):
+    # FMC pipeline (original 6)
     LEAD = "lead"
     CALLED = "called"
     CONNECTED = "connected"
     QUALIFIED_LEAD = "qualified_lead"
     WON = "won"
     LOST = "lost"
+
+    # Admitverse pipeline (17 additional values; CONNECTED and LOST are
+    # reused from above)
+    CREATED = "created"
+    CONTACTED = "contacted"
+    DNP_PRE_QUALIFIED = "dnp_pre_qualified"
+    QUALIFIED = "qualified"
+    OPPORTUNITY = "opportunity"
+    DNP_POST_QUALIFIED = "dnp_post_qualified"
+    PROCESSING = "processing"
+    IMPORTANT = "important"
+    PARTIAL_DOCS_COLLECTED = "partial_docs_collected"
+    DOCS_COLLECTED = "docs_collected"
+    APPLICATION_DONE = "application_done"
+    CONDITIONAL_DRAFT = "conditional_draft"
+    UCOL = "ucol"
+    DEPOSIT_PAID = "deposit_paid"
+    CAS_RECEIVED = "cas_received"
+    VISA_APPLIED = "visa_applied"
+    ENROLLED = "enrolled"
+
+
+# All 23 enum string values, in the order they appear in the DB type.
+# Used by SQLAlchemy ENUM column declarations.
+LEAD_STAGE_VALUES: tuple[str, ...] = tuple(s.value for s in LeadStage)
 
 
 class CallDisposition(str, enum.Enum):
@@ -69,8 +95,8 @@ class CSVImportStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-# Valid stage transitions
-VALID_TRANSITIONS: dict[LeadStage, list[LeadStage]] = {
+# ── FMC pipeline transitions (existing, untouched) ─────────────────────
+FMC_VALID_TRANSITIONS: dict[LeadStage, list[LeadStage]] = {
     LeadStage.LEAD: [LeadStage.CALLED, LeadStage.LOST],
     LeadStage.CALLED: [LeadStage.CONNECTED, LeadStage.LOST],
     LeadStage.CONNECTED: [LeadStage.QUALIFIED_LEAD, LeadStage.LOST],
@@ -79,9 +105,99 @@ VALID_TRANSITIONS: dict[LeadStage, list[LeadStage]] = {
     LeadStage.LOST: [LeadStage.LEAD],  # admin-only reopen
 }
 
-# Stages that require notes
-STAGES_REQUIRING_NOTES = {
+# Default export, kept for code that doesn't yet pass a brand.
+VALID_TRANSITIONS = FMC_VALID_TRANSITIONS
+
+
+# ── Admitverse pipeline transitions ────────────────────────────────────
+# Counselor can move freely (forward + backward) between any non-terminal
+# stages, can skip stages, and can drop to LOST from anywhere. Once in
+# LOST or ENROLLED, the lead is final — no transitions out.
+ADMITVERSE_STAGES: list[LeadStage] = [
+    LeadStage.CREATED,
+    LeadStage.CONTACTED,
+    LeadStage.DNP_PRE_QUALIFIED,
+    LeadStage.CONNECTED,
+    LeadStage.QUALIFIED,
+    LeadStage.OPPORTUNITY,
+    LeadStage.DNP_POST_QUALIFIED,
+    LeadStage.PROCESSING,
+    LeadStage.IMPORTANT,
+    LeadStage.PARTIAL_DOCS_COLLECTED,
+    LeadStage.DOCS_COLLECTED,
+    LeadStage.APPLICATION_DONE,
+    LeadStage.CONDITIONAL_DRAFT,
+    LeadStage.UCOL,
+    LeadStage.DEPOSIT_PAID,
+    LeadStage.CAS_RECEIVED,
+    LeadStage.VISA_APPLIED,
+    LeadStage.ENROLLED,
+    LeadStage.LOST,
+]
+
+ADMITVERSE_TERMINAL: set[LeadStage] = {LeadStage.ENROLLED, LeadStage.LOST}
+
+
+def _build_admitverse_transitions() -> dict[LeadStage, list[LeadStage]]:
+    table: dict[LeadStage, list[LeadStage]] = {}
+    for src in ADMITVERSE_STAGES:
+        if src in ADMITVERSE_TERMINAL:
+            table[src] = []
+        else:
+            # Any non-terminal stage can move to any other Admitverse
+            # stage except itself.
+            table[src] = [s for s in ADMITVERSE_STAGES if s != src]
+    return table
+
+
+ADMITVERSE_VALID_TRANSITIONS: dict[LeadStage, list[LeadStage]] = _build_admitverse_transitions()
+
+
+def get_transitions_for_brand(slug: str | None) -> dict[LeadStage, list[LeadStage]]:
+    """Return the valid-transitions table for a given company slug.
+
+    Unknown / missing slugs fall back to the FMC table so any new tenant
+    works out of the box with the simple 6-stage flow.
+    """
+    if (slug or "").lower() == "admitverse":
+        return ADMITVERSE_VALID_TRANSITIONS
+    return FMC_VALID_TRANSITIONS
+
+
+def get_terminal_stages_for_brand(slug: str | None) -> set[LeadStage]:
+    if (slug or "").lower() == "admitverse":
+        return ADMITVERSE_TERMINAL
+    return {LeadStage.WON, LeadStage.LOST}
+
+
+# ── Notes requirement (per brand) ──────────────────────────────────────
+# Stages that need conversation_notes + agent_agenda before moving in.
+FMC_STAGES_REQUIRING_NOTES = {
     LeadStage.CALLED,
     LeadStage.CONNECTED,
     LeadStage.QUALIFIED_LEAD,
 }
+
+# Admitverse: free movement is the design — gating every contacted/connected
+# transition behind a notes-required dialog fights that. Frontend agreed:
+# only `lost` keeps its lost_reason gate. If product later wants connected
+# (or any other) to require notes for Admitverse, just add the LeadStage
+# value to this set.
+ADMITVERSE_STAGES_REQUIRING_NOTES: set[LeadStage] = set()
+
+# Default export for back-compat with code that imports the old name.
+STAGES_REQUIRING_NOTES = FMC_STAGES_REQUIRING_NOTES
+
+
+def get_notes_required_for_brand(slug: str | None) -> set[LeadStage]:
+    if (slug or "").lower() == "admitverse":
+        return ADMITVERSE_STAGES_REQUIRING_NOTES
+    return FMC_STAGES_REQUIRING_NOTES
+
+
+def get_initial_stage_for_brand(slug: str | None) -> LeadStage:
+    """Initial stage assigned to a freshly-created lead. FMC starts at LEAD,
+    Admitverse starts at CREATED."""
+    if (slug or "").lower() == "admitverse":
+        return LeadStage.CREATED
+    return LeadStage.LEAD

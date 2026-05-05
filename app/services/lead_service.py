@@ -10,8 +10,9 @@ from app.models.lead import Lead
 from app.models.lead_source import LeadSource
 from app.models.profile import Profile
 from app.models.lead_stage_log import LeadStageLog
+from app.models.company import Company
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
-from app.core.constants import UserRole, LeadStage
+from app.core.constants import UserRole, LeadStage, get_initial_stage_for_brand
 from app.utils.pagination import paginate
 from app.utils.date_helpers import now_utc
 
@@ -25,6 +26,9 @@ class LeadService:
 
     async def create_lead(self, data: dict, created_by: uuid.UUID) -> Lead:
         data["company_id"] = self.company_id
+        slug_result = await self.db.execute(select(Company.slug).where(Company.id == self.company_id))
+        initial_stage = get_initial_stage_for_brand(slug_result.scalar_one_or_none())
+        data.setdefault("current_stage", initial_stage.value)
         lead = Lead(**data, created_by=created_by)
         self.db.add(lead)
         await self.db.flush()
@@ -34,7 +38,7 @@ class LeadService:
             company_id=self.company_id,
             lead_id=lead.id,
             from_stage=None,
-            to_stage=LeadStage.LEAD,
+            to_stage=initial_stage.value,
             changed_by=created_by,
         )
         self.db.add(stage_log)

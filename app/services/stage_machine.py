@@ -7,8 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.lead import Lead
 from app.models.lead_stage_log import LeadStageLog
 from app.models.profile import Profile
+from app.models.company import Company
 from app.core.constants import (
-    LeadStage, VALID_TRANSITIONS, STAGES_REQUIRING_NOTES, UserRole,
+    LeadStage,
+    UserRole,
+    get_transitions_for_brand,
+    get_terminal_stages_for_brand,
+    get_notes_required_for_brand,
 )
 from app.core.exceptions import (
     NotFoundError, ForbiddenError, BadRequestError, InvalidTransitionError,
@@ -24,6 +29,16 @@ class StageMachine:
         self.db = db
         self.company_id = company_id
         self.settings = get_settings()
+        self._slug: str | None = None
+
+    async def _get_slug(self) -> str | None:
+        if self._slug is not None:
+            return self._slug
+        result = await self.db.execute(
+            select(Company.slug).where(Company.id == self.company_id)
+        )
+        self._slug = result.scalar_one_or_none()
+        return self._slug
 
     async def transition(
         self,
@@ -52,17 +67,22 @@ class StageMachine:
         from_stage = LeadStage(lead.current_stage)
         target = LeadStage(to_stage)
 
+        slug = await self._get_slug()
+        transitions = get_transitions_for_brand(slug)
+        terminal_stages = get_terminal_stages_for_brand(slug)
+        notes_required = get_notes_required_for_brand(slug)
+
         # Validate transition
-        if target not in VALID_TRANSITIONS.get(from_stage, []):
+        if target not in transitions.get(from_stage, []):
             raise InvalidTransitionError(from_stage.value, target.value)
 
-        # Admin-only: reopen from lost
+        # FMC: admin-only reopen from lost
         if from_stage == LeadStage.LOST and target == LeadStage.LEAD:
             if user.role != UserRole.ADMIN:
                 raise ForbiddenError("Only admin can reopen a lost lead")
 
         # Require notes for certain stages
-        if target in STAGES_REQUIRING_NOTES:
+        if target in notes_required:
             if not conversation_notes or not agent_agenda:
                 raise BadRequestError(
                     f"Stage '{target.value}' requires conversation_notes and agent_agenda"
@@ -74,22 +94,26 @@ class StageMachine:
 
         # Set due date
         new_due = due_date
-        if target in STAGES_REQUIRING_NOTES and not new_due:
+        if target in notes_required and not new_due:
             new_due = add_business_days(now_utc(), self.settings.default_due_days)
 
         # Update lead
         lead.current_stage = target.value
-        lead.due_date = new_due if target not in (LeadStage.WON, LeadStage.LOST) else None
+        lead.due_date = new_due if target not in terminal_stages else None
 
         if target == LeadStage.CONNECTED and not lead.connected_time:
             lead.connected_time = now_utc()
         if target == LeadStage.WON:
             lead.won_time = now_utc()
+        if target == LeadStage.ENROLLED and not lead.won_time:
+            # Admitverse's "Enrolled" is the final happy state — mirror to
+            # won_time so existing reports/widgets keep working.
+            lead.won_time = now_utc()
         if target == LeadStage.LOST:
             lead.lost_time = now_utc()
             lead.lost_reason = lost_reason
         if target == LeadStage.LEAD and from_stage == LeadStage.LOST:
-            # Reopen — clear lost fields
+            # Reopen — clear lost fields (FMC only)
             lead.lost_time = None
             lead.lost_reason = None
 

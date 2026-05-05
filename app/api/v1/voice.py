@@ -1697,7 +1697,17 @@ async def _analyze_call(transcript: str) -> dict:
     return result
 
 
-_STAGE_ORDER = {"lead": 0, "called": 1, "connected": 2, "qualified_lead": 3, "won": 4, "lost": -1}
+# Per-brand AI auto-stage paths. The function steps through these one at
+# a time (e.g. created→contacted→connected, not created→connected
+# directly) so every transition gets its own stage_log row.
+_STAGE_PATHS = {
+    "fmc": ["lead", "called", "connected", "qualified_lead"],
+    "admitverse": ["created", "contacted", "connected", "qualified"],
+}
+_STAGE_ORDERS = {
+    brand: {stage: idx for idx, stage in enumerate(path)}
+    for brand, path in _STAGE_PATHS.items()
+}
 
 
 async def _auto_update_lead_stage(
@@ -1706,14 +1716,24 @@ async def _auto_update_lead_stage(
 ):
     """Auto-update lead stage based on call outcome.
 
-    Respects VALID_TRANSITIONS: lead→called→connected→qualified_lead→won.
-    Never moves backward. Never auto-marks lost. Steps through stages
-    one at a time (lead→called→connected, not lead→connected directly).
+    Brand-aware: FMC walks lead→called→connected→qualified_lead, Admitverse
+    walks created→contacted→connected→qualified. Never moves backward,
+    never auto-marks lost, always steps one stage at a time.
     """
     from app.models.lead import Lead
+    from app.models.company import Company
     from app.models.task import Task
     from app.models.notification import Notification
     from app.utils.date_helpers import now_utc, add_business_days
+
+    # Resolve brand from the lead's company so each call uses the right
+    # stage names. Unknown / missing slug falls back to the FMC path.
+    slug_result = await db.execute(select(Company.slug).where(Company.id == lead.company_id))
+    slug = (slug_result.scalar_one_or_none() or "").lower()
+    brand = "admitverse" if slug == "admitverse" else "fmc"
+    stage_path = _STAGE_PATHS[brand]
+    stage_order = _STAGE_ORDERS[brand]
+    contacted_stage, connected_stage, qualified_stage = stage_path[1], stage_path[2], stage_path[3]
 
     old_stage = lead.current_stage
     call_connected = bool(
@@ -1740,21 +1760,19 @@ async def _auto_update_lead_stage(
 
     # Determine target stage
     if not call_connected:
-        # No answer — at minimum mark as "called" (we tried)
-        target = "called"
+        # No answer — at minimum mark as contacted (we tried)
+        target = contacted_stage
     elif qualified_eligible:
-        target = "qualified_lead"
+        target = qualified_stage
     elif sentiment == "positive" or call_connected:
-        target = "connected"
+        target = connected_stage
     else:
-        target = "called"
+        target = contacted_stage
 
     # Never move backward
-    if _STAGE_ORDER.get(target, 0) <= _STAGE_ORDER.get(old_stage, 0):
+    if stage_order.get(target, 0) <= stage_order.get(old_stage, 0):
         return
 
-    # Step through stages one at a time
-    stage_path = ["lead", "called", "connected", "qualified_lead"]
     start_idx = stage_path.index(old_stage) if old_stage in stage_path else -1
     end_idx = stage_path.index(target) if target in stage_path else -1
     if start_idx < 0 or end_idx < 0 or end_idx <= start_idx:
@@ -1800,9 +1818,9 @@ async def _auto_update_lead_stage(
         final_stage = to_stage
 
         # Set timestamps
-        if to_stage == "connected":
+        if to_stage == connected_stage:
             lead.connected_time = now_utc()
-        if to_stage == "qualified_lead":
+        if to_stage == qualified_stage:
             lead.due_date = add_business_days(now_utc(), 1)
 
         # Stage log for each step
@@ -1844,7 +1862,7 @@ async def _auto_update_lead_stage(
         ))
 
     # Auto-create follow-up task for qualified leads
-    if final_stage == "qualified_lead":
+    if final_stage == qualified_stage:
         assignee = lead.assigned_agent_id or changed_by
         db.add(Task(
             company_id=company_id,

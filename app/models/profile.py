@@ -34,3 +34,7 @@ class Profile(Base, TimestampMixin):
     @property
     def company_timezone(self) -> str | None:
         return self.company.timezone if self.company else None
+
+    @property
+    def company_slug(self) -> str | None:
+        return self.company.slug if self.company else None

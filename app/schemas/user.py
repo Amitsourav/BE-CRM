@@ -10,6 +10,7 @@ class UserOut(BaseModel):
     company_id: uuid.UUID
     company_name: str | None = None
     company_timezone: str | None = None
+    company_slug: str | None = None
     email: str
     full_name: str
     phone: str | None = None

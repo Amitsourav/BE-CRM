@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.call_attempt import CallAttempt
 from app.models.lead import Lead
 from app.models.lead_stage_log import LeadStageLog
-from app.core.constants import LeadStage, VALID_TRANSITIONS
+from app.models.company import Company
+from app.core.constants import LeadStage, get_transitions_for_brand
 from app.config import get_settings
 from app.utils.date_helpers import now_utc
 
@@ -169,6 +170,37 @@ async def analyze_sentiment(transcript: str) -> tuple[str, float]:
         return "neutral", 0.5
 
 
+def _pick_auto_target(
+    *, slug: str | None, current: LeadStage, sentiment: str | None, score: float,
+) -> LeadStage | None:
+    """Pick the next auto-advance target for the given brand and call outcome.
+
+    FMC: lead → called → (positive ≥ 0.6) connected → (positive ≥ 0.75) qualified_lead
+    Admitverse: created → contacted → (positive ≥ 0.6) connected → (positive ≥ 0.75) qualified
+                contacted/connected + non-positive on no-pickup → dnp_pre_qualified
+                qualified + no-pickup → dnp_post_qualified
+    """
+    is_admitverse = (slug or "").lower() == "admitverse"
+
+    if not is_admitverse:
+        if current == LeadStage.LEAD:
+            return LeadStage.CALLED
+        if current == LeadStage.CALLED and sentiment == "positive" and score >= 0.6:
+            return LeadStage.CONNECTED
+        if current == LeadStage.CONNECTED and sentiment == "positive" and score >= 0.75:
+            return LeadStage.QUALIFIED_LEAD
+        return None
+
+    # Admitverse branch
+    if current == LeadStage.CREATED:
+        return LeadStage.CONTACTED
+    if current == LeadStage.CONTACTED and sentiment == "positive" and score >= 0.6:
+        return LeadStage.CONNECTED
+    if current == LeadStage.CONNECTED and sentiment == "positive" and score >= 0.75:
+        return LeadStage.QUALIFIED
+    return None
+
+
 async def auto_update_lead_status(
     db: AsyncSession,
     *,
@@ -180,16 +212,13 @@ async def auto_update_lead_status(
 ) -> None:
     """Update lead stage based on call outcome.
 
-    Conservative mapping — we only ever *advance* the lead or leave it where it
-    was. We don't auto-close (lost) based on sentiment alone: that needs a
-    lost_reason and usually human judgement. Transitions written are:
+    Conservative mapping — we only ever *advance* the lead or leave it where
+    it was. We don't auto-close (lost) based on sentiment alone: that needs a
+    lost_reason and usually human judgement.
 
-      lead                          → called      (call happened at all)
-      called + positive ≥ 0.6       → connected   (real conversation)
-      connected + positive ≥ 0.75   → qualified_lead
-
-    Each change also writes a LeadStageLog entry so the timeline shows that
-    the AI pipeline — not a human — moved the lead.
+    Per-brand stage names: see _pick_auto_target. Each change also writes a
+    LeadStageLog entry so the timeline shows that the AI pipeline — not a
+    human — moved the lead.
     """
     result = await db.execute(
         select(Lead).where(Lead.id == lead_id, Lead.company_id == company_id, Lead.is_deleted == False)  # noqa: E712
@@ -208,23 +237,19 @@ async def auto_update_lead_status(
         logger.warning("[POST-CALL] Lead %s has unknown stage %r", lead_id, lead.current_stage)
         return
 
-    target: LeadStage | None = None
+    slug_result = await db.execute(select(Company.slug).where(Company.id == company_id))
+    slug = slug_result.scalar_one_or_none()
+
     score = float(sentiment_score or 0.0)
-
-    if current == LeadStage.LEAD:
-        target = LeadStage.CALLED
-    elif current == LeadStage.CALLED and sentiment == "positive" and score >= 0.6:
-        target = LeadStage.CONNECTED
-    elif current == LeadStage.CONNECTED and sentiment == "positive" and score >= 0.75:
-        target = LeadStage.QUALIFIED_LEAD
-
+    target = _pick_auto_target(slug=slug, current=current, sentiment=sentiment, score=score)
     if target is None:
         return
 
-    if target not in VALID_TRANSITIONS.get(current, []):
+    transitions = get_transitions_for_brand(slug)
+    if target not in transitions.get(current, []):
         logger.warning(
-            "[POST-CALL] Skipping auto-transition %s→%s for lead %s (not in valid transitions)",
-            current.value, target.value, lead_id,
+            "[POST-CALL] Skipping auto-transition %s→%s for lead %s (not in valid transitions for brand=%s)",
+            current.value, target.value, lead_id, slug,
         )
         return
 
@@ -242,6 +267,6 @@ async def auto_update_lead_status(
     ))
     await db.commit()
     logger.info(
-        "[POST-CALL] Lead %s auto-transitioned %s → %s (sentiment=%s, score=%.2f)",
-        lead_id, current.value, target.value, sentiment, score,
+        "[POST-CALL] Lead %s auto-transitioned %s → %s (sentiment=%s, score=%.2f, brand=%s)",
+        lead_id, current.value, target.value, sentiment, score, slug,
     )

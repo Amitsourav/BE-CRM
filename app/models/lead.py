@@ -7,6 +7,7 @@ from typing import Optional, List, Dict
 from sqlalchemy import String, Integer, Boolean, Numeric, Date, DateTime, text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY, ENUM
+from app.core.constants import LEAD_STAGE_VALUES
 from app.models.base import Base, TimestampMixin
 
 
@@ -41,7 +42,7 @@ class Lead(Base, TimestampMixin):
     preferred_universities: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String), nullable=True)
 
     # Pipeline
-    current_stage: Mapped[str] = mapped_column(ENUM('lead', 'called', 'connected', 'qualified_lead', 'won', 'lost', name='lead_stage', create_type=False), nullable=False, server_default=text("'lead'"))
+    current_stage: Mapped[str] = mapped_column(ENUM(*LEAD_STAGE_VALUES, name='lead_stage', create_type=False), nullable=False, server_default=text("'lead'"))
     assigned_agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)
     lead_source_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("lead_sources.id", ondelete="SET NULL"), nullable=True)
     call_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
