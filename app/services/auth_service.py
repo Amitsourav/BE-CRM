@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from gotrue.errors import AuthApiError
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.supabase_client import get_supabase_admin_client
 from app.core.exceptions import BadRequestError, UnauthorizedError
 
@@ -32,6 +35,13 @@ class AuthService:
             raise UnauthorizedError(str(e))
 
     def register(self, email: str, password: str, full_name: str, role: str = "telecaller", phone: str | None = None, vertical: str | None = None) -> dict:
+        """Create the auth.users row only.
+
+        Callers should follow up with `create_profile_row` so the user is
+        actually visible to the CRM. Splitting these two steps lets the
+        endpoint pass through the admin's company_id (which lives in the
+        request session, not in this service).
+        """
         try:
             response = self.supabase.auth.admin.create_user({
                 "email": email,
@@ -47,6 +57,58 @@ class AuthService:
             return {"user_id": str(response.user.id), "email": response.user.email}
         except AuthApiError as e:
             raise BadRequestError(str(e))
+
+    async def create_profile_row(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: str,
+        company_id: uuid.UUID,
+        email: str,
+        full_name: str,
+        role: str = "telecaller",
+        phone: str | None = None,
+        vertical: str | None = None,
+    ) -> None:
+        """Insert (or upsert) the corresponding profiles row.
+
+        The CRM looks up everything tenant-scoped through `profiles`
+        (company_id, role, role-based agent lists, task assignment, dashboards).
+        Creating only auth.users — which is what the previous register did —
+        leaves a phantom user that doesn't show up anywhere. FMC's old
+        Supabase masked the bug via a `handle_new_user()` trigger that
+        auto-created a profiles row; the fresh Admitverse Supabase has no
+        such trigger, exposing the issue.
+
+        ON CONFLICT keeps the operation idempotent: if a trigger somewhere
+        already inserted a default row, we promote it to the right
+        company/role rather than failing.
+        """
+        await db.execute(
+            text(
+                "INSERT INTO profiles "
+                "(id, company_id, email, full_name, role, phone, vertical, is_active) "
+                "VALUES (:id, :cid, :email, :name, :role, :phone, :vertical, true) "
+                "ON CONFLICT (id) DO UPDATE SET "
+                "  company_id = EXCLUDED.company_id, "
+                "  email = EXCLUDED.email, "
+                "  full_name = COALESCE(NULLIF(EXCLUDED.full_name, ''), profiles.full_name), "
+                "  role = EXCLUDED.role, "
+                "  phone = EXCLUDED.phone, "
+                "  vertical = EXCLUDED.vertical, "
+                "  is_active = true"
+            ),
+            {
+                "id": user_id,
+                "cid": company_id,
+                "email": email,
+                "name": full_name,
+                "role": role,
+                "phone": phone,
+                "vertical": vertical,
+            },
+        )
+        await db.commit()
 
     def refresh_token(self, refresh_token: str) -> dict:
         try:

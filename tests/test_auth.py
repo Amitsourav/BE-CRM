@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 from app.services.auth_service import get_auth_service
 from app.core.exceptions import UnauthorizedError
 
@@ -13,6 +13,9 @@ def _mock_auth_service():
         "user_id": "00000000-0000-4000-a000-000000000001",
     }
     mock.register.return_value = {"user_id": "new-uuid", "email": "new@test.com"}
+    # create_profile_row is async — MagicMock returns a MagicMock for the
+    # method call which can't be awaited. AsyncMock returns an awaitable.
+    mock.create_profile_row = AsyncMock(return_value=None)
     mock.refresh_token.return_value = mock.login.return_value
     mock.reset_password.return_value = None
     mock.update_password.return_value = None

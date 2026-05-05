@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.auth import (
     LoginRequest, RegisterRequest, TokenResponse,
     RefreshRequest, ResetPasswordRequest, UpdatePasswordRequest,
@@ -8,6 +9,7 @@ from app.schemas.auth import (
 )
 from app.services.auth_service import AuthService, get_auth_service
 from app.dependencies import get_current_user, get_current_admin
+from app.db.session import get_db
 from app.models.profile import Profile
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -22,15 +24,33 @@ def login(request: Request, body: LoginRequest, auth: AuthService = Depends(get_
 
 @router.post("/register", response_model=MessageResponse)
 @limiter.limit("3/minute")
-def register(
+async def register(
     request: Request,
     body: RegisterRequest,
     admin: Profile = Depends(get_current_admin),
     auth: AuthService = Depends(get_auth_service),
+    db: AsyncSession = Depends(get_db),
 ):
+    # 1. Create the auth.users row in Supabase Auth.
     result = auth.register(
         email=body.email,
         password=body.password,
+        full_name=body.full_name,
+        role=body.role,
+        phone=body.phone,
+        vertical=body.vertical,
+    )
+    # 2. Create the matching profiles row tied to the admin's company.
+    # Without this step, the user exists in auth but is invisible to the
+    # CRM — they don't appear in dashboards, agent lists, or task
+    # assignment dropdowns. FMC's legacy Supabase has a trigger that
+    # auto-created profiles rows; the new Admitverse Supabase doesn't,
+    # which is why this bug surfaced there first.
+    await auth.create_profile_row(
+        db,
+        user_id=result["user_id"],
+        company_id=admin.company_id,
+        email=result["email"],
         full_name=body.full_name,
         role=body.role,
         phone=body.phone,
