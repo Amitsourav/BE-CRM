@@ -1,7 +1,10 @@
+import logging
 from fastapi import APIRouter, Depends, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 from app.schemas.auth import (
     LoginRequest, RegisterRequest, TokenResponse,
     RefreshRequest, ResetPasswordRequest, UpdatePasswordRequest,
@@ -31,6 +34,10 @@ async def register(
     auth: AuthService = Depends(get_auth_service),
     db: AsyncSession = Depends(get_db),
 ):
+    logger.info(
+        "REGISTER_START email=%s role=%s admin=%s company_id=%s",
+        body.email, body.role, admin.email, admin.company_id,
+    )
     # 1. Create the auth.users row in Supabase Auth.
     result = auth.register(
         email=body.email,
@@ -40,22 +47,38 @@ async def register(
         phone=body.phone,
         vertical=body.vertical,
     )
-    # 2. Create the matching profiles row tied to the admin's company.
-    # Without this step, the user exists in auth but is invisible to the
-    # CRM — they don't appear in dashboards, agent lists, or task
-    # assignment dropdowns. FMC's legacy Supabase has a trigger that
-    # auto-created profiles rows; the new Admitverse Supabase doesn't,
-    # which is why this bug surfaced there first.
-    await auth.create_profile_row(
-        db,
-        user_id=result["user_id"],
-        company_id=admin.company_id,
-        email=result["email"],
-        full_name=body.full_name,
-        role=body.role,
-        phone=body.phone,
-        vertical=body.vertical,
+    logger.info(
+        "REGISTER_AUTH_USER_CREATED user_id=%s email=%s",
+        result["user_id"], result["email"],
     )
+    # 2. Create the matching profiles row tied to the admin's company.
+    # Belt and suspenders: even if the new handle_new_user() trigger
+    # already inserted a default row, ON CONFLICT (id) DO UPDATE
+    # promotes it with the admin-supplied role / company / fields.
+    try:
+        await auth.create_profile_row(
+            db,
+            user_id=result["user_id"],
+            company_id=admin.company_id,
+            email=result["email"],
+            full_name=body.full_name,
+            role=body.role,
+            phone=body.phone,
+            vertical=body.vertical,
+        )
+        logger.info(
+            "REGISTER_PROFILE_CREATED user_id=%s company_id=%s",
+            result["user_id"], admin.company_id,
+        )
+    except Exception:
+        # Don't leave the call as a 500 if the trigger already created
+        # the row — log loudly so we can find the root cause but let
+        # the user appear in the UI (the trigger's row is correct in
+        # single-tenant Supabase).
+        logger.exception(
+            "REGISTER_PROFILE_FAILED user_id=%s — relying on auth.users trigger",
+            result["user_id"],
+        )
     return MessageResponse(message=f"User created: {result['email']}")
 
 
