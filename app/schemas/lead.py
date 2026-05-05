@@ -102,6 +102,37 @@ class LeadOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class LeadCardOut(BaseModel):
+    """Slim projection for the Kanban board. The full LeadOut ships 35
+    fields per row including JSONB custom_fields and notes; on a 19-column
+    Admitverse board with hundreds of leads that's a lot of bytes per
+    refresh. The card UI only needs identity + routing + due date.
+    """
+    id: uuid.UUID
+    full_name: str
+    phone: str | None = None
+    email: str | None = None
+    current_stage: str
+    assigned_agent_id: uuid.UUID | None = None
+    lead_source_id: uuid.UUID | None = None
+    due_date: datetime | None = None
+    last_contacted_at: datetime | None = None
+    call_attempt_count: int = 0
+    tags: list[str] = []
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class LeadsByStageOut(BaseModel):
+    """Response for GET /leads/by-stage. Kanban fetches all stages in
+    one round trip; frontend slices `items_by_stage` into columns.
+    """
+    items_by_stage: dict[str, list[LeadCardOut]]
+    counts_by_stage: dict[str, int]
+    total: int
+
+
 class LeadAssign(BaseModel):
     agent_id: uuid.UUID
 

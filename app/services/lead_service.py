@@ -117,6 +117,72 @@ class LeadService:
 
         return await paginate(self.db, query, page, page_size)
 
+    async def list_leads_by_stage(
+        self,
+        user: Profile,
+        agent_id: uuid.UUID | None = None,
+        per_stage_limit: int = 50,
+    ) -> dict:
+        """Fetch leads grouped by stage in one round trip.
+
+        The Kanban board previously fired one /leads request per stage
+        column — 19 round trips for Admitverse, each carrying a separate
+        COUNT and SELECT. This walks the table once, partitions by
+        current_stage on the frontend, and caps each stage at
+        per_stage_limit so we don't ship thousands of cards for a long-tail
+        stage. A second tiny query collects total counts so the Kanban can
+        show "+N more" if a column is truncated.
+        """
+        # Per-stage row cap via a window function: rank rows within their
+        # stage by created_at desc and keep the top N. One scan, one
+        # round trip.
+        from sqlalchemy import literal_column, asc, desc
+        from sqlalchemy.sql import over
+
+        rn = func.row_number().over(
+            partition_by=Lead.current_stage,
+            order_by=Lead.created_at.desc(),
+        ).label("rn")
+
+        base = select(Lead, rn).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+        )
+        if user.role == UserRole.TELECALLER:
+            base = base.where(Lead.assigned_agent_id == user.id)
+        elif agent_id:
+            base = base.where(Lead.assigned_agent_id == agent_id)
+
+        sub = base.subquery()
+        result = await self.db.execute(
+            select(Lead).join(sub, Lead.id == sub.c.id).where(sub.c.rn <= per_stage_limit)
+        )
+        rows = result.scalars().all()
+
+        items_by_stage: dict[str, list[Lead]] = {}
+        for lead in rows:
+            items_by_stage.setdefault(lead.current_stage, []).append(lead)
+
+        # Total counts per stage (for "+N more" labels). One query.
+        count_query = select(Lead.current_stage, func.count()).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+        )
+        if user.role == UserRole.TELECALLER:
+            count_query = count_query.where(Lead.assigned_agent_id == user.id)
+        elif agent_id:
+            count_query = count_query.where(Lead.assigned_agent_id == agent_id)
+        count_query = count_query.group_by(Lead.current_stage)
+        count_rows = (await self.db.execute(count_query)).all()
+        counts_by_stage = {stage: cnt for stage, cnt in count_rows}
+        total = sum(counts_by_stage.values())
+
+        return {
+            "items_by_stage": items_by_stage,
+            "counts_by_stage": counts_by_stage,
+            "total": total,
+        }
+
     async def search_leads(self, q: str, user: Profile, page: int = 1, page_size: int = 25) -> dict:
         query = select(Lead).where(
             Lead.company_id == self.company_id,

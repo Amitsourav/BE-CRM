@@ -14,6 +14,7 @@ from app.services.lead_service import LeadService
 from app.schemas.lead import (
     LeadCreate, LeadUpdate, LeadOut, LeadAssign, LeadBulkAssign,
     LeadSearchParams, LeadSourceCreate, LeadSourceOut,
+    LeadCardOut, LeadsByStageOut,
 )
 from app.schemas.stage import StageLogOut
 from app.schemas.call import CallAttemptOut
@@ -55,6 +56,31 @@ async def create_lead(
     service = LeadService(db, company_id)
     data = body.model_dump(exclude_unset=True)
     return await service.create_lead(data, current_user.id)
+
+
+@router.get("/by-stage", response_model=LeadsByStageOut)
+async def list_leads_by_stage(
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    agent_id: uuid.UUID | None = Query(None),
+    per_stage_limit: int = Query(50, ge=1, le=200),
+):
+    """Kanban board endpoint — returns all leads grouped by stage in one
+    round trip (replaces 19 per-column requests for Admitverse, 6 for FMC).
+    """
+    service = LeadService(db, company_id)
+    data = await service.list_leads_by_stage(
+        user=current_user, agent_id=agent_id, per_stage_limit=per_stage_limit,
+    )
+    return {
+        "items_by_stage": {
+            stage: [LeadCardOut.model_validate(lead) for lead in leads]
+            for stage, leads in data["items_by_stage"].items()
+        },
+        "counts_by_stage": data["counts_by_stage"],
+        "total": data["total"],
+    }
 
 
 @router.get("/search", response_model=PaginatedResponse[LeadOut])
