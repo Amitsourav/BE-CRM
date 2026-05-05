@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import time
 
@@ -211,10 +213,24 @@ class VoicePipeline:
                 welcome_text = (agent.welcome_message or "Hello, am I speaking with {name}?")
                 welcome_text = welcome_text.replace("{name}", state.lead_name)
             else:
-                welcome_text = getattr(agent, "welcome_message_no_name", None) or (
-                    f"Hello! This is {getattr(agent, 'name', 'a counselor')} "
-                    "from FundMyCampus. May I know your name first?"
-                )
+                # Mirror generate_welcome_audio: brand from state.company_name,
+                # not hardcoded. See pipeline.generate_welcome_audio docstring.
+                override = getattr(agent, "welcome_message_no_name", None)
+                if override:
+                    welcome_text = override
+                else:
+                    agent_name = getattr(agent, "name", None) or "a counselor"
+                    company = getattr(state, "company_name", None)
+                    if company:
+                        welcome_text = (
+                            f"Hello! This is {agent_name} from {company}. "
+                            "May I know your name first?"
+                        )
+                    else:
+                        welcome_text = (
+                            f"Hello! This is {agent_name}. "
+                            "May I know your name first?"
+                        )
             state.conversation_history.append(
                 {"role": "assistant", "content": welcome_text}
             )
@@ -391,6 +407,7 @@ class VoicePipeline:
         self,
         agent,
         lead_name: str = "there",
+        company_name: str | None = None,
     ) -> bytes:
         """Welcome message audio when lead picks up.
 
@@ -398,17 +415,35 @@ class VoicePipeline:
         it instead of saying "Am I speaking with there?". The LLM picks
         up the answer from conversation_history on subsequent turns and
         addresses the user by name naturally.
+
+        company_name is used in the no-name fallback so the agent says the
+        right brand. Previously this was hardcoded to "FundMyCampus", which
+        made every Admitverse call open with the wrong company name.
         """
         if _is_real_name(lead_name):
             welcome = agent.welcome_message or "Hello! Am I speaking with {name}?"
             welcome = welcome.replace("{name}", lead_name)
         else:
-            # Use the agent's no-name welcome if configured, else a sensible
-            # default that introduces the agent and asks for the name.
-            welcome = getattr(agent, "welcome_message_no_name", None) or (
-                f"Hello! This is {getattr(agent, 'name', 'a counselor')} "
-                "from FundMyCampus. May I know your name first?"
-            )
+            # Use the agent's no-name welcome if configured, else build a
+            # sensible default that introduces the agent and asks for the
+            # name. The brand is taken from company_name (passed by the
+            # caller); falls back to a generic phrasing if not provided so
+            # we never say the wrong company on a real call.
+            override = getattr(agent, "welcome_message_no_name", None)
+            if override:
+                welcome = override
+            else:
+                agent_name = getattr(agent, "name", None) or "a counselor"
+                if company_name:
+                    welcome = (
+                        f"Hello! This is {agent_name} from {company_name}. "
+                        "May I know your name first?"
+                    )
+                else:
+                    welcome = (
+                        f"Hello! This is {agent_name}. "
+                        "May I know your name first?"
+                    )
         return await self._get_tts_audio(
             text=welcome,
             language="en",

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -228,6 +230,7 @@ async def initiate_outbound_call(
             lead_id=str(body.lead_id),
             company_id=str(current_user.company_id),
             lead_name=body.lead_name or "there",
+            company_name=current_user.company_name,
         )
     except RuntimeError as e:
         call.call_status = "failed"
@@ -245,6 +248,7 @@ async def initiate_outbound_call(
             wav = await voice_pipeline.generate_welcome_audio(
                 agent=agent,
                 lead_name=body.lead_name or "there",
+                company_name=current_user.company_name,
             )
             state.welcome_audio = wav or b""
             # Pre-convert to mulaw+base64 so the WS start handler
@@ -841,7 +845,9 @@ async def voice_stream(
                         if not welcome_wav:
                             source = "fresh"
                             welcome_wav = await voice_pipeline.generate_welcome_audio(
-                                agent=agent, lead_name=state.lead_name
+                                agent=agent,
+                                lead_name=state.lead_name,
+                                company_name=getattr(state, "company_name", None),
                             )
                         elapsed_ms = int((_time.time() - t_start) * 1000)
                         logger.info(
@@ -1168,23 +1174,50 @@ async def _save_summary_background(call_id: str, transcript: str):
     from app.services.pricing_service import calculate_agent_pricing
     from app.utils.date_helpers import now_utc, add_business_days
 
-    post_call = await _analyze_call(transcript)
+    # Look up the agent's custom analysis prompt (per-agent in DB) before
+    # calling the LLM so the analysis is shaped by the agent's vertical.
+    # Falls back to the generic prompt inside _analyze_call if NULL.
+    agent: AIAgent | None = None
+    analysis_prompt: str | None = None
+    try:
+        async with AsyncSessionLocal() as _prompt_db:
+            _call_result = await _prompt_db.execute(
+                select(CallAttempt).where(CallAttempt.id == uuid.UUID(call_id))
+            )
+            _call = _call_result.scalar_one_or_none()
+            if _call and _call.ai_agent_id:
+                _agent_result = await _prompt_db.execute(
+                    select(AIAgent).where(AIAgent.id == _call.ai_agent_id)
+                )
+                agent = _agent_result.scalar_one_or_none()
+                if agent:
+                    analysis_prompt = getattr(agent, "post_call_analysis_prompt", None)
+    except Exception as e:
+        logger.warning(
+            "post_call: prompt lookup failed for call %s: %s — using generic",
+            call_id, e,
+        )
+
+    post_call = await _analyze_call(transcript, system_prompt=analysis_prompt)
     sentiment = post_call.get("sentiment", "neutral")
     interest = post_call.get("interest_level", "low")
     summary = post_call.get("summary", "")
     learned_name = post_call.get("user_name")  # may be None
 
-    # Structured facts the LLM extracted (any can be None / [])
-    extracted = {
-        "loan_amount": post_call.get("loan_amount"),
-        "college": post_call.get("college"),
-        "study_location": post_call.get("study_location"),
-        "course": post_call.get("course"),
-        "intake": post_call.get("intake"),
-        "banks_tried": post_call.get("banks_tried") or [],
-        "objections": post_call.get("objections") or [],
-        "next_action": post_call.get("next_action"),
+    # Brand-specific extraction is everything OUTSIDE the core fields. We
+    # don't know in advance what an Admitverse / future-tenant prompt
+    # asks for, so just pass through all extra keys the LLM returned.
+    # Notes block + custom_fields render dynamically below.
+    extracted: dict = {
+        k: v for k, v in post_call.items()
+        if k not in _CORE_ANALYSIS_FIELDS and v not in (None, "", [], {})
     }
+    # Always carry through objections / next_action even though they're
+    # core (the previous behavior shipped them in custom_fields too).
+    if post_call.get("objections"):
+        extracted["objections"] = post_call["objections"]
+    if post_call.get("next_action"):
+        extracted["next_action"] = post_call["next_action"]
 
     try:
         async with AsyncSessionLocal() as db:
@@ -1205,15 +1238,10 @@ async def _save_summary_background(call_id: str, transcript: str):
             call.sentiment = sentiment
             call.sentiment_score = post_call.get("confidence", 0) / 100.0
 
-            if call.call_duration_seconds and call.ai_agent_id:
+            if call.call_duration_seconds and call.ai_agent_id and agent:
                 try:
-                    agent_result = await db.execute(
-                        select(AIAgent).where(AIAgent.id == call.ai_agent_id)
-                    )
-                    agent = agent_result.scalar_one_or_none()
-                    if agent:
-                        pricing = calculate_agent_pricing(agent)
-                        call.cost = round(pricing["total_usd"] * call.call_duration_seconds / 60.0, 4)
+                    pricing = calculate_agent_pricing(agent)
+                    call.cost = round(pricing["total_usd"] * call.call_duration_seconds / 60.0, 4)
                 except Exception as e:
                     logger.warning("cost calc failed for call %s: %s", call_id, e)
 
@@ -1223,28 +1251,21 @@ async def _save_summary_background(call_id: str, transcript: str):
                 lead.last_contacted_at = now_utc()
                 if summary:
                     ts = now_utc().strftime("%Y-%m-%d %H:%M")
-                    # Build a human-readable "Key Details" block from the
-                    # structured extraction so reviewers can scan at a glance
-                    # without parsing the full transcript.
-                    details = []
-                    if extracted.get("loan_amount"):
-                        details.append(f"  Amount: {extracted['loan_amount']}")
-                    if extracted.get("college"):
-                        loc = (
-                            f" ({extracted['study_location']})"
-                            if extracted.get("study_location") else ""
-                        )
-                        details.append(f"  College: {extracted['college']}{loc}")
-                    if extracted.get("course"):
-                        details.append(f"  Course: {extracted['course']}")
-                    if extracted.get("intake"):
-                        details.append(f"  Intake: {extracted['intake']}")
-                    if extracted.get("banks_tried"):
-                        details.append(f"  Banks tried: {', '.join(extracted['banks_tried'])}")
-                    if extracted.get("objections"):
-                        details.append(f"  Concerns: {'; '.join(extracted['objections'])}")
-                    if extracted.get("next_action"):
-                        details.append(f"  Next: {extracted['next_action']}")
+                    # Render whatever extra fields the LLM returned. Field
+                    # labels are derived from the snake_case key — this
+                    # makes the notes block agnostic to the agent's
+                    # vertical (FMC ships loan_amount/banks_tried,
+                    # Admitverse ships target_university/intake/etc.).
+                    details: list[str] = []
+                    for key, value in extracted.items():
+                        if value in (None, "", [], {}):
+                            continue
+                        label = key.replace("_", " ").title()
+                        if isinstance(value, list):
+                            value_str = ", ".join(str(v) for v in value)
+                        else:
+                            value_str = str(value)
+                        details.append(f"  {label}: {value_str}")
                     details_block = ("\n" + "\n".join(details)) if details else ""
 
                     entry = (
@@ -1426,10 +1447,63 @@ async def get_call_status(
 # ─────────────────────────────────────────────
 
 
-async def _analyze_call(transcript: str) -> dict:
-    """Single LLM call: summary + sentiment + interest level.
+# Generic safe analysis prompt for any tenant whose agent has not set a
+# custom post_call_analysis_prompt. Extracts only the brand-agnostic core
+# fields so the notes/sentiment/UI flows still work without making any
+# false assumptions about the vertical (no loan extraction, no admissions
+# extraction). Brands that want richer extraction set their own prompt
+# in ai_agents.post_call_analysis_prompt.
+_GENERIC_ANALYSIS_PROMPT = (
+    "You analyse phone call transcripts. Calls happen in Hinglish "
+    "(Hindi+English). Focus on what the USER (the lead) said, NOT what "
+    "the agent asked. Return ONLY valid JSON with these fields:\n\n"
+    '- "summary": 3-5 sentences IN ENGLISH. Mention specific facts the '
+    'user revealed. Avoid generic phrasing like "the user expressed '
+    'interest" — quote specifics. If the call was very short or the user '
+    'said almost nothing, write a one-line summary stating that.\n'
+    '- "sentiment": "positive" if user clearly engaged, asked questions, '
+    'or agreed to next steps. "negative" if user declined, asked not to '
+    'be called, or was hostile. "neutral" for short / inconclusive / '
+    'unclear calls. Default to "neutral" in doubt.\n'
+    '- "confidence": integer 0-100. Your confidence in the sentiment / '
+    'interest assessment given the transcript length and clarity. '
+    'For transcripts under 200 chars, max confidence is 40.\n'
+    '- "interest_level": "high" if user EXPLICITLY engaged with concrete '
+    'details and committed to next steps. "medium" if user shared '
+    'concrete details but no commitment. "low" otherwise — including if '
+    'user only said "hello"/"ok"/"haan"/"who is this". When in doubt, '
+    'choose lower tier.\n'
+    '- "user_name": the user\'s name if they explicitly said it. null '
+    'otherwise. Do NOT use the agent\'s name.\n'
+    '- "objections": array of specific concerns the user raised. Empty '
+    'array if none.\n'
+    '- "next_action": what was agreed at the end. null if no concrete '
+    'action was agreed.\n\n'
+    "No markdown, no explanation, just the JSON object."
+)
 
-    Returns dict with keys: summary, sentiment, confidence, interest_level.
+
+# Core fields every analysis prompt is expected to return. Anything
+# OUTSIDE this set (loan_amount, target_university, etc.) is treated as
+# brand-specific extracted detail and rendered dynamically in the notes
+# auto-append block.
+_CORE_ANALYSIS_FIELDS = {
+    "summary", "sentiment", "confidence", "interest_level", "user_name",
+    "objections", "next_action",
+}
+
+
+async def _analyze_call(transcript: str, system_prompt: str | None = None) -> dict:
+    """Single LLM call: summary + sentiment + interest level + extras.
+
+    The system_prompt is sourced from ai_agents.post_call_analysis_prompt
+    (per-agent). If null/empty, falls back to _GENERIC_ANALYSIS_PROMPT —
+    a brand-agnostic version that extracts only core fields and makes no
+    assumptions about the vertical. This keeps Admitverse calls from
+    being analysed as if they were FMC loan calls.
+
+    Returns dict with at minimum: summary, sentiment, confidence,
+    interest_level, plus whatever extra fields the prompt asked for.
 
     On failure, returns the empty default but with a marker summary so the
     UI can distinguish 'AI didn't run' from 'AI ran and had nothing to say'.
@@ -1481,75 +1555,10 @@ async def _analyze_call(transcript: str) -> dict:
                 "messages": [
                     {
                         "role": "system",
-                        "content": (
-                            "You analyse sales call transcripts for FundMyCampus, an Indian "
-                            "education-loan consultancy. The agent is Priya. Calls happen in "
-                            "Hinglish (Hindi+English). Focus on what the USER (the lead) said, "
-                            "NOT what Priya asked. Return ONLY valid JSON with these fields:\n\n"
-
-                            '- "summary": 3-5 sentences IN ENGLISH. Mention specific facts the '
-                            'user revealed: loan amount, college/university, course, country, '
-                            'intake, banks already tried, co-applicant. Avoid generic phrasing '
-                            'like "the user expressed interest" — quote specifics. If the call '
-                            'was very short or the user said almost nothing, write a one-line '
-                            'summary stating that.\n'
-
-                            '- "sentiment": "positive" if user clearly engaged, asked questions, '
-                            'agreed to next steps, or shared loan details. "negative" if user '
-                            'declined, asked not to be called, or was hostile. "neutral" for '
-                            'short / inconclusive / unclear calls. Default to "neutral" in doubt.\n'
-
-                            '- "confidence": integer 0-100. Your confidence in the sentiment / '
-                            'interest assessment given the transcript length and clarity. '
-                            'For transcripts under 200 chars, max confidence is 40.\n'
-
-                            '- "interest_level": "high" ONLY if user EXPLICITLY did 2+ of: '
-                            'asked about rates/amounts, named a college/course, asked next steps, '
-                            'said yes to WhatsApp/callback, or shared specific timeline. '
-                            '"medium" if user shared 1 concrete detail but no commitment. '
-                            '"low" otherwise — including if user only said "hello"/"ok"/'
-                            '"haan"/"who is this". When in doubt, choose lower tier.\n'
-
-                            '- "user_name": the user\'s name if they explicitly said it (e.g. '
-                            '"I am Rajesh", "main Rajesh hoon", "Rajesh speaking"). null '
-                            'otherwise. Do NOT use Priya / Priya from FundMyCampus / agent.\n'
-
-                            '- "loan_amount": amount the user mentioned, e.g. "15 lakhs", '
-                            '"1 crore", "50 lakhs". null if not mentioned. Use the user\'s '
-                            'phrasing — do not normalise to digits.\n'
-
-                            '- "college": college / university the user named, e.g. '
-                            '"IIT Delhi", "Sheffield", "GLIM Gurgaon". null if not mentioned. '
-                            'If the user named a city by mistake (Sheffield is a city, not a '
-                            'university), still capture what they said.\n'
-
-                            '- "study_location": "india", "abroad", or null. Infer from college '
-                            'name or explicit statement.\n'
-
-                            '- "course": e.g. "MBA", "B.Tech CS", "MS", "MBBS". null if not '
-                            'mentioned.\n'
-
-                            '- "intake": admission intake the user mentioned, e.g. '
-                            '"September 2026", "Jan 2027". null if not mentioned.\n'
-
-                            '- "banks_tried": array of bank names the user said they applied '
-                            'with already, e.g. ["SBI", "Axis"]. Empty array if none.\n'
-
-                            '- "objections": array of specific concerns the user raised, e.g. '
-                            '["interest rate too high", "doesn\'t want collateral"]. Empty '
-                            'array if none.\n'
-
-                            '- "next_action": what was agreed at the end, e.g. '
-                            '"Priya will send WhatsApp message with loan link", "callback '
-                            'at 5pm", "user will check rates and respond". null if no '
-                            'concrete action was agreed.\n\n'
-
-                            "No markdown, no explanation, just the JSON object."
-                        ),
+                        "content": (system_prompt or _GENERIC_ANALYSIS_PROMPT),
                     },
                     {"role": "user", "content": transcript},
                 ],
-                # Bumped from 400 — we now ask for ~10 fields instead of 4.
                 "max_tokens": 600,
                 "temperature": 0.2,  # tighter — extraction, not creative writing
                 "response_format": {"type": "json_object"},

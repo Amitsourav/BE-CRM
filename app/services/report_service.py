@@ -10,14 +10,53 @@ from app.models.profile import Profile
 from app.models.call_attempt import CallAttempt
 from app.models.task import Task
 from app.models.lead_source import LeadSource
-from app.core.constants import LeadStage, TaskStatus, CallDisposition, UserRole
+from app.models.company import Company
+from app.core.constants import (
+    LeadStage, TaskStatus, CallDisposition, UserRole,
+    ADMITVERSE_STAGES,
+)
 from app.utils.date_helpers import now_utc, start_of_today, end_of_today
+
+
+# Stages that count as "won" in the conversion-rate denominator. Each brand
+# has its own happy state — FMC closes deals at WON, Admitverse closes at
+# ENROLLED. Without this map every Admitverse report would show 0% forever
+# because no Admitverse lead ever reaches `won`.
+_BRAND_WON_STAGE = {
+    "fmc": LeadStage.WON,
+    "fundmycampus": LeadStage.WON,
+    "admitverse": LeadStage.ENROLLED,
+}
 
 
 class ReportService:
     def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
         self.company_id = company_id
+        self._slug: str | None = None
+
+    async def _get_slug(self) -> str | None:
+        if self._slug is not None:
+            return self._slug
+        result = await self.db.execute(
+            select(Company.slug).where(Company.id == self.company_id)
+        )
+        self._slug = result.scalar_one_or_none()
+        return self._slug
+
+    async def _won_stage(self) -> LeadStage:
+        slug = (await self._get_slug() or "").lower()
+        return _BRAND_WON_STAGE.get(slug, LeadStage.WON)
+
+    @staticmethod
+    def _conversion_rate(leads_by_stage: dict, won_stage: LeadStage) -> float:
+        """Wins / closed deals (won + lost). Same denominator across brands —
+        only the numerator's stage label changes per brand.
+        """
+        won = leads_by_stage.get(won_stage.value, 0) or leads_by_stage.get(won_stage, 0)
+        lost = leads_by_stage.get(LeadStage.LOST.value, 0) or leads_by_stage.get(LeadStage.LOST, 0)
+        closed = won + lost
+        return (won / closed * 100) if closed > 0 else 0.0
 
     # ── Dashboard: 9 queries → 3 ──────────────────────────────────────
 
@@ -67,10 +106,8 @@ class ReportService:
         # Win-rate of closed deals, not "wins as a fraction of every lead in the
         # pipeline". The latter looked permanently near-zero because a healthy
         # pipeline is mostly open leads.
-        won = leads_by_stage.get(LeadStage.WON, 0)
-        lost = leads_by_stage.get(LeadStage.LOST, 0)
-        closed = won + lost
-        conversion_rate = (won / closed * 100) if closed > 0 else 0.0
+        won_stage = await self._won_stage()
+        conversion_rate = self._conversion_rate(leads_by_stage, won_stage)
 
         return {
             "total_leads": total,
@@ -97,8 +134,21 @@ class ReportService:
         )).all()
 
         total = sum(count for _, count in stage_counts)
+
+        # Show only stages that belong to this brand's pipeline. Without
+        # this filter, FMC users would see Admitverse-only stages with 0
+        # counts and vice-versa — clutter that makes the funnel look broken.
+        slug = (await self._get_slug() or "").lower()
+        if slug == "admitverse":
+            relevant = ADMITVERSE_STAGES
+        else:
+            relevant = [
+                LeadStage.LEAD, LeadStage.CALLED, LeadStage.CONNECTED,
+                LeadStage.QUALIFIED_LEAD, LeadStage.WON, LeadStage.LOST,
+            ]
+
         stages = []
-        for stage in LeadStage:
+        for stage in relevant:
             count = next((c for s, c in stage_counts if s == stage.value), 0)
             stages.append({
                 "stage": stage.value,
@@ -186,6 +236,8 @@ class ReportService:
                 "total": row.total, "completed": row.completed, "overdue": row.overdue,
             }
 
+        won_stage = await self._won_stage()
+
         # Assemble results
         summaries = []
         for agent in agents:
@@ -195,10 +247,7 @@ class ReportService:
             tasks = task_map.get(agent.id, {"total": 0, "completed": 0, "overdue": 0})
 
             # Win-rate among closed deals (won + lost), not pipeline-wide.
-            won = leads_by_stage.get(LeadStage.WON, 0)
-            lost = leads_by_stage.get(LeadStage.LOST, 0)
-            closed = won + lost
-            conversion_rate = (won / closed * 100) if closed > 0 else 0.0
+            conversion_rate = self._conversion_rate(leads_by_stage, won_stage)
 
             summaries.append({
                 "agent_id": agent.id,
@@ -266,10 +315,8 @@ class ReportService:
         )).one()
 
         # Win-rate among closed deals.
-        won = leads_by_stage.get(LeadStage.WON, 0)
-        lost = leads_by_stage.get(LeadStage.LOST, 0)
-        closed = won + lost
-        conversion_rate = (won / closed * 100) if closed > 0 else 0.0
+        won_stage = await self._won_stage()
+        conversion_rate = self._conversion_rate(leads_by_stage, won_stage)
 
         return {
             "agent_id": agent.id,
@@ -292,13 +339,14 @@ class ReportService:
         # sources with zero matching leads still appear (they keep total=0,
         # not vanish). Putting these filters in WHERE would convert the
         # outer join into an inner join and hide unused sources.
+        won_stage = await self._won_stage()
         rows = (await self.db.execute(
             select(
                 LeadSource.id,
                 LeadSource.name,
                 func.count(Lead.id).label("total"),
-                func.count(case((Lead.current_stage == LeadStage.WON, Lead.id))).label("won"),
-                func.count(case((Lead.current_stage == LeadStage.LOST, Lead.id))).label("lost"),
+                func.count(case((Lead.current_stage == won_stage.value, Lead.id))).label("won"),
+                func.count(case((Lead.current_stage == LeadStage.LOST.value, Lead.id))).label("lost"),
             )
             .outerjoin(
                 Lead,

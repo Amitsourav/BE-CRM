@@ -108,6 +108,15 @@ class AIAgent(Base, TimestampMixin):
     # SECTION 11 — WEBHOOK
     webhook_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
+    # SECTION 12 — POST-CALL ANALYSIS
+    # Per-agent system prompt for the LLM call that summarizes + extracts
+    # facts from a finished transcript. Null means use the generic safe
+    # prompt in voice.py:_GENERIC_ANALYSIS_PROMPT (sentiment + summary +
+    # objections + next_action only — no brand-specific extraction). FMC
+    # agents are backfilled by migration h3c4d5e6f7g8 with the legacy
+    # FMC-specific prompt so behavior is unchanged.
+    post_call_analysis_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # SOFT DELETE
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Optional
@@ -13,12 +15,17 @@ class CallState:
         lead_id: str,
         company_id: str,
         lead_name: str = "there",
+        company_name: str | None = None,
     ):
         self.call_id = call_id
         self.agent_id = agent_id
         self.lead_id = lead_id
         self.company_id = company_id
         self.lead_name = lead_name
+        # Cached so the welcome fallback can say "from {company_name}" without
+        # a DB lookup mid-call. Without this we'd hardcode FundMyCampus and
+        # break any other tenant that uses the no-name welcome path.
+        self.company_name = company_name
         self.welcome_audio: bytes = b""
         self.welcome_audio_b64: str = ""  # pre-encoded mulaw+base64 for instant play
         self.welcome_ready: "asyncio.Event | None" = None
@@ -95,6 +102,7 @@ class CallStateManager:
         company_id: str,
         lead_name: str = "there",
         welcome_audio: bytes = b"",
+        company_name: str | None = None,
     ) -> CallState:
         active = sum(1 for c in self._calls.values() if c.is_active)
         if active >= self._max_calls:
@@ -107,6 +115,7 @@ class CallStateManager:
             lead_id=lead_id,
             company_id=company_id,
             lead_name=lead_name,
+            company_name=company_name,
         )
         state.welcome_audio = welcome_audio
         self._calls[call_id] = state

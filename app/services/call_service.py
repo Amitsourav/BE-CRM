@@ -11,8 +11,10 @@ from app.models.call_attempt import CallAttempt
 from app.models.notification import Notification
 from app.models.profile import Profile
 from app.models.ai_agent import AIAgent
+from app.models.company import Company
 from app.core.constants import (
     LeadStage, CallDisposition, UserRole, NotificationType,
+    ADMITVERSE_TERMINAL,
 )
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
 from app.utils.date_helpers import now_utc, add_business_days
@@ -53,11 +55,30 @@ class CallService:
         if user.role == UserRole.TELECALLER and lead.assigned_agent_id != user.id:
             raise ForbiddenError("Not authorized")
 
-        if lead.current_stage not in (LeadStage.LEAD, LeadStage.CALLED):
-            raise BadRequestError(
-                f"Cannot log calls for leads in '{lead.current_stage}' stage. "
-                "Lead must be in 'lead' or 'called' stage."
-            )
+        # Brand-aware gate. FMC's pipeline is strict forward-only and only
+        # the LEAD/CALLED early stages are sensible for manual call logging.
+        # Admitverse allows free movement and counselors call leads at any
+        # non-terminal stage (e.g. follow-up call to a lead already in
+        # processing). Hardcoding LEAD/CALLED here used to reject every
+        # Admitverse call beyond the first one — and the error message
+        # referenced FMC stage names that don't even exist on Admitverse.
+        slug_result = await self.db.execute(
+            select(Company.slug).where(Company.id == self.company_id)
+        )
+        slug = (slug_result.scalar_one_or_none() or "").lower()
+        if slug == "admitverse":
+            current = LeadStage(lead.current_stage)
+            if current in ADMITVERSE_TERMINAL:
+                raise BadRequestError(
+                    f"Cannot log calls for leads in '{lead.current_stage}' stage "
+                    "(terminal — lead is enrolled or lost)."
+                )
+        else:
+            if lead.current_stage not in (LeadStage.LEAD, LeadStage.CALLED):
+                raise BadRequestError(
+                    f"Cannot log calls for leads in '{lead.current_stage}' stage. "
+                    "Lead must be in 'lead' or 'called' stage."
+                )
 
         if lead.call_attempt_count >= self.settings.max_call_attempts:
             raise BadRequestError("Maximum call attempts reached for this lead")
@@ -85,8 +106,13 @@ class CallService:
         lead.call_attempt_count = attempt_number
         lead.due_date = next_due
 
-        if lead.current_stage == LeadStage.LEAD:
-            lead.current_stage = LeadStage.CALLED
+        # Auto-bump from "fresh lead" to "contacted" on first manual call.
+        # Brand-aware so Admitverse's `created` lead becomes `contacted`,
+        # matching its admissions pipeline; FMC's `lead` becomes `called`.
+        if slug == "admitverse" and lead.current_stage == LeadStage.CREATED.value:
+            lead.current_stage = LeadStage.CONTACTED.value
+        elif lead.current_stage == LeadStage.LEAD.value:
+            lead.current_stage = LeadStage.CALLED.value
 
         if disp == CallDisposition.DNP:
             if attempt_number == 5:
