@@ -8,10 +8,13 @@ from app.models.lead import Lead
 from app.models.lead_stage_log import LeadStageLog
 from app.models.profile import Profile
 from app.models.company import Company
+from app.models.task import Task
 from app.core.constants import (
     LeadStage,
     UserRole,
     RESTRICTED_VIEW_ROLES,
+    TaskType,
+    TaskStatus,
     get_transitions_for_brand,
     get_terminal_stages_for_brand,
     get_notes_required_for_brand,
@@ -130,6 +133,52 @@ class StageMachine:
             due_date_set=new_due,
         )
         self.db.add(stage_log)
+        # Flush so stage_log.id is available for the optional Task link below.
+        await self.db.flush()
+
+        # If the transition set a callback date and the new stage isn't
+        # terminal, surface it on the assignee's Tasks page. Without this
+        # the telecaller sees the lead change column on the Kanban (and
+        # lead.due_date update silently) but no task ever appears,
+        # forcing them to remember the callback or trawl leads by date.
+        # Idempotent — won't duplicate a task for the same lead+due_date.
+        if new_due and target not in terminal_stages:
+            existing = await self.db.execute(
+                select(Task.id).where(
+                    Task.lead_id == lead.id,
+                    Task.company_id == self.company_id,
+                    Task.task_type == TaskType.CALL.value,
+                    Task.due_date == new_due,
+                    Task.status.in_([
+                        TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value,
+                        TaskStatus.OVERDUE.value,
+                    ]),
+                )
+            )
+            if not existing.scalar_one_or_none():
+                assignee = lead.assigned_agent_id or user.id
+                description_parts = []
+                if conversation_notes:
+                    description_parts.append(f"Notes: {conversation_notes}")
+                if agent_agenda:
+                    description_parts.append(f"Agenda: {agent_agenda}")
+                self.db.add(Task(
+                    company_id=self.company_id,
+                    lead_id=lead.id,
+                    assigned_to=assignee,
+                    created_by=user.id,
+                    task_type=TaskType.CALL.value,
+                    title=f"Callback ({target.value}): {lead.full_name}",
+                    description=("\n\n".join(description_parts) or None),
+                    status=TaskStatus.PENDING.value,
+                    due_date=new_due,
+                    stage_log_id=stage_log.id,
+                ))
+                logger.info(
+                    "STAGE_TRANSITION_TASK_CREATED lead=%s assignee=%s due=%s stage=%s",
+                    lead.id, assignee, new_due, target.value,
+                )
+
         await self.db.commit()
         await self.db.refresh(lead)
 

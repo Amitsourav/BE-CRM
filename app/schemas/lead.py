@@ -58,6 +58,16 @@ class LeadUpdate(BaseModel):
     custom_fields: dict | None = None
     tags: list[str] | None = None
     notes: str | None = None
+    # Pipeline-related fields. Without these, the Edit Lead form's
+    # "callback date" / "assign to" / "stage" inputs were silently
+    # dropped by Pydantic before the service ever saw them — the
+    # value reaches the frontend, the user thinks it saved, but the
+    # column never updated. Stage transitions still go through the
+    # dedicated /stage endpoint (with its own validation); listing
+    # current_stage here lets simple inline edits work too.
+    due_date: datetime | None = None
+    assigned_agent_id: uuid.UUID | None = None
+    current_stage: str | None = None
 
 
 class LeadOut(BaseModel):
