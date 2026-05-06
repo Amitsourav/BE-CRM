@@ -12,8 +12,10 @@ from app.models.notification import Notification
 from app.models.profile import Profile
 from app.models.ai_agent import AIAgent
 from app.models.company import Company
+from app.models.task import Task
 from app.core.constants import (
     LeadStage, CallDisposition, UserRole, NotificationType,
+    TaskType, TaskStatus,
     ADMITVERSE_TERMINAL, RESTRICTED_VIEW_ROLES,
 )
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
@@ -148,6 +150,50 @@ class CallService:
             lead.current_stage = LeadStage.CONNECTED
             if not lead.connected_time:
                 lead.connected_time = now_utc()
+
+        # Auto-create a follow-up task assigned to the telecaller so the
+        # callback shows up on their Tasks page. Without this the
+        # `due_date_for_next` they entered only updated lead.due_date and
+        # the call_attempt row — nothing surfaced in the Tasks list, so
+        # the telecaller had to remember the lead from memory or trawl
+        # the leads page filtered by date. Skip if the lead got
+        # auto-closed as Lost (no point queuing more work on it) or if
+        # the call was a wrong-number (no callback intended).
+        skip_task_dispositions = {CallDisposition.WRONG_NUMBER}
+        lead_just_closed = lead.current_stage == LeadStage.LOST
+        if (
+            next_due
+            and disp not in skip_task_dispositions
+            and not lead_just_closed
+        ):
+            task_title_map = {
+                CallDisposition.DNP: f"Callback (DNP attempt {attempt_number}): {lead.full_name}",
+                CallDisposition.BUSY: f"Callback (line busy): {lead.full_name}",
+                CallDisposition.SWITCHED_OFF: f"Callback (phone off): {lead.full_name}",
+                CallDisposition.CALLBACK: f"Scheduled callback: {lead.full_name}",
+                CallDisposition.CONNECTED: f"Follow-up: {lead.full_name}",
+            }
+            task_title = task_title_map.get(
+                disp, f"Follow-up call: {lead.full_name}"
+            )
+            description_parts = []
+            if conversation_notes:
+                description_parts.append(f"Last call notes: {conversation_notes}")
+            if agent_agenda:
+                description_parts.append(f"Agenda: {agent_agenda}")
+            description = "\n\n".join(description_parts) or None
+
+            self.db.add(Task(
+                company_id=self.company_id,
+                lead_id=lead_id,
+                assigned_to=user.id,
+                created_by=user.id,
+                task_type=TaskType.CALL.value,
+                title=task_title,
+                description=description,
+                status=TaskStatus.PENDING.value,
+                due_date=next_due,
+            ))
 
         await self.db.commit()
         await self.db.refresh(call)
