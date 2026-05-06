@@ -10,10 +10,13 @@ from app.models.lead import Lead
 from app.models.lead_source import LeadSource
 from app.models.profile import Profile
 from app.models.lead_stage_log import LeadStageLog
+from app.models.task import Task
 from app.models.company import Company
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
 from app.core.constants import (
-    UserRole, LeadStage, RESTRICTED_VIEW_ROLES, get_initial_stage_for_brand,
+    UserRole, LeadStage, RESTRICTED_VIEW_ROLES,
+    TaskType, TaskStatus,
+    get_initial_stage_for_brand,
 )
 from app.utils.pagination import paginate
 from app.utils.date_helpers import now_utc
@@ -25,6 +28,56 @@ class LeadService:
     def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
         self.company_id = company_id
+
+    async def _ensure_callback_task(
+        self,
+        lead: Lead,
+        due_date,
+        actor_id: uuid.UUID,
+    ) -> bool:
+        """Auto-create a follow-up Task when a lead's callback date is set.
+
+        Telecallers were setting `lead.due_date` directly via PUT /leads/{id}
+        (the lead-edit form) and call_service.log_call wasn't getting hit, so
+        no task surfaced on their Tasks page. This helper materialises the
+        task on any path that sets due_date.
+
+        Idempotent — if a pending CALL task already exists for this lead at
+        the same due_date, do nothing. The actor_id is used as a fallback
+        assignee when the lead has no assigned agent yet.
+        Returns True when a task was created.
+        """
+        if not due_date:
+            return False
+        existing = await self.db.execute(
+            select(Task.id).where(
+                Task.lead_id == lead.id,
+                Task.company_id == self.company_id,
+                Task.task_type == TaskType.CALL.value,
+                Task.due_date == due_date,
+                Task.status.in_([
+                    TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value,
+                    TaskStatus.OVERDUE.value,
+                ]),
+            )
+        )
+        if existing.scalar_one_or_none():
+            return False
+
+        assignee = lead.assigned_agent_id or actor_id
+        title = f"Callback: {lead.full_name}"
+        self.db.add(Task(
+            company_id=self.company_id,
+            lead_id=lead.id,
+            assigned_to=assignee,
+            created_by=actor_id,
+            task_type=TaskType.CALL.value,
+            title=title,
+            description=None,
+            status=TaskStatus.PENDING.value,
+            due_date=due_date,
+        ))
+        return True
 
     async def create_lead(self, data: dict, created_by: uuid.UUID) -> Lead:
         data["company_id"] = self.company_id
@@ -44,6 +97,12 @@ class LeadService:
             changed_by=created_by,
         )
         self.db.add(stage_log)
+
+        # If the lead is created with a due_date already set, auto-queue a
+        # callback task so it shows on the assignee's Tasks page.
+        if lead.due_date:
+            await self._ensure_callback_task(lead, lead.due_date, created_by)
+
         await self.db.commit()
         await self.db.refresh(lead)
         return lead
@@ -65,8 +124,19 @@ class LeadService:
 
     async def update_lead(self, lead_id: uuid.UUID, data: dict, user: Profile) -> Lead:
         lead = await self.get_lead(lead_id, user)
+        prev_due_date = lead.due_date
         for key, value in data.items():
             setattr(lead, key, value)
+
+        # If due_date was set or changed in this update, queue a callback
+        # task. This is the path telecallers actually use ("Edit Lead" form
+        # to schedule next call) — bypassing the dedicated log_call flow.
+        # Without this every callback they enter just updated the column
+        # silently and never showed up on the Tasks page.
+        new_due_date = lead.due_date
+        if new_due_date and new_due_date != prev_due_date:
+            await self._ensure_callback_task(lead, new_due_date, user.id)
+
         await self.db.commit()
         await self.db.refresh(lead)
         return lead
