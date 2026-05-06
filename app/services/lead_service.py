@@ -12,7 +12,9 @@ from app.models.profile import Profile
 from app.models.lead_stage_log import LeadStageLog
 from app.models.company import Company
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
-from app.core.constants import UserRole, LeadStage, get_initial_stage_for_brand
+from app.core.constants import (
+    UserRole, LeadStage, RESTRICTED_VIEW_ROLES, get_initial_stage_for_brand,
+)
 from app.utils.pagination import paginate
 from app.utils.date_helpers import now_utc
 
@@ -57,7 +59,7 @@ class LeadService:
         lead = result.scalar_one_or_none()
         if not lead:
             raise NotFoundError("Lead not found")
-        if user.role == UserRole.TELECALLER and lead.assigned_agent_id != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and lead.assigned_agent_id != user.id:
             raise ForbiddenError("Not authorized to view this lead")
         return lead
 
@@ -99,7 +101,7 @@ class LeadService:
     ) -> dict:
         query = select(Lead).where(Lead.company_id == self.company_id, Lead.is_deleted == False).order_by(Lead.created_at.desc())
 
-        if user.role == UserRole.TELECALLER:
+        if user.role in RESTRICTED_VIEW_ROLES:
             query = query.where(Lead.assigned_agent_id == user.id)
         elif agent_id:
             query = query.where(Lead.assigned_agent_id == agent_id)
@@ -148,7 +150,7 @@ class LeadService:
             Lead.company_id == self.company_id,
             Lead.is_deleted == False,  # noqa: E712
         )
-        if user.role == UserRole.TELECALLER:
+        if user.role in RESTRICTED_VIEW_ROLES:
             base = base.where(Lead.assigned_agent_id == user.id)
         elif agent_id:
             base = base.where(Lead.assigned_agent_id == agent_id)
@@ -168,7 +170,7 @@ class LeadService:
             Lead.company_id == self.company_id,
             Lead.is_deleted == False,  # noqa: E712
         )
-        if user.role == UserRole.TELECALLER:
+        if user.role in RESTRICTED_VIEW_ROLES:
             count_query = count_query.where(Lead.assigned_agent_id == user.id)
         elif agent_id:
             count_query = count_query.where(Lead.assigned_agent_id == agent_id)
@@ -194,7 +196,7 @@ class LeadService:
             )
         ).order_by(Lead.created_at.desc())
 
-        if user.role == UserRole.TELECALLER:
+        if user.role in RESTRICTED_VIEW_ROLES:
             query = query.where(Lead.assigned_agent_id == user.id)
 
         return await paginate(self.db, query, page, page_size)

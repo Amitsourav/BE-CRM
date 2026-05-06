@@ -11,6 +11,7 @@ from app.models.company import Company
 from app.core.constants import (
     LeadStage,
     UserRole,
+    RESTRICTED_VIEW_ROLES,
     get_transitions_for_brand,
     get_terminal_stages_for_brand,
     get_notes_required_for_brand,
@@ -61,7 +62,7 @@ class StageMachine:
         if not lead:
             raise NotFoundError("Lead not found")
 
-        if user.role == UserRole.TELECALLER and lead.assigned_agent_id != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and lead.assigned_agent_id != user.id:
             raise ForbiddenError("Not authorized to modify this lead")
 
         from_stage = LeadStage(lead.current_stage)
@@ -146,7 +147,7 @@ class StageMachine:
         lead = result.scalar_one_or_none()
         if not lead:
             raise NotFoundError("Lead not found")
-        if user.role == UserRole.TELECALLER and lead.assigned_agent_id != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and lead.assigned_agent_id != user.id:
             raise ForbiddenError("Not authorized")
 
         result = await self.db.execute(

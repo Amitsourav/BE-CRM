@@ -9,7 +9,7 @@ from app.models.task import Task
 from app.models.lead import Lead
 from app.models.profile import Profile
 from app.models.notification import Notification
-from app.core.constants import TaskStatus, UserRole, NotificationType
+from app.core.constants import TaskStatus, UserRole, NotificationType, RESTRICTED_VIEW_ROLES
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
 from app.utils.date_helpers import now_utc, start_of_today, end_of_today, add_business_days
 from app.utils.pagination import paginate
@@ -56,7 +56,7 @@ class TaskService:
         task = result.scalar_one_or_none()
         if not task:
             raise NotFoundError("Task not found")
-        if user.role == UserRole.TELECALLER and task.assigned_to != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and task.assigned_to != user.id:
             raise ForbiddenError("Not authorized")
         return task
 
@@ -87,7 +87,7 @@ class TaskService:
     ) -> dict:
         query = select(Task).where(Task.company_id == self.company_id).order_by(Task.due_date.asc())
 
-        if user.role == UserRole.TELECALLER:
+        if user.role in RESTRICTED_VIEW_ROLES:
             query = query.where(Task.assigned_to == user.id)
         elif assigned_to:
             query = query.where(Task.assigned_to == assigned_to)
@@ -118,7 +118,7 @@ class TaskService:
             Task.due_date < now_utc(),
         ).order_by(Task.due_date.asc())
 
-        if user.role == UserRole.TELECALLER:
+        if user.role in RESTRICTED_VIEW_ROLES:
             query = query.where(Task.assigned_to == user.id)
 
         result = await self.db.execute(query)
@@ -135,7 +135,7 @@ class TaskService:
             )
             .order_by(Task.completed_at.desc())
         )
-        if user.role == UserRole.TELECALLER:
+        if user.role in RESTRICTED_VIEW_ROLES:
             query = query.where(Task.assigned_to == user.id)
 
         result = await self.db.execute(query)
@@ -152,7 +152,7 @@ class TaskService:
         lead = result.scalar_one_or_none()
         if not lead:
             raise NotFoundError("Lead not found")
-        if user.role == UserRole.TELECALLER and lead.assigned_agent_id != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and lead.assigned_agent_id != user.id:
             raise ForbiddenError("Not authorized")
 
         result = await self.db.execute(

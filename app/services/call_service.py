@@ -14,7 +14,7 @@ from app.models.ai_agent import AIAgent
 from app.models.company import Company
 from app.core.constants import (
     LeadStage, CallDisposition, UserRole, NotificationType,
-    ADMITVERSE_TERMINAL,
+    ADMITVERSE_TERMINAL, RESTRICTED_VIEW_ROLES,
 )
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
 from app.utils.date_helpers import now_utc, add_business_days
@@ -52,7 +52,7 @@ class CallService:
         if not lead:
             raise NotFoundError("Lead not found")
 
-        if user.role == UserRole.TELECALLER and lead.assigned_agent_id != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and lead.assigned_agent_id != user.id:
             raise ForbiddenError("Not authorized")
 
         # Brand-aware gate. FMC's pipeline is strict forward-only and only
@@ -164,7 +164,7 @@ class CallService:
         lead = result.scalar_one_or_none()
         if not lead:
             raise NotFoundError("Lead not found")
-        if user.role == UserRole.TELECALLER and lead.assigned_agent_id != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and lead.assigned_agent_id != user.id:
             raise ForbiddenError("Not authorized")
 
         result = await self.db.execute(
@@ -276,7 +276,7 @@ class CallService:
         )
 
         # Telecaller sees only own calls
-        if user.role == UserRole.TELECALLER:
+        if user.role in RESTRICTED_VIEW_ROLES:
             query = query.where(CallAttempt.telecaller_id == user.id)
         elif telecaller_id:
             query = query.where(CallAttempt.telecaller_id == telecaller_id)
@@ -323,7 +323,7 @@ class CallService:
         call = await self._get_call(call_id)
 
         # Telecaller can only see own calls
-        if user.role == UserRole.TELECALLER and call.telecaller_id != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and call.telecaller_id != user.id:
             raise ForbiddenError("Not authorized to view this call")
 
         # Load lead and agent names

@@ -9,6 +9,20 @@ class UserRole(str, enum.Enum):
     TELECALLER = "telecaller"
 
 
+# Roles that can only see + act on their OWN assigned records (leads,
+# tasks, calls, CSV imports). Admin sees everything; managers and
+# telecallers see only what's assigned to them. The previous design
+# treated managers identically to admins, which broke down once a
+# tenant had multiple managers — every manager could see every other
+# manager's leads. The isolated-portfolio model fixes that:
+#   admin → distributes leads to managers
+#   manager → redistributes to their telecallers (sees only their own)
+#   telecaller → works only their own assigned leads
+RESTRICTED_VIEW_ROLES: frozenset[UserRole] = frozenset(
+    {UserRole.TELECALLER, UserRole.MANAGER}
+)
+
+
 class LeadStage(str, enum.Enum):
     # FMC pipeline (original 6)
     LEAD = "lead"

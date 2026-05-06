@@ -11,7 +11,7 @@ from app.models.notification import Notification
 from app.models.profile import Profile
 from app.core.constants import (
     CSVImportStatus, LeadStage, NotificationType, UserRole,
-    get_initial_stage_for_brand,
+    RESTRICTED_VIEW_ROLES, get_initial_stage_for_brand,
 )
 from app.core.exceptions import NotFoundError, BadRequestError, ForbiddenError
 from app.utils.csv_parser import parse_csv_content, suggest_column_mapping, normalize_phone
@@ -277,6 +277,6 @@ class CSVImportService:
         csv_import = result.scalar_one_or_none()
         if not csv_import:
             raise NotFoundError("CSV import not found")
-        if user.role == UserRole.TELECALLER and csv_import.uploaded_by != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and csv_import.uploaded_by != user.id:
             raise ForbiddenError("Not authorized")
         return csv_import
