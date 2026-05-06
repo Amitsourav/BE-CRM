@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 import logging
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.lead import Lead
 from app.models.lead_stage_log import LeadStageLog
@@ -178,6 +178,34 @@ class StageMachine:
                     "STAGE_TRANSITION_TASK_CREATED lead=%s assignee=%s due=%s stage=%s",
                     lead.id, assignee, new_due, target.value,
                 )
+
+        # Auto-complete past-due CALL tasks for this lead. Once the stage
+        # changes, the previous "callback expected by date X" task is
+        # effectively resolved — either because we reached the lead (any
+        # forward stage) or closed them out (lost / enrolled). Future-
+        # dated tasks (e.g. a follow-up scheduled for next week) survive
+        # because the new stage doesn't invalidate them.
+        now = now_utc()
+        stale_complete = await self.db.execute(
+            update(Task)
+            .where(
+                Task.lead_id == lead.id,
+                Task.company_id == self.company_id,
+                Task.task_type == TaskType.CALL.value,
+                Task.status.in_([TaskStatus.PENDING.value, TaskStatus.OVERDUE.value]),
+                Task.due_date <= now,
+            )
+            .values(
+                status=TaskStatus.COMPLETED.value,
+                completed_at=now,
+                completion_notes=f"Auto-completed: lead moved to {target.value}",
+            )
+        )
+        if stale_complete.rowcount:
+            logger.info(
+                "STAGE_TRANSITION_AUTO_COMPLETED_TASKS lead=%s count=%d new_stage=%s",
+                lead.id, stale_complete.rowcount, target.value,
+            )
 
         await self.db.commit()
         await self.db.refresh(lead)
