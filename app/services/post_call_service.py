@@ -265,6 +265,18 @@ async def auto_update_lead_status(
         changed_by=changed_by,
         conversation_notes=f"Auto-transition by post-call pipeline (sentiment={sentiment}, score={score:.2f})",
     ))
+
+    # Stage moved forward → close stale callback tasks for this lead so
+    # the assignee's task list doesn't keep showing them after the lead
+    # has already advanced.
+    from app.services.stage_machine import auto_complete_stale_call_tasks
+    await auto_complete_stale_call_tasks(
+        db,
+        lead_id=lead.id,
+        company_id=company_id,
+        new_stage=target.value,
+    )
+
     await db.commit()
     logger.info(
         "[POST-CALL] Lead %s auto-transitioned %s → %s (sentiment=%s, score=%.2f, brand=%s)",

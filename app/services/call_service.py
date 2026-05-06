@@ -85,6 +85,11 @@ class CallService:
         if lead.call_attempt_count >= self.settings.max_call_attempts:
             raise BadRequestError("Maximum call attempts reached for this lead")
 
+        # Capture the stage as it was before any of the disposition-driven
+        # bumps below — used to detect a real transition for the auto-
+        # complete-stale-tasks helper at the bottom of the function.
+        stage_before = lead.current_stage
+
         attempt_number = lead.call_attempt_count + 1
         disp = CallDisposition(disposition)
         next_due = due_date_for_next or add_business_days(now_utc(), self.settings.default_due_days)
@@ -150,6 +155,30 @@ class CallService:
             lead.current_stage = LeadStage.CONNECTED
             if not lead.connected_time:
                 lead.connected_time = now_utc()
+
+        # If this call moved the stage forward (or auto-closed as Lost),
+        # close any stale callback tasks for this lead so the telecaller
+        # isn't left with overdue items they've already resolved. Normalise
+        # both sides to strings — assignments above use a mix of enum
+        # values and enum members.
+        from app.services.stage_machine import auto_complete_stale_call_tasks
+        new_stage_value = (
+            lead.current_stage.value
+            if hasattr(lead.current_stage, "value")
+            else lead.current_stage
+        )
+        before_value = (
+            stage_before.value
+            if hasattr(stage_before, "value")
+            else stage_before
+        )
+        if new_stage_value != before_value:
+            await auto_complete_stale_call_tasks(
+                self.db,
+                lead_id=lead.id,
+                company_id=self.company_id,
+                new_stage=new_stage_value,
+            )
 
         # Auto-create a follow-up task assigned to the telecaller so the
         # callback shows up on their Tasks page. Without this the

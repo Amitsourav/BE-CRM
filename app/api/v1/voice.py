@@ -1893,6 +1893,18 @@ async def _auto_update_lead_stage(
             lead_id=lead.id,
         ))
 
+    # Auto-complete stale callback tasks. AI auto-stage advancement means
+    # the lead moved forward; previous overdue callback tasks are no
+    # longer relevant.
+    if final_stage != old_stage:
+        from app.services.stage_machine import auto_complete_stale_call_tasks
+        await auto_complete_stale_call_tasks(
+            db,
+            lead_id=lead.id,
+            company_id=company_id,
+            new_stage=final_stage,
+        )
+
     await db.commit()
 
     logger.info(

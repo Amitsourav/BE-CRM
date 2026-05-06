@@ -28,6 +28,50 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+async def auto_complete_stale_call_tasks(
+    db: AsyncSession,
+    *,
+    lead_id: uuid.UUID,
+    company_id: uuid.UUID,
+    new_stage: str,
+) -> int:
+    """Mark past-due PENDING/OVERDUE CALL tasks for a lead as completed.
+
+    Called from every code path that changes a lead's stage so the
+    telecaller's task list doesn't accumulate stale callbacks. Future-
+    dated CALL tasks (e.g. follow-up scheduled for next week) survive —
+    only tasks whose due_date <= now() are closed.
+
+    Idempotent: re-running on the same lead does nothing once the
+    pending/overdue tasks have been completed.
+
+    Returns the number of tasks closed.
+    """
+    now = now_utc()
+    result = await db.execute(
+        update(Task)
+        .where(
+            Task.lead_id == lead_id,
+            Task.company_id == company_id,
+            Task.task_type == TaskType.CALL.value,
+            Task.status.in_([TaskStatus.PENDING.value, TaskStatus.OVERDUE.value]),
+            Task.due_date <= now,
+        )
+        .values(
+            status=TaskStatus.COMPLETED.value,
+            completed_at=now,
+            completion_notes=f"Auto-completed: lead moved to {new_stage}",
+        )
+    )
+    closed = result.rowcount or 0
+    if closed:
+        logger.info(
+            "STAGE_TRANSITION_AUTO_COMPLETED_TASKS lead=%s count=%d new_stage=%s",
+            lead_id, closed, new_stage,
+        )
+    return closed
+
+
 class StageMachine:
     def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
@@ -179,33 +223,15 @@ class StageMachine:
                     lead.id, assignee, new_due, target.value,
                 )
 
-        # Auto-complete past-due CALL tasks for this lead. Once the stage
-        # changes, the previous "callback expected by date X" task is
-        # effectively resolved — either because we reached the lead (any
-        # forward stage) or closed them out (lost / enrolled). Future-
-        # dated tasks (e.g. a follow-up scheduled for next week) survive
-        # because the new stage doesn't invalidate them.
-        now = now_utc()
-        stale_complete = await self.db.execute(
-            update(Task)
-            .where(
-                Task.lead_id == lead.id,
-                Task.company_id == self.company_id,
-                Task.task_type == TaskType.CALL.value,
-                Task.status.in_([TaskStatus.PENDING.value, TaskStatus.OVERDUE.value]),
-                Task.due_date <= now,
-            )
-            .values(
-                status=TaskStatus.COMPLETED.value,
-                completed_at=now,
-                completion_notes=f"Auto-completed: lead moved to {target.value}",
-            )
+        # Auto-complete past-due CALL tasks for this lead so the
+        # telecaller's task list doesn't keep showing the old callback
+        # after the stage moved on. Future-dated tasks survive.
+        await auto_complete_stale_call_tasks(
+            self.db,
+            lead_id=lead.id,
+            company_id=self.company_id,
+            new_stage=target.value,
         )
-        if stale_complete.rowcount:
-            logger.info(
-                "STAGE_TRANSITION_AUTO_COMPLETED_TASKS lead=%s count=%d new_stage=%s",
-                lead.id, stale_complete.rowcount, target.value,
-            )
 
         await self.db.commit()
         await self.db.refresh(lead)

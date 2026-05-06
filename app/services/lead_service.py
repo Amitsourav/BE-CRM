@@ -125,17 +125,30 @@ class LeadService:
     async def update_lead(self, lead_id: uuid.UUID, data: dict, user: Profile) -> Lead:
         lead = await self.get_lead(lead_id, user)
         prev_due_date = lead.due_date
+        prev_stage = lead.current_stage
         for key, value in data.items():
             setattr(lead, key, value)
 
         # If due_date was set or changed in this update, queue a callback
         # task. This is the path telecallers actually use ("Edit Lead" form
         # to schedule next call) — bypassing the dedicated log_call flow.
-        # Without this every callback they enter just updated the column
-        # silently and never showed up on the Tasks page.
         new_due_date = lead.due_date
         if new_due_date and new_due_date != prev_due_date:
             await self._ensure_callback_task(lead, new_due_date, user.id)
+
+        # If current_stage was changed via PUT (the schema accepts it now),
+        # close any stale callback tasks the same way the dedicated stage
+        # endpoint does. Otherwise the user's task list keeps showing
+        # callbacks for stages that have already moved on.
+        new_stage = lead.current_stage
+        if new_stage and new_stage != prev_stage:
+            from app.services.stage_machine import auto_complete_stale_call_tasks
+            await auto_complete_stale_call_tasks(
+                self.db,
+                lead_id=lead.id,
+                company_id=self.company_id,
+                new_stage=new_stage,
+            )
 
         await self.db.commit()
         await self.db.refresh(lead)
