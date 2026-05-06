@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LeadCreate(BaseModel):
@@ -140,6 +140,47 @@ class LeadAssign(BaseModel):
 class LeadBulkAssign(BaseModel):
     lead_ids: list[uuid.UUID]
     agent_id: uuid.UUID
+
+
+class LeadDistributeRange(BaseModel):
+    """One slice of the distribution: 'leads from row from_pos to row
+    to_pos, inclusive, go to agent_id'. Row positions are 1-indexed and
+    refer to the position in the filtered+ordered list (not the lead's
+    DB id).
+    """
+    from_pos: int = Field(alias="from", ge=1)
+    to_pos: int = Field(alias="to", ge=1)
+    agent_id: uuid.UUID
+
+    model_config = {"populate_by_name": True}
+
+
+class LeadDistributeRangeRequest(BaseModel):
+    ranges: list[LeadDistributeRange]
+    # If true, only distribute leads that don't have an assigned_agent
+    # yet. Most common case for "distribute the firehose".
+    unassigned_only: bool = True
+    # Optional stage filter — e.g. only Admitverse 'created' leads.
+    stage: str | None = None
+    # Order in which the leads are walked before slicing into ranges.
+    # Default newest first so the most recent uploads get distributed.
+    order_by: str = "created_at_desc"
+
+
+class LeadDistributeRangeResult(BaseModel):
+    from_pos: int = Field(serialization_alias="from")
+    to_pos: int = Field(serialization_alias="to")
+    agent_id: uuid.UUID
+    agent_name: str | None = None
+    assigned_count: int
+
+    model_config = {"populate_by_name": True}
+
+
+class LeadDistributeRangeResponse(BaseModel):
+    total_assigned: int
+    eligible_count: int  # how many leads matched the filter total
+    ranges: list[LeadDistributeRangeResult]
 
 
 class LeadSearchParams(BaseModel):

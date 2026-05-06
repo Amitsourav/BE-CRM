@@ -225,6 +225,123 @@ class LeadService:
         await self.db.refresh(lead)
         return lead
 
+    async def distribute_by_range(
+        self,
+        ranges: list[dict],
+        unassigned_only: bool = True,
+        stage: str | None = None,
+        order_by: str = "created_at_desc",
+    ) -> dict:
+        """Distribute leads to agents by row position.
+
+        Walks the leads (filtered and ordered as requested) and assigns
+        rows [from_pos..to_pos] of each range to the corresponding
+        agent_id. Row positions are 1-indexed against the filtered list,
+        not the DB id.
+
+        Each range dict: {"from_pos": int, "to_pos": int, "agent_id": UUID}
+
+        Validates:
+        - All agent_ids exist in this company and are active
+        - Ranges are well-formed (from_pos <= to_pos)
+        - Ranges don't overlap (so a single lead never lands in two
+          buckets — keep things deterministic)
+
+        Returns: {
+            "total_assigned": int,
+            "eligible_count": int,
+            "ranges": [{from_pos, to_pos, agent_id, agent_name, assigned_count}]
+        }
+        """
+        if not ranges:
+            raise BadRequestError("ranges cannot be empty")
+
+        # ── 1. Validate range shape and overlaps ──
+        sorted_ranges = sorted(ranges, key=lambda r: r["from_pos"])
+        prev_to = 0
+        for r in sorted_ranges:
+            if r["from_pos"] > r["to_pos"]:
+                raise BadRequestError(
+                    f"Invalid range: from={r['from_pos']} > to={r['to_pos']}"
+                )
+            if r["from_pos"] <= prev_to:
+                raise BadRequestError(
+                    f"Range from={r['from_pos']} overlaps a previous range "
+                    f"(ended at {prev_to}). Ranges must be disjoint."
+                )
+            prev_to = r["to_pos"]
+
+        # ── 2. Validate every agent exists in this company and is active ──
+        agent_ids = {r["agent_id"] for r in ranges}
+        agent_rows = (await self.db.execute(
+            select(Profile.id, Profile.full_name).where(
+                Profile.id.in_(agent_ids),
+                Profile.company_id == self.company_id,
+                Profile.is_active == True,  # noqa: E712
+            )
+        )).all()
+        agent_name_by_id = {row.id: row.full_name for row in agent_rows}
+        missing = agent_ids - set(agent_name_by_id.keys())
+        if missing:
+            raise BadRequestError(
+                f"Unknown / inactive agent ids: {sorted(str(x) for x in missing)}"
+            )
+
+        # ── 3. Fetch eligible lead ids in the requested order ──
+        q = select(Lead.id).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+        )
+        if unassigned_only:
+            q = q.where(Lead.assigned_agent_id.is_(None))
+        if stage:
+            q = q.where(Lead.current_stage == stage)
+        if order_by == "created_at_asc":
+            q = q.order_by(Lead.created_at.asc())
+        else:
+            q = q.order_by(Lead.created_at.desc())
+
+        result = await self.db.execute(q)
+        all_ids: list[uuid.UUID] = [row[0] for row in result.fetchall()]
+        eligible_count = len(all_ids)
+
+        # ── 4. Apply each range as one UPDATE ──
+        results = []
+        total_assigned = 0
+        for r in ranges:
+            from_pos = r["from_pos"]
+            to_pos = r["to_pos"]
+            # Convert 1-indexed inclusive to 0-indexed slice.
+            slice_ids = all_ids[from_pos - 1: to_pos]
+            assigned = 0
+            if slice_ids:
+                stmt = (
+                    update(Lead)
+                    .where(
+                        Lead.id.in_(slice_ids),
+                        Lead.company_id == self.company_id,
+                        Lead.is_deleted == False,  # noqa: E712
+                    )
+                    .values(assigned_agent_id=r["agent_id"])
+                )
+                upd = await self.db.execute(stmt)
+                assigned = upd.rowcount or 0
+                total_assigned += assigned
+            results.append({
+                "from_pos": from_pos,
+                "to_pos": to_pos,
+                "agent_id": r["agent_id"],
+                "agent_name": agent_name_by_id.get(r["agent_id"]),
+                "assigned_count": assigned,
+            })
+
+        await self.db.commit()
+        return {
+            "total_assigned": total_assigned,
+            "eligible_count": eligible_count,
+            "ranges": results,
+        }
+
     async def bulk_assign(self, lead_ids: list[uuid.UUID], agent_id: uuid.UUID) -> int:
         # Verify agent exists and belongs to same company
         result = await self.db.execute(

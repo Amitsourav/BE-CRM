@@ -15,6 +15,7 @@ from app.schemas.lead import (
     LeadCreate, LeadUpdate, LeadOut, LeadAssign, LeadBulkAssign,
     LeadSearchParams, LeadSourceCreate, LeadSourceOut,
     LeadCardOut, LeadsByStageOut,
+    LeadDistributeRangeRequest, LeadDistributeRangeResponse,
 )
 from app.schemas.stage import StageLogOut
 from app.schemas.call import CallAttemptOut
@@ -189,6 +190,44 @@ async def bulk_assign(
     service = LeadService(db, company_id)
     count = await service.bulk_assign(body.lead_ids, body.agent_id)
     return {"message": f"{count} leads assigned"}
+
+
+@router.post("/distribute-by-range", response_model=LeadDistributeRangeResponse)
+async def distribute_by_range(
+    body: LeadDistributeRangeRequest,
+    admin: Profile = Depends(get_current_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Distribute leads to multiple agents by row range.
+
+    Example body — first 200 unassigned leads to user A, next 200 to user B:
+
+        {
+            "ranges": [
+                {"from": 1, "to": 200, "agent_id": "<uuid-a>"},
+                {"from": 201, "to": 400, "agent_id": "<uuid-b>"}
+            ],
+            "unassigned_only": true,
+            "order_by": "created_at_desc"
+        }
+
+    Row positions are 1-indexed inclusive. Ranges must be disjoint. If a
+    range extends past the eligible count (e.g. only 350 leads exist
+    for a 1-400 range), the missing slots are silently skipped — the
+    response shows the actual assigned_count per range.
+    """
+    service = LeadService(db, company_id)
+    payload = await service.distribute_by_range(
+        ranges=[
+            {"from_pos": r.from_pos, "to_pos": r.to_pos, "agent_id": r.agent_id}
+            for r in body.ranges
+        ],
+        unassigned_only=body.unassigned_only,
+        stage=body.stage,
+        order_by=body.order_by,
+    )
+    return payload
 
 
 # --- Lead Sources ---
