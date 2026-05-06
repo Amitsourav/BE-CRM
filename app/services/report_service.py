@@ -13,8 +13,9 @@ from app.models.lead_source import LeadSource
 from app.models.company import Company
 from app.core.constants import (
     LeadStage, TaskStatus, CallDisposition, UserRole,
-    ADMITVERSE_STAGES,
+    ADMITVERSE_STAGES, RESTRICTED_VIEW_ROLES,
 )
+from app.core.exceptions import ForbiddenError
 from app.utils.date_helpers import now_utc, start_of_today, end_of_today
 
 
@@ -58,23 +59,41 @@ class ReportService:
         closed = won + lost
         return (won / closed * 100) if closed > 0 else 0.0
 
+    @staticmethod
+    def _restricted_user_id(user) -> uuid.UUID | None:
+        """Return the user.id if their role should restrict report data
+        to only-their-own, else None (admins see everything).
+
+        Used to scope dashboard / pipeline / sources / trends / task
+        compliance for managers and telecallers in the isolated-portfolio
+        model. None disables the filter.
+        """
+        if user is None:
+            return None
+        if user.role in RESTRICTED_VIEW_ROLES:
+            return user.id
+        return None
+
     # ── Dashboard: 9 queries → 3 ──────────────────────────────────────
 
-    async def dashboard(self) -> dict:
+    async def dashboard(self, user=None) -> dict:
         today_start = start_of_today()
+        restricted_id = self._restricted_user_id(user)
 
         # Query 1: All lead stats in one query (total, new today, by stage).
         # Soft-deleted leads must not inflate dashboard totals.
-        lead_rows = (await self.db.execute(
-            select(
-                Lead.current_stage,
-                func.count().label("cnt"),
-                func.count(case((Lead.created_at >= today_start, 1))).label("new_today"),
-            ).where(
-                Lead.company_id == self.company_id,
-                Lead.is_deleted == False,  # noqa: E712
-            ).group_by(Lead.current_stage)
-        )).all()
+        lead_q = select(
+            Lead.current_stage,
+            func.count().label("cnt"),
+            func.count(case((Lead.created_at >= today_start, 1))).label("new_today"),
+        ).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+        )
+        if restricted_id is not None:
+            lead_q = lead_q.where(Lead.assigned_agent_id == restricted_id)
+        lead_q = lead_q.group_by(Lead.current_stage)
+        lead_rows = (await self.db.execute(lead_q)).all()
 
         leads_by_stage = {}
         total = 0
@@ -85,23 +104,33 @@ class ReportService:
             new_today += row.new_today
 
         # Query 2: All task stats in one query
-        task_row = (await self.db.execute(
-            select(
-                func.count(case((Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]), 1))).label("pending"),
-                func.count(case((Task.status == TaskStatus.OVERDUE, 1))).label("overdue"),
-                func.count(case((
-                    (Task.status == TaskStatus.COMPLETED) & (Task.completed_at >= today_start), 1
-                ))).label("completed_today"),
-            ).where(Task.company_id == self.company_id)
-        )).one()
+        task_q = select(
+            func.count(case((Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]), 1))).label("pending"),
+            func.count(case((Task.status == TaskStatus.OVERDUE, 1))).label("overdue"),
+            func.count(case((
+                (Task.status == TaskStatus.COMPLETED) & (Task.completed_at >= today_start), 1
+            ))).label("completed_today"),
+        ).where(Task.company_id == self.company_id)
+        if restricted_id is not None:
+            task_q = task_q.where(Task.assigned_to == restricted_id)
+        task_row = (await self.db.execute(task_q)).one()
 
-        # Query 3: Agent counts in one query
-        agent_row = (await self.db.execute(
-            select(
-                func.count().label("total"),
-                func.count(case((Profile.is_active == True, 1))).label("active"),
-            ).where(Profile.role == UserRole.TELECALLER, Profile.company_id == self.company_id)
-        )).one()
+        # Query 3: Agent counts. For admins this is the company-wide
+        # telecaller count; for restricted users (manager / telecaller in
+        # the isolated-portfolio model) it doesn't really apply — they
+        # only see their own data — so we report 1/1 (themselves).
+        if restricted_id is not None:
+            agent_total = 1
+            agent_active = 1 if user.is_active else 0
+        else:
+            agent_row = (await self.db.execute(
+                select(
+                    func.count().label("total"),
+                    func.count(case((Profile.is_active == True, 1))).label("active"),
+                ).where(Profile.role == UserRole.TELECALLER, Profile.company_id == self.company_id)
+            )).one()
+            agent_total = agent_row.total
+            agent_active = agent_row.active
 
         # Win-rate of closed deals, not "wins as a fraction of every lead in the
         # pipeline". The latter looked permanently near-zero because a healthy
@@ -113,8 +142,8 @@ class ReportService:
             "total_leads": total,
             "new_leads_today": new_today,
             "leads_by_stage": leads_by_stage,
-            "total_agents": agent_row.total,
-            "active_agents": agent_row.active,
+            "total_agents": agent_total,
+            "active_agents": agent_active,
             "tasks_pending": task_row.pending,
             "tasks_overdue": task_row.overdue,
             "tasks_completed_today": task_row.completed_today,
@@ -123,15 +152,15 @@ class ReportService:
 
     # ── Pipeline (already efficient) ───────────────────────────────────
 
-    async def pipeline(self) -> dict:
-        stage_counts = (await self.db.execute(
-            select(Lead.current_stage, func.count())
-            .where(
-                Lead.company_id == self.company_id,
-                Lead.is_deleted == False,  # noqa: E712
-            )
-            .group_by(Lead.current_stage)
-        )).all()
+    async def pipeline(self, user=None) -> dict:
+        restricted_id = self._restricted_user_id(user)
+        q = select(Lead.current_stage, func.count()).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+        )
+        if restricted_id is not None:
+            q = q.where(Lead.assigned_agent_id == restricted_id)
+        stage_counts = (await self.db.execute(q.group_by(Lead.current_stage))).all()
 
         total = sum(count for _, count in stage_counts)
 
@@ -160,10 +189,24 @@ class ReportService:
 
     # ── Agents Summary: 81 queries → 4 ────────────────────────────────
 
-    async def agents_summary(self) -> list[dict]:
-        result = await self.db.execute(
-            select(Profile).where(Profile.role == UserRole.TELECALLER, Profile.company_id == self.company_id).order_by(Profile.full_name)
-        )
+    async def agents_summary(self, user=None) -> list[dict]:
+        # Restricted users (manager / telecaller) only see their own row in
+        # the team summary. Admins see every telecaller in the company.
+        restricted_id = self._restricted_user_id(user)
+        if restricted_id is not None:
+            result = await self.db.execute(
+                select(Profile).where(
+                    Profile.id == restricted_id,
+                    Profile.company_id == self.company_id,
+                )
+            )
+        else:
+            result = await self.db.execute(
+                select(Profile).where(
+                    Profile.role == UserRole.TELECALLER,
+                    Profile.company_id == self.company_id,
+                ).order_by(Profile.full_name)
+            )
         agents = result.scalars().all()
         if not agents:
             return []
@@ -266,7 +309,13 @@ class ReportService:
 
     # ── Agent Detail (single agent — keep individual queries) ──────────
 
-    async def agent_detail(self, agent_id: uuid.UUID) -> dict:
+    async def agent_detail(self, agent_id: uuid.UUID, user=None) -> dict:
+        # Restricted users (manager / telecaller) can only view their own
+        # agent stats — viewing other users' performance breaks the
+        # isolated-portfolio model.
+        restricted_id = self._restricted_user_id(user)
+        if restricted_id is not None and agent_id != restricted_id:
+            raise ForbiddenError("You can only view your own performance")
         result = await self.db.execute(
             select(Profile).where(Profile.id == agent_id, Profile.company_id == self.company_id)
         )
@@ -334,12 +383,20 @@ class ReportService:
 
     # ── Sources: 61 queries → 1 ───────────────────────────────────────
 
-    async def sources(self) -> list[dict]:
+    async def sources(self, user=None) -> list[dict]:
         # Move tenant + soft-delete filters into the JOIN's ON clause so
         # sources with zero matching leads still appear (they keep total=0,
         # not vanish). Putting these filters in WHERE would convert the
         # outer join into an inner join and hide unused sources.
         won_stage = await self._won_stage()
+        restricted_id = self._restricted_user_id(user)
+        join_cond = (
+            (Lead.lead_source_id == LeadSource.id)
+            & (Lead.company_id == self.company_id)
+            & (Lead.is_deleted == False)  # noqa: E712
+        )
+        if restricted_id is not None:
+            join_cond = join_cond & (Lead.assigned_agent_id == restricted_id)
         rows = (await self.db.execute(
             select(
                 LeadSource.id,
@@ -348,12 +405,7 @@ class ReportService:
                 func.count(case((Lead.current_stage == won_stage.value, Lead.id))).label("won"),
                 func.count(case((Lead.current_stage == LeadStage.LOST.value, Lead.id))).label("lost"),
             )
-            .outerjoin(
-                Lead,
-                (Lead.lead_source_id == LeadSource.id)
-                & (Lead.company_id == self.company_id)
-                & (Lead.is_deleted == False),  # noqa: E712
-            )
+            .outerjoin(Lead, join_cond)
             .where(LeadSource.company_id == self.company_id)
             .group_by(LeadSource.id, LeadSource.name)
             .order_by(LeadSource.name)
@@ -376,15 +428,17 @@ class ReportService:
 
     # ── Task Compliance: 4 queries → 1 ────────────────────────────────
 
-    async def task_compliance(self) -> dict:
-        row = (await self.db.execute(
-            select(
-                func.count().label("total"),
-                func.count(case((Task.status == TaskStatus.COMPLETED, 1))).label("completed"),
-                func.count(case((Task.status == TaskStatus.OVERDUE, 1))).label("overdue"),
-                func.count(case((Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]), 1))).label("pending"),
-            ).where(Task.company_id == self.company_id)
-        )).one()
+    async def task_compliance(self, user=None) -> dict:
+        restricted_id = self._restricted_user_id(user)
+        q = select(
+            func.count().label("total"),
+            func.count(case((Task.status == TaskStatus.COMPLETED, 1))).label("completed"),
+            func.count(case((Task.status == TaskStatus.OVERDUE, 1))).label("overdue"),
+            func.count(case((Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]), 1))).label("pending"),
+        ).where(Task.company_id == self.company_id)
+        if restricted_id is not None:
+            q = q.where(Task.assigned_to == restricted_id)
+        row = (await self.db.execute(q)).one()
 
         return {
             "total_tasks": row.total,
@@ -396,63 +450,63 @@ class ReportService:
 
     # ── Trends: 120 queries → 4 ───────────────────────────────────────
 
-    async def trends(self, days: int = 30) -> list[dict]:
+    async def trends(self, days: int = 30, user=None) -> list[dict]:
         now = now_utc()
         start_date = (now - timedelta(days=days - 1)).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
+        restricted_id = self._restricted_user_id(user)
 
         # Query 1: New leads by date (skip soft-deleted)
-        new_rows = (await self.db.execute(
-            select(
-                cast(Lead.created_at, Date).label("day"),
-                func.count().label("cnt"),
-            )
-            .where(
-                Lead.company_id == self.company_id,
-                Lead.is_deleted == False,  # noqa: E712
-                Lead.created_at >= start_date,
-            )
-            .group_by(cast(Lead.created_at, Date))
-        )).all()
+        new_q = select(
+            cast(Lead.created_at, Date).label("day"),
+            func.count().label("cnt"),
+        ).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+            Lead.created_at >= start_date,
+        )
+        if restricted_id is not None:
+            new_q = new_q.where(Lead.assigned_agent_id == restricted_id)
+        new_rows = (await self.db.execute(new_q.group_by(cast(Lead.created_at, Date)))).all()
 
         # Query 2: Won leads by date (skip soft-deleted)
-        won_rows = (await self.db.execute(
-            select(
-                cast(Lead.won_time, Date).label("day"),
-                func.count().label("cnt"),
-            )
-            .where(
-                Lead.company_id == self.company_id,
-                Lead.is_deleted == False,  # noqa: E712
-                Lead.won_time >= start_date,
-            )
-            .group_by(cast(Lead.won_time, Date))
-        )).all()
+        won_q = select(
+            cast(Lead.won_time, Date).label("day"),
+            func.count().label("cnt"),
+        ).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+            Lead.won_time >= start_date,
+        )
+        if restricted_id is not None:
+            won_q = won_q.where(Lead.assigned_agent_id == restricted_id)
+        won_rows = (await self.db.execute(won_q.group_by(cast(Lead.won_time, Date)))).all()
 
         # Query 3: Lost leads by date (skip soft-deleted)
-        lost_rows = (await self.db.execute(
-            select(
-                cast(Lead.lost_time, Date).label("day"),
-                func.count().label("cnt"),
-            )
-            .where(
-                Lead.company_id == self.company_id,
-                Lead.is_deleted == False,  # noqa: E712
-                Lead.lost_time >= start_date,
-            )
-            .group_by(cast(Lead.lost_time, Date))
-        )).all()
+        lost_q = select(
+            cast(Lead.lost_time, Date).label("day"),
+            func.count().label("cnt"),
+        ).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+            Lead.lost_time >= start_date,
+        )
+        if restricted_id is not None:
+            lost_q = lost_q.where(Lead.assigned_agent_id == restricted_id)
+        lost_rows = (await self.db.execute(lost_q.group_by(cast(Lead.lost_time, Date)))).all()
 
-        # Query 4: Calls by date
-        call_rows = (await self.db.execute(
-            select(
-                cast(CallAttempt.created_at, Date).label("day"),
-                func.count().label("cnt"),
-            )
-            .where(CallAttempt.company_id == self.company_id, CallAttempt.created_at >= start_date)
-            .group_by(cast(CallAttempt.created_at, Date))
-        )).all()
+        # Query 4: Calls by date — for restricted users, only their own calls
+        call_q = select(
+            cast(CallAttempt.created_at, Date).label("day"),
+            func.count().label("cnt"),
+        ).where(
+            CallAttempt.company_id == self.company_id,
+            CallAttempt.created_at >= start_date,
+        )
+        if restricted_id is not None:
+            call_q = call_q.where(CallAttempt.agent_id == restricted_id)
+        call_rows = (await self.db.execute(call_q.group_by(cast(CallAttempt.created_at, Date)))).all()
 
         # Build lookup dicts
         new_map = {str(r.day): r.cnt for r in new_rows}

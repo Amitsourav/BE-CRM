@@ -25,7 +25,7 @@ async def dashboard(
     db: AsyncSession = Depends(get_db),
 ):
     service = ReportService(db, company_id)
-    return await service.dashboard()
+    return await service.dashboard(user=admin)
 
 
 @router.get("/pipeline", response_model=PipelineReport)
@@ -35,7 +35,7 @@ async def pipeline(
     db: AsyncSession = Depends(get_db),
 ):
     service = ReportService(db, company_id)
-    return await service.pipeline()
+    return await service.pipeline(user=admin)
 
 
 @router.get("/agents", response_model=list[AgentPerformance])
@@ -45,7 +45,7 @@ async def agents_summary(
     db: AsyncSession = Depends(get_db),
 ):
     service = ReportService(db, company_id)
-    return await service.agents_summary()
+    return await service.agents_summary(user=admin)
 
 
 @router.get("/agents/{agent_id}", response_model=AgentPerformance)
@@ -56,7 +56,7 @@ async def agent_detail(
     db: AsyncSession = Depends(get_db),
 ):
     service = ReportService(db, company_id)
-    return await service.agent_detail(agent_id)
+    return await service.agent_detail(agent_id, user=admin)
 
 
 @router.get("/sources", response_model=list[SourcePerformance])
@@ -66,7 +66,7 @@ async def sources(
     db: AsyncSession = Depends(get_db),
 ):
     service = ReportService(db, company_id)
-    return await service.sources()
+    return await service.sources(user=admin)
 
 
 @router.get("/tasks/compliance")
@@ -76,7 +76,7 @@ async def task_compliance(
     db: AsyncSession = Depends(get_db),
 ):
     service = ReportService(db, company_id)
-    return await service.task_compliance()
+    return await service.task_compliance(user=admin)
 
 
 @router.get("/trends", response_model=list[TrendData])
@@ -87,7 +87,7 @@ async def trends(
     db: AsyncSession = Depends(get_db),
 ):
     service = ReportService(db, company_id)
-    return await service.trends(days)
+    return await service.trends(days, user=admin)
 
 
 @router.get("/calls")
