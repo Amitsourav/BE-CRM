@@ -25,6 +25,39 @@ class TaskService:
     async def create_task(self, data: dict, created_by: uuid.UUID) -> Task:
         assigned_to = data.get("assigned_to") or created_by
         data["company_id"] = self.company_id
+
+        # Validate assigned_to exists in this tenant and is active.
+        # Without this, a malicious or buggy client could pass any UUID
+        # (cross-tenant or non-existent), and we'd either pollute another
+        # tenant's task list or 500 on the FK violation. Clean 400 instead.
+        target_check = await self.db.execute(
+            select(Profile.id).where(
+                Profile.id == assigned_to,
+                Profile.company_id == self.company_id,
+                Profile.is_active == True,  # noqa: E712
+            )
+        )
+        if not target_check.scalar_one_or_none():
+            raise BadRequestError(
+                "Invalid assigned_to: user not found in this company or inactive"
+            )
+
+        # Validate lead_id (when provided) belongs to this tenant and isn't
+        # soft-deleted. Same reasoning as assigned_to.
+        lead_id = data.get("lead_id")
+        if lead_id:
+            lead_check = await self.db.execute(
+                select(Lead.id).where(
+                    Lead.id == lead_id,
+                    Lead.company_id == self.company_id,
+                    Lead.is_deleted == False,  # noqa: E712
+                )
+            )
+            if not lead_check.scalar_one_or_none():
+                raise BadRequestError(
+                    "Invalid lead_id: lead not found in this company or deleted"
+                )
+
         # due_date is NOT NULL in the DB. The public API enforces it via the
         # TaskCreate Pydantic schema, but internal callers (e.g. stage machine
         # hooks) pass a plain dict — default to one business day out so a
@@ -34,16 +67,19 @@ class TaskService:
         task = Task(**data, created_by=created_by, assigned_to=assigned_to)
         self.db.add(task)
 
-        notif = Notification(
-            company_id=self.company_id,
-            user_id=assigned_to,
-            type=NotificationType.TASK_CREATED,
-            title="New Task Assigned",
-            message=f"Task: {task.title}",
-            lead_id=data.get("lead_id"),
-            task_id=task.id,
-        )
-        self.db.add(notif)
+        # Skip the "New Task Assigned" notification when the creator is also
+        # the assignee — no point pinging yourself about your own action.
+        if assigned_to != created_by:
+            notif = Notification(
+                company_id=self.company_id,
+                user_id=assigned_to,
+                type=NotificationType.TASK_CREATED,
+                title="New Task Assigned",
+                message=f"Task: {task.title}",
+                lead_id=data.get("lead_id"),
+                task_id=task.id,
+            )
+            self.db.add(notif)
 
         await self.db.commit()
         await self.db.refresh(task)
@@ -62,6 +98,18 @@ class TaskService:
 
     async def update_task(self, task_id: uuid.UUID, data: dict, user: Profile) -> Task:
         task = await self.get_task(task_id, user)
+
+        # Block direct status="completed" via PUT — without setting
+        # completed_at + completion_notes the row looks completed but
+        # reports show inconsistent data ("completed" with no timestamp).
+        # Force callers through POST /tasks/{id}/complete which fills
+        # those fields atomically.
+        if data.get("status") == TaskStatus.COMPLETED.value:
+            raise BadRequestError(
+                "Use POST /tasks/{id}/complete to complete a task — "
+                "this endpoint can't set completed_at + completion_notes."
+            )
+
         for key, value in data.items():
             setattr(task, key, value)
         await self.db.commit()
