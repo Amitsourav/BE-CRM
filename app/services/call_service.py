@@ -161,11 +161,18 @@ class CallService:
         # the call was a wrong-number (no callback intended).
         skip_task_dispositions = {CallDisposition.WRONG_NUMBER}
         lead_just_closed = lead.current_stage == LeadStage.LOST
-        if (
+        will_create_task = (
             next_due
             and disp not in skip_task_dispositions
             and not lead_just_closed
-        ):
+        )
+        logger.info(
+            "LOG_CALL_TASK_DECISION lead=%s disposition=%s attempt=%d "
+            "next_due=%s lead_stage=%s will_create_task=%s",
+            lead_id, disp.value, attempt_number, next_due,
+            lead.current_stage, will_create_task,
+        )
+        if will_create_task:
             task_title_map = {
                 CallDisposition.DNP: f"Callback (DNP attempt {attempt_number}): {lead.full_name}",
                 CallDisposition.BUSY: f"Callback (line busy): {lead.full_name}",
@@ -194,6 +201,10 @@ class CallService:
                 status=TaskStatus.PENDING.value,
                 due_date=next_due,
             ))
+            logger.info(
+                "LOG_CALL_TASK_CREATED lead=%s assigned_to=%s due=%s title=%r",
+                lead_id, user.id, next_due, task_title,
+            )
 
         await self.db.commit()
         await self.db.refresh(call)
