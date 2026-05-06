@@ -40,6 +40,38 @@ async def create_task(
     return await service.create_task(data, current_user.id)
 
 
+@router.get("/count")
+async def count_actionable_tasks(
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    statuses: list[str] | None = Query(
+        default=None,
+        description=(
+            "Repeat to pass multiple, e.g. ?statuses=pending&statuses=overdue. "
+            "Default = pending + overdue."
+        ),
+    ),
+    due_before_eod: bool = Query(
+        default=True,
+        description="If true, only count tasks due today or earlier.",
+    ),
+):
+    """Lightweight badge count of "things this user needs to do right now".
+
+    Always scopes to the requester (admin doesn't see company-wide here —
+    a personal-actionable badge must be personal). Returns just a number
+    so polling stays cheap.
+    """
+    service = TaskService(db, company_id)
+    count = await service.count_actionable_tasks(
+        user=current_user,
+        statuses=statuses,
+        due_before_eod=due_before_eod,
+    )
+    return {"count": count}
+
+
 @router.get("/today", response_model=list[TaskOut])
 async def get_today_tasks(
     current_user: Profile = Depends(get_current_user),

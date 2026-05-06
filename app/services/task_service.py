@@ -189,6 +189,35 @@ class TaskService:
         result = await self.db.execute(query)
         return result.scalars().all()
 
+    async def count_actionable_tasks(
+        self,
+        user: Profile,
+        statuses: list[str] | None = None,
+        due_before_eod: bool = True,
+    ) -> int:
+        """Lightweight count of "things this user needs to do right now".
+
+        Always scopes to assigned_to = user.id regardless of role — admin's
+        company-wide visibility doesn't apply to a personal-actionable
+        badge ("you have N tasks to do" must mean YOUR tasks, not the
+        whole company's).
+
+        Defaults match the locked badge spec: pending + overdue tasks
+        due today or earlier. Callers can override `statuses` to count
+        a different slice (e.g. just `["overdue"]`).
+        """
+        if statuses is None:
+            statuses = [TaskStatus.PENDING.value, TaskStatus.OVERDUE.value]
+        q = select(func.count()).select_from(Task).where(
+            Task.company_id == self.company_id,
+            Task.assigned_to == user.id,
+            Task.status.in_(statuses),
+        )
+        if due_before_eod:
+            q = q.where(Task.due_date <= end_of_today())
+        result = await self.db.execute(q)
+        return result.scalar() or 0
+
     async def get_tasks_for_lead(self, lead_id: uuid.UUID, user: Profile) -> list[Task]:
         result = await self.db.execute(
             select(Lead).where(
