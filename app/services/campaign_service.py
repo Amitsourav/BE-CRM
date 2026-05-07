@@ -111,6 +111,109 @@ class CampaignService:
         campaign = await self.get(campaign_id)
         return await self._assign_leads(campaign, lead_ids)
 
+    async def assign_leads_bulk(self, campaign_id: uuid.UUID, filters) -> dict:
+        """Filter-driven bulk assignment.
+
+        Resolves filters → lead IDs → assigns. Skips leads with no phone
+        (undialable) and leads already in the campaign. Capped at
+        filters.limit so a misclick on a 50k-lead tenant doesn't block
+        the worker thread.
+
+        Returns a dict shaped like AssignLeadsBulkResponse.
+        """
+        campaign = await self.get(campaign_id)
+
+        # Build the lead query with all filters applied
+        q = select(Lead.id, Lead.phone).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+        )
+        if filters.csv_import_id:
+            q = q.where(Lead.csv_import_id == filters.csv_import_id)
+        if filters.current_stage:
+            q = q.where(Lead.current_stage == filters.current_stage)
+        if filters.lead_source_id:
+            q = q.where(Lead.lead_source_id == filters.lead_source_id)
+        if filters.assigned_agent_id:
+            q = q.where(Lead.assigned_agent_id == filters.assigned_agent_id)
+        if filters.created_after:
+            q = q.where(Lead.created_at >= filters.created_after)
+        if filters.created_before:
+            q = q.where(Lead.created_at <= filters.created_before)
+        if filters.search:
+            term = f"%{filters.search.strip()}%"
+            q = q.where(
+                (Lead.full_name.ilike(term))
+                | (Lead.phone.ilike(term))
+                | (Lead.email.ilike(term))
+            )
+        if filters.tags_any:
+            q = q.where(Lead.tags.overlap(filters.tags_any))
+
+        # Fetch one extra to detect truncation
+        result = await self.db.execute(q.limit(filters.limit + 1))
+        rows = result.all()
+        truncated = len(rows) > filters.limit
+        if truncated:
+            rows = rows[:filters.limit]
+
+        matched = len(rows)
+        dialable = [(rid, phone) for rid, phone in rows if phone]
+        skipped_no_phone = matched - len(dialable)
+
+        if not dialable:
+            return {
+                "matched": matched,
+                "added": 0,
+                "skipped_no_phone": skipped_no_phone,
+                "skipped_already_assigned": 0,
+                "truncated": truncated,
+            }
+
+        dialable_ids = [rid for rid, _ in dialable]
+
+        # Skip leads already in this campaign
+        existing_q = select(CampaignLead.lead_id).where(
+            CampaignLead.campaign_id == campaign.id,
+            CampaignLead.lead_id.in_(dialable_ids),
+        )
+        existing_rows = await self.db.execute(existing_q)
+        existing_ids = {r[0] for r in existing_rows.all()}
+        skipped_already = len(existing_ids)
+
+        to_insert = [rid for rid in dialable_ids if rid not in existing_ids]
+        added = len(to_insert)
+
+        # Bulk insert in batches of 1000 to keep the SQL statement size
+        # reasonable (psycopg has a hard limit on parameter count).
+        if to_insert:
+            from sqlalchemy import insert
+            BATCH = 1000
+            for i in range(0, len(to_insert), BATCH):
+                chunk = to_insert[i:i + BATCH]
+                await self.db.execute(
+                    insert(CampaignLead),
+                    [
+                        {
+                            "campaign_id": campaign.id,
+                            "lead_id": lid,
+                            "company_id": self.company_id,
+                            "status": "pending",
+                        }
+                        for lid in chunk
+                    ],
+                )
+            campaign.total_leads = (campaign.total_leads or 0) + added
+            await self.db.commit()
+
+        return {
+            "matched": matched,
+            "added": added,
+            "skipped_no_phone": skipped_no_phone,
+            "skipped_already_assigned": skipped_already,
+            "truncated": truncated,
+        }
+
     async def _assign_leads(self, campaign: Campaign, lead_ids: List[uuid.UUID]) -> int:
         # Get valid leads from this company
         result = await self.db.execute(

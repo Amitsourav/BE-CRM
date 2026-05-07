@@ -35,3 +35,29 @@ class CampaignUpdate(BaseModel):
 
 class AssignLeadsRequest(BaseModel):
     lead_ids: List[uuid.UUID]
+
+
+class AssignLeadsBulkRequest(BaseModel):
+    """Filter-driven bulk assignment — pick all leads matching these
+    filters and add them to the campaign in one round-trip. All filters
+    are AND-combined; leads with no phone are skipped because they
+    can't be dialed.
+    """
+    csv_import_id: Optional[uuid.UUID] = None
+    current_stage: Optional[str] = None
+    lead_source_id: Optional[uuid.UUID] = None
+    assigned_agent_id: Optional[uuid.UUID] = None
+    created_after: Optional[datetime] = None
+    created_before: Optional[datetime] = None
+    search: Optional[str] = None
+    tags_any: Optional[List[str]] = None
+    exclude_already_assigned: bool = True
+    limit: int = Field(10000, ge=1, le=50000)
+
+
+class AssignLeadsBulkResponse(BaseModel):
+    matched: int
+    added: int
+    skipped_no_phone: int
+    skipped_already_assigned: int
+    truncated: bool

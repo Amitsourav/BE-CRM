@@ -18,7 +18,10 @@ from app.models.profile import Profile
 from app.models.lead import Lead
 from app.models.campaign_lead import CampaignLead
 from app.services.campaign_service import CampaignService
-from app.schemas.campaign import CampaignCreate, CampaignUpdate, AssignLeadsRequest
+from app.schemas.campaign import (
+    CampaignCreate, CampaignUpdate, AssignLeadsRequest,
+    AssignLeadsBulkRequest, AssignLeadsBulkResponse,
+)
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
 
@@ -175,6 +178,22 @@ async def assign_leads(
     service = CampaignService(db, company_id)
     added = await service.assign_leads(campaign_id, data.lead_ids)
     return {"success": True, "leads_added": added}
+
+
+@router.post("/{campaign_id}/assign-leads-bulk", response_model=AssignLeadsBulkResponse)
+async def assign_leads_bulk(
+    campaign_id: uuid.UUID,
+    data: AssignLeadsBulkRequest,
+    current_user: Profile = Depends(get_current_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Filter-driven bulk-add. Pass csv_import_id to add every lead from
+    a specific CSV upload, or combine other filters (stage, source,
+    date range, search, tags). All filters AND together. Skips leads
+    with no phone (undialable) and leads already in the campaign."""
+    service = CampaignService(db, company_id)
+    return await service.assign_leads_bulk(campaign_id, data)
 
 
 @router.post("/{campaign_id}/start")

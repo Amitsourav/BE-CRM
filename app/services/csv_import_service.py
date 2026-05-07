@@ -225,6 +225,7 @@ class CSVImportService:
                 lead_data["current_stage"] = initial_stage
                 lead_data["assigned_agent_id"] = assigned_agent_id
                 lead_data["lead_source_id"] = lead_source_id
+                lead_data["csv_import_id"] = csv_import.id
                 lead_data["created_by"] = user.id
                 lead_dicts.append(lead_data)
                 success += 1
