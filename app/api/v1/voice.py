@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
@@ -89,10 +87,6 @@ def normalize_e164(raw: str, default_region: str = "IN") -> Optional[str]:
         )
     except phonenumbers.NumberParseException:
         return None
-
-
-# Resolve forward references caused by `from __future__ import annotations`
-OutboundCallRequest.model_rebuild()
 
 
 # ─────────────────────────────────────────────
@@ -1177,8 +1171,8 @@ async def _save_summary_background(call_id: str, transcript: str):
     # Look up the agent's custom analysis prompt (per-agent in DB) before
     # calling the LLM so the analysis is shaped by the agent's vertical.
     # Falls back to the generic prompt inside _analyze_call if NULL.
-    agent: AIAgent | None = None
-    analysis_prompt: str | None = None
+    agent: Optional[AIAgent] = None
+    analysis_prompt: Optional[str] = None
     try:
         async with AsyncSessionLocal() as _prompt_db:
             _call_result = await _prompt_db.execute(
@@ -1493,7 +1487,7 @@ _CORE_ANALYSIS_FIELDS = {
 }
 
 
-async def _analyze_call(transcript: str, system_prompt: str | None = None) -> dict:
+async def _analyze_call(transcript: str, system_prompt: Optional[str] = None) -> dict:
     """Single LLM call: summary + sentiment + interest level + extras.
 
     The system_prompt is sourced from ai_agents.post_call_analysis_prompt
