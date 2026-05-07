@@ -142,7 +142,7 @@ def verify_plivo_webhook(request: Request) -> bool:
 @limiter.limit("10/minute;100/hour")
 async def initiate_outbound_call(
     request: Request,
-    body: OutboundCallRequest,
+    body: OutboundCallRequest = Body(...),
     db: AsyncSession = Depends(get_db),
     current_user: Profile = Depends(get_current_user),
 ):
