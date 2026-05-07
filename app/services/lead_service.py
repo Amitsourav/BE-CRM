@@ -126,29 +126,45 @@ class LeadService:
         lead = await self.get_lead(lead_id, user)
         prev_due_date = lead.due_date
         prev_stage = lead.current_stage
+
+        # If current_stage is being changed, route through StageMachine
+        # so transition rules, lost_reason gating, notes requirements,
+        # AND the LeadStageLog timeline entry all happen. Skipping this
+        # was the bug that let the FE drag-drop into Lost without a
+        # remark, no timeline trace, and no validation.
+        new_stage = data.pop("current_stage", None)
+        transition_notes = data.pop("conversation_notes", None)
+        transition_agenda = data.pop("agent_agenda", None)
+        transition_lost_reason = data.pop("lost_reason", None)
+        transition_due_date = data.get("due_date")  # peek; let normal path also apply it
+
+        if new_stage and new_stage != prev_stage:
+            from app.services.stage_machine import StageMachine
+            machine = StageMachine(self.db, self.company_id)
+            await machine.transition(
+                lead_id=lead.id,
+                to_stage=new_stage,
+                user=user,
+                conversation_notes=transition_notes,
+                agent_agenda=transition_agenda,
+                due_date=transition_due_date,
+                lost_reason=transition_lost_reason,
+            )
+            # StageMachine.transition() commits internally — re-fetch so
+            # we apply the rest of the user's edits to the latest row.
+            lead = await self.get_lead(lead_id, user)
+            prev_due_date = lead.due_date  # avoid double-creating the callback task
+
         for key, value in data.items():
             setattr(lead, key, value)
 
-        # If due_date was set or changed in this update, queue a callback
-        # task. This is the path telecallers actually use ("Edit Lead" form
-        # to schedule next call) — bypassing the dedicated log_call flow.
+        # If due_date was set or changed in this update (and not already
+        # handled by the transition above), queue a callback task. This
+        # is the path telecallers use ("Edit Lead" → schedule next call)
+        # without changing the stage.
         new_due_date = lead.due_date
         if new_due_date and new_due_date != prev_due_date:
             await self._ensure_callback_task(lead, new_due_date, user.id)
-
-        # If current_stage was changed via PUT (the schema accepts it now),
-        # close any stale callback tasks the same way the dedicated stage
-        # endpoint does. Otherwise the user's task list keeps showing
-        # callbacks for stages that have already moved on.
-        new_stage = lead.current_stage
-        if new_stage and new_stage != prev_stage:
-            from app.services.stage_machine import auto_complete_stale_call_tasks
-            await auto_complete_stale_call_tasks(
-                self.db,
-                lead_id=lead.id,
-                company_id=self.company_id,
-                new_stage=new_stage,
-            )
 
         await self.db.commit()
         await self.db.refresh(lead)

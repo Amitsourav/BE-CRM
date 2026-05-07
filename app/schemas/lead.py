@@ -69,6 +69,14 @@ class LeadUpdate(BaseModel):
     assigned_agent_id: uuid.UUID | None = None
     current_stage: str | None = None
     is_important: bool | None = None
+    # When current_stage is included, the service routes the change
+    # through StageMachine.transition() so transition validity, notes
+    # requirements, and lost_reason gating actually run. Without these
+    # accompanying fields the FE can't pass a remark on stage change
+    # via PUT /leads/{id} — it had to call the separate /stage endpoint.
+    conversation_notes: str | None = None
+    agent_agenda: str | None = None
+    lost_reason: str | None = None
 
 
 class LeadImportantToggle(BaseModel):
