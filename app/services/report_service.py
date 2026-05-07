@@ -646,10 +646,69 @@ class ReportService:
         )
         tasks_completed = (await self.db.execute(tasks_completed_q)).scalar() or 0
 
+        # Calls IMPLIED — per-day proxy for call activity when there's no
+        # dialer wired. One distinct lead touched by this user today =
+        # one call. Same lead touched 5 times (multiple stage moves +
+        # task updates) still counts as 1 for the day. AI-driven stage
+        # transitions are excluded — they'd inflate stats with bot work.
+        #
+        # A "touch" today is any of:
+        #   v1   — a stage transition by this user (LeadStageLog row)
+        #   v1.5 — a DNP task completed by this user
+        #   v1.5 — a DNP task whose due_date was changed by this user
+        #          (proxy: Task.updated_at after Task.created_at on a DNP lead)
+        # All three union into a distinct lead-id set.
+
+        # 1. Distinct leads with stage transitions today (excl AI auto)
+        ai_marker = "Auto-transition by post-call pipeline%"
+        stage_leads_q = select(LeadStageLog.lead_id).distinct().where(
+            LeadStageLog.company_id == self.company_id,
+            LeadStageLog.changed_by == user_id,
+            LeadStageLog.created_at >= start_utc,
+            LeadStageLog.created_at < end_utc,
+            (LeadStageLog.conversation_notes.is_(None))
+            | (~LeadStageLog.conversation_notes.like(ai_marker)),
+        )
+        stage_leads = {r[0] for r in (await self.db.execute(stage_leads_q)).all()}
+
+        # 2. Distinct leads where this user completed a task on a DNP-stage
+        # lead today.
+        dnp_complete_q = select(Task.lead_id).distinct().select_from(Task).join(
+            Lead, Lead.id == Task.lead_id
+        ).where(
+            Task.company_id == self.company_id,
+            Task.assigned_to == user_id,
+            Task.status == TaskStatus.COMPLETED.value,
+            Task.completed_at >= start_utc,
+            Task.completed_at < end_utc,
+            Lead.current_stage == LeadStage.DNP.value,
+        )
+        dnp_complete_leads = {r[0] for r in (await self.db.execute(dnp_complete_q)).all() if r[0]}
+
+        # 3. Distinct leads where this user updated a task on a DNP-stage
+        # lead today (proxy for "DNP callback date changed"). 5-second
+        # buffer skips the row's own creation timestamp from being
+        # treated as an update.
+        from datetime import timedelta as _td
+        dnp_update_q = select(Task.lead_id).distinct().select_from(Task).join(
+            Lead, Lead.id == Task.lead_id
+        ).where(
+            Task.company_id == self.company_id,
+            Task.assigned_to == user_id,
+            Task.updated_at.isnot(None),
+            Task.updated_at >= start_utc,
+            Task.updated_at < end_utc,
+            Lead.current_stage == LeadStage.DNP.value,
+        )
+        dnp_update_leads = {r[0] for r in (await self.db.execute(dnp_update_q)).all() if r[0]}
+
+        calls_implied = len(stage_leads | dnp_complete_leads | dnp_update_leads)
+
         return {
             "calls_made": call_row.made or 0,
             "calls_connected": call_row.connected or 0,
             "call_duration_minutes": round((call_row.duration_seconds or 0) / 60, 1),
+            "calls_implied": calls_implied,
             "leads_created": leads_created,
             "transitions_total": transitions_total,
             "transitions_by_stage": transitions_by_stage,
