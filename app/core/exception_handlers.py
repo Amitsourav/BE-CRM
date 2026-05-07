@@ -18,4 +18,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 async def generic_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled exception: %s", exc)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    # Temporarily surface error class + message in the 500 response
+    # so production failures can be diagnosed without Railway log access.
+    # Revert to bare {"detail": "Internal server error"} once the
+    # specific 500 we're chasing is fixed.
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "error_type": type(exc).__name__,
+            "error_message": str(exc)[:500],
+        },
+    )
