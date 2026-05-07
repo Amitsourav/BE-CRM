@@ -136,9 +136,11 @@ class CSVImportService:
                         lead_data[lead_field] = value
 
                 if not lead_data.get("full_name"):
-                    errors.append({"row": row_idx, "error": "Missing full_name"})
-                    failures += 1
-                    continue
+                    if not lead_data.get("phone"):
+                        errors.append({"row": row_idx, "error": "Missing full_name and phone"})
+                        failures += 1
+                        continue
+                    lead_data["full_name"] = "Lead"
 
                 if "phone" in lead_data:
                     lead_data["phone"] = normalize_phone(lead_data["phone"])
