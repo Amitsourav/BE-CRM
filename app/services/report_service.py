@@ -11,12 +11,22 @@ from app.models.call_attempt import CallAttempt
 from app.models.task import Task
 from app.models.lead_source import LeadSource
 from app.models.company import Company
+from app.models.lead_stage_log import LeadStageLog
 from app.core.constants import (
     LeadStage, TaskStatus, CallDisposition, UserRole,
     ADMITVERSE_STAGES, RESTRICTED_VIEW_ROLES,
 )
-from app.core.exceptions import ForbiddenError
-from app.utils.date_helpers import now_utc, start_of_today, end_of_today
+from app.core.exceptions import ForbiddenError, ForbiddenError as _Forbidden
+from app.utils.date_helpers import now_utc, now_ist, start_of_today, end_of_today, IST
+
+
+# Hardcoded daily call targets per role (v1). Once Profile gets a
+# `daily_call_target` column, the per-user value will override these.
+_DEFAULT_CALL_TARGET = {
+    UserRole.TELECALLER: 50,
+    UserRole.MANAGER: 30,
+    UserRole.ADMIN: None,  # admins don't have a target
+}
 
 
 # Stages that count as "won" in the conversion-rate denominator. Each brand
@@ -24,8 +34,8 @@ from app.utils.date_helpers import now_utc, start_of_today, end_of_today
 # ENROLLED. Without this map every Admitverse report would show 0% forever
 # because no Admitverse lead ever reaches `won`.
 _BRAND_WON_STAGE = {
-    "fmc": LeadStage.WON,
-    "fundmycampus": LeadStage.WON,
+    "fmc": LeadStage.DISBURSED,
+    "fundmycampus": LeadStage.DISBURSED,
     "admitverse": LeadStage.ENROLLED,
 }
 
@@ -527,4 +537,212 @@ class ReportService:
                 "calls_made": call_map.get(day_str, 0),
             })
 
+        return results
+
+    # ── Daily activity report ─────────────────────────────────────────
+    # "How much did each user do today?" — a per-user breakdown of
+    # calls, lead movements, tasks, and leads created. Calendar day in
+    # IST (00:00 to 24:00 IST). AI campaign calls are excluded from the
+    # call counts because they're dispatched by the bot, not the user
+    # — counting them would inflate telecaller stats.
+
+    @staticmethod
+    def _ist_day_bounds(date_str: str) -> tuple:
+        """Convert a YYYY-MM-DD IST date into a (start_utc, end_utc) range
+        the database can filter on. The DB stores timestamps in UTC; the
+        user thinks in IST; this is the only place the conversion lives."""
+        from datetime import date as _date_cls, datetime as _dt, timezone as _tz
+        d = _date_cls.fromisoformat(date_str)
+        start_ist = _dt(d.year, d.month, d.day, 0, 0, 0, tzinfo=IST)
+        end_ist = start_ist + timedelta(days=1)
+        return start_ist.astimezone(_tz.utc), end_ist.astimezone(_tz.utc)
+
+    async def _compute_user_day_metrics(
+        self, user_id: uuid.UUID, start_utc, end_utc,
+    ) -> dict:
+        """One user, one IST day → all metrics. Used by both the daily
+        report and the 30-day range. Five DB queries total per call."""
+        # Calls (manual only — AI calls are excluded so telecaller stats
+        # aren't padded by the bot).
+        call_q = select(
+            func.count().label("made"),
+            func.count(case((CallAttempt.transcript.isnot(None), 1))).label("connected"),
+            func.coalesce(func.sum(CallAttempt.call_duration_seconds), 0).label("duration_seconds"),
+        ).where(
+            CallAttempt.company_id == self.company_id,
+            CallAttempt.telecaller_id == user_id,
+            CallAttempt.call_type == "manual",
+            CallAttempt.started_at >= start_utc,
+            CallAttempt.started_at < end_utc,
+        )
+        call_row = (await self.db.execute(call_q)).one()
+
+        # Leads created by this user (manual entry — CSV imports are
+        # bulk and the system records the importer, but those leads
+        # aren't really "created by hand").
+        leads_created_q = select(func.count()).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+            Lead.created_by == user_id,
+            Lead.created_at >= start_utc,
+            Lead.created_at < end_utc,
+        )
+        leads_created = (await self.db.execute(leads_created_q)).scalar() or 0
+
+        # Pipeline movements (every stage transition done by this user
+        # in the day, grouped by destination stage).
+        moves_q = select(
+            LeadStageLog.to_stage,
+            func.count().label("cnt"),
+        ).where(
+            LeadStageLog.company_id == self.company_id,
+            LeadStageLog.changed_by == user_id,
+            LeadStageLog.created_at >= start_utc,
+            LeadStageLog.created_at < end_utc,
+        ).group_by(LeadStageLog.to_stage)
+        moves_rows = (await self.db.execute(moves_q)).all()
+        transitions_by_stage = {r.to_stage: r.cnt for r in moves_rows}
+        transitions_total = sum(transitions_by_stage.values())
+
+        # Convenience counts derived from the breakdown.
+        won_stage = await self._won_stage()
+        leads_won = transitions_by_stage.get(won_stage.value, 0)
+        leads_lost = transitions_by_stage.get(LeadStage.LOST.value, 0)
+
+        # Tasks created (this user authored) and completed (this user
+        # owned and completed today). Two separate semantics on purpose:
+        # creating tasks for others vs. clearing your own queue.
+        tasks_created_q = select(func.count()).where(
+            Task.company_id == self.company_id,
+            Task.created_by == user_id,
+            Task.created_at >= start_utc,
+            Task.created_at < end_utc,
+        )
+        tasks_created = (await self.db.execute(tasks_created_q)).scalar() or 0
+
+        tasks_completed_q = select(func.count()).where(
+            Task.company_id == self.company_id,
+            Task.assigned_to == user_id,
+            Task.status == TaskStatus.COMPLETED.value,
+            Task.completed_at >= start_utc,
+            Task.completed_at < end_utc,
+        )
+        tasks_completed = (await self.db.execute(tasks_completed_q)).scalar() or 0
+
+        return {
+            "calls_made": call_row.made or 0,
+            "calls_connected": call_row.connected or 0,
+            "call_duration_minutes": round((call_row.duration_seconds or 0) / 60, 1),
+            "leads_created": leads_created,
+            "transitions_total": transitions_total,
+            "transitions_by_stage": transitions_by_stage,
+            "leads_won": leads_won,
+            "leads_lost": leads_lost,
+            "tasks_created": tasks_created,
+            "tasks_completed": tasks_completed,
+        }
+
+    async def _resolve_target_user(self, requesting_user, target_user_id) -> Profile:
+        """Permission gate for daily-report queries.
+
+        Telecaller / manager (v1) → can only query themselves.
+        Admin → can query any user in the company.
+
+        Manager → "own + team" view will be added once Profile gets a
+        manager_id FK linking telecallers to their manager. For now
+        managers see only their own day, same as telecallers.
+        """
+        if target_user_id is None or target_user_id == requesting_user.id:
+            return requesting_user
+
+        if requesting_user.role != UserRole.ADMIN:
+            raise ForbiddenError("Only admin can query other users' reports")
+
+        result = await self.db.execute(
+            select(Profile).where(
+                Profile.id == target_user_id,
+                Profile.company_id == self.company_id,
+            )
+        )
+        target = result.scalar_one_or_none()
+        if not target:
+            raise ForbiddenError("User not found in this company")
+        return target
+
+    async def daily_activity(
+        self, *, requesting_user: Profile, target_user_id: uuid.UUID | None = None,
+        date_str: str | None = None,
+    ) -> dict:
+        """Per-user daily activity report with comparison to yesterday.
+
+        date_str is YYYY-MM-DD in IST. None = today (IST).
+        target_user_id None or matching requesting_user.id → self-view.
+        Non-self queries are admin-only until manager_id is wired.
+        """
+        target_user = await self._resolve_target_user(requesting_user, target_user_id)
+
+        if date_str is None:
+            date_str = now_ist().date().isoformat()
+
+        start_utc, end_utc = self._ist_day_bounds(date_str)
+        # Yesterday for delta — stay in IST so DST-style timezone bugs
+        # can't make "yesterday" 23 or 25 hours.
+        from datetime import date as _date_cls
+        today = _date_cls.fromisoformat(date_str)
+        yesterday = today - timedelta(days=1)
+        prev_start, prev_end = self._ist_day_bounds(yesterday.isoformat())
+
+        today_metrics = await self._compute_user_day_metrics(target_user.id, start_utc, end_utc)
+        yesterday_metrics = await self._compute_user_day_metrics(target_user.id, prev_start, prev_end)
+
+        # Delta — only on numeric scalar fields.
+        deltas = {
+            k: today_metrics[k] - yesterday_metrics[k]
+            for k in today_metrics
+            if isinstance(today_metrics[k], (int, float))
+        }
+
+        # Targets — hardcoded by role for v1.
+        try:
+            role_enum = UserRole(target_user.role)
+        except ValueError:
+            role_enum = None
+        target_calls = _DEFAULT_CALL_TARGET.get(role_enum) if role_enum else None
+        pct_of_target = None
+        if target_calls and target_calls > 0:
+            pct_of_target = round(today_metrics["calls_made"] / target_calls * 100, 1)
+
+        return {
+            "date": date_str,
+            "user_id": str(target_user.id),
+            "user_name": target_user.full_name,
+            "user_role": target_user.role,
+            "metrics": today_metrics,
+            "yesterday_metrics": yesterday_metrics,
+            "deltas": deltas,
+            "target_call_count": target_calls,
+            "percent_of_target": pct_of_target,
+        }
+
+    async def daily_activity_range(
+        self, *, requesting_user: Profile, target_user_id: uuid.UUID | None = None,
+        days: int = 30,
+    ) -> list[dict]:
+        """Last N days (default 30) of activity for a user. One row per
+        day, oldest first. No deltas / targets — those only make sense
+        for the focused single-day view. Capped at 90 days to keep the
+        query count bounded (5 queries × N days per call).
+        """
+        target_user = await self._resolve_target_user(requesting_user, target_user_id)
+        days = max(1, min(days, 90))
+
+        today_ist = now_ist().date()
+        results = []
+        for i in range(days - 1, -1, -1):
+            day = today_ist - timedelta(days=i)
+            day_str = day.isoformat()
+            start_utc, end_utc = self._ist_day_bounds(day_str)
+            metrics = await self._compute_user_day_metrics(target_user.id, start_utc, end_utc)
+            metrics["date"] = day_str
+            results.append(metrics)
         return results

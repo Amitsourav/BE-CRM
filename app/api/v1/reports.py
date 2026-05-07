@@ -5,7 +5,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
-from app.dependencies import get_current_manager
+from app.dependencies import get_current_manager, get_current_user
 from app.core.tenant import get_current_company_id
 from app.models.profile import Profile
 from app.services.report_service import ReportService
@@ -88,6 +88,45 @@ async def trends(
 ):
     service = ReportService(db, company_id)
     return await service.trends(days, user=admin)
+
+
+@router.get("/daily")
+async def daily_activity(
+    user_id: uuid.UUID | None = Query(None, description="Admin can pass any user_id; non-admins ignored (always self)"),
+    date_str: str | None = Query(None, alias="date", description="YYYY-MM-DD in IST. Default = today IST."),
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-user daily activity report. Telecaller / manager see only
+    self; admin can query any user via ?user_id=. Returns metrics for
+    the day, yesterday's snapshot for delta, and target/percent.
+    """
+    service = ReportService(db, company_id)
+    return await service.daily_activity(
+        requesting_user=current_user,
+        target_user_id=user_id,
+        date_str=date_str,
+    )
+
+
+@router.get("/daily/range")
+async def daily_activity_range(
+    user_id: uuid.UUID | None = Query(None),
+    days: int = Query(30, ge=1, le=90),
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Last N days (default 30) of per-user activity, oldest first.
+    No deltas/targets — those only make sense for the focused single-day view.
+    """
+    service = ReportService(db, company_id)
+    return await service.daily_activity_range(
+        requesting_user=current_user,
+        target_user_id=user_id,
+        days=days,
+    )
 
 
 @router.get("/calls")
