@@ -52,6 +52,16 @@ class LeadStage(str, enum.Enum):
     VISA_APPLIED = "visa_applied"
     ENROLLED = "enrolled"
 
+    # FMC loan-processing pipeline (May 2026 revamp). CREATED, CONTACTED,
+    # QUALIFIED, PROCESSING, OPPORTUNITY, LOST are reused from the
+    # Admitverse block above. The 6 below are FMC-specific.
+    DNP = "dnp"
+    DOCS_PENDING = "docs_pending"
+    LOGGED_IN = "logged_in"
+    SANCTIONED = "sanctioned"
+    PF_PAID = "pf_paid"
+    DISBURSED = "disbursed"
+
 
 # All 23 enum string values, in the order they appear in the DB type.
 # Used by SQLAlchemy ENUM column declarations.
@@ -109,15 +119,44 @@ class CSVImportStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-# ── FMC pipeline transitions (existing, untouched) ─────────────────────
-FMC_VALID_TRANSITIONS: dict[LeadStage, list[LeadStage]] = {
-    LeadStage.LEAD: [LeadStage.CALLED, LeadStage.LOST],
-    LeadStage.CALLED: [LeadStage.CONNECTED, LeadStage.LOST],
-    LeadStage.CONNECTED: [LeadStage.QUALIFIED_LEAD, LeadStage.LOST],
-    LeadStage.QUALIFIED_LEAD: [LeadStage.WON, LeadStage.LOST],
-    LeadStage.WON: [],  # terminal
-    LeadStage.LOST: [LeadStage.LEAD],  # admin-only reopen
-}
+# ── FMC loan-processing pipeline (May 2026 revamp) ─────────────────────
+# Replaces the original 6-stage funnel with a 12-stage loan flow.
+# Free movement, just like Admitverse — agents can move any lead to
+# any non-terminal stage. Terminal states are DISBURSED (happy) and
+# LOST (sad). The previous LEAD/CALLED/CONNECTED/QUALIFIED_LEAD/WON
+# stages are kept in the enum for legacy data but no transition table
+# routes traffic to them.
+FMC_STAGES: list[LeadStage] = [
+    LeadStage.CREATED,
+    LeadStage.CONTACTED,
+    LeadStage.DNP,
+    LeadStage.QUALIFIED,
+    LeadStage.PROCESSING,
+    LeadStage.DOCS_PENDING,
+    LeadStage.LOGGED_IN,
+    LeadStage.SANCTIONED,
+    LeadStage.PF_PAID,
+    LeadStage.DISBURSED,
+    LeadStage.OPPORTUNITY,
+    LeadStage.LOST,
+]
+
+FMC_TERMINAL: set[LeadStage] = {LeadStage.DISBURSED, LeadStage.LOST}
+
+
+def _build_fmc_transitions() -> dict[LeadStage, list[LeadStage]]:
+    table: dict[LeadStage, list[LeadStage]] = {}
+    for src in FMC_STAGES:
+        if src in FMC_TERMINAL:
+            table[src] = []
+        else:
+            table[src] = [s for s in FMC_STAGES if s != src]
+    # Admin reopen: LOST → CREATED so a lead can be revived.
+    table[LeadStage.LOST] = [LeadStage.CREATED]
+    return table
+
+
+FMC_VALID_TRANSITIONS: dict[LeadStage, list[LeadStage]] = _build_fmc_transitions()
 
 # Default export, kept for code that doesn't yet pass a brand.
 VALID_TRANSITIONS = FMC_VALID_TRANSITIONS
@@ -181,16 +220,15 @@ def get_transitions_for_brand(slug: str | None) -> dict[LeadStage, list[LeadStag
 def get_terminal_stages_for_brand(slug: str | None) -> set[LeadStage]:
     if (slug or "").lower() == "admitverse":
         return ADMITVERSE_TERMINAL
-    return {LeadStage.WON, LeadStage.LOST}
+    return FMC_TERMINAL
 
 
 # ── Notes requirement (per brand) ──────────────────────────────────────
 # Stages that need conversation_notes + agent_agenda before moving in.
-FMC_STAGES_REQUIRING_NOTES = {
-    LeadStage.CALLED,
-    LeadStage.CONNECTED,
-    LeadStage.QUALIFIED_LEAD,
-}
+# FMC's revamp goes free-flow like Admitverse — gating every transition
+# behind a notes dialog fights "any agent can move freely". Empty set =
+# only `lost` keeps its lost_reason gate (enforced separately).
+FMC_STAGES_REQUIRING_NOTES: set[LeadStage] = set()
 
 # Admitverse: free movement is the design — gating every contacted/connected
 # transition behind a notes-required dialog fights that. Frontend agreed:
@@ -210,8 +248,7 @@ def get_notes_required_for_brand(slug: str | None) -> set[LeadStage]:
 
 
 def get_initial_stage_for_brand(slug: str | None) -> LeadStage:
-    """Initial stage assigned to a freshly-created lead. FMC starts at LEAD,
-    Admitverse starts at CREATED."""
-    if (slug or "").lower() == "admitverse":
-        return LeadStage.CREATED
-    return LeadStage.LEAD
+    """Initial stage assigned to a freshly-created lead. Both brands now
+    start at CREATED — FMC's May 2026 revamp dropped the legacy 'lead'
+    stage in favor of the loan-processing pipeline."""
+    return LeadStage.CREATED

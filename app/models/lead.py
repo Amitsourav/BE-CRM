@@ -70,6 +70,11 @@ class Lead(Base, TimestampMixin):
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Important flag — boolean star/escalation marker. Doesn't affect
+    # stage; an Important lead at stage=Processing stays in Processing
+    # but renders with a star on the Kanban card.
+    is_important: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+
     # Relationships
     company = relationship("Company", back_populates="leads")
     assigned_agent = relationship("Profile", back_populates="assigned_leads", foreign_keys=[assigned_agent_id])

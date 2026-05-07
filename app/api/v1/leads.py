@@ -16,6 +16,7 @@ from app.schemas.lead import (
     LeadSearchParams, LeadSourceCreate, LeadSourceOut,
     LeadCardOut, LeadsByStageOut,
     LeadDistributeRangeRequest, LeadDistributeRangeResponse,
+    LeadImportantToggle,
 )
 from app.schemas.stage import StageLogOut
 from app.schemas.call import CallAttemptOut
@@ -180,6 +181,21 @@ async def assign_lead(
 ):
     service = LeadService(db, company_id)
     return await service.assign_lead(lead_id, body.agent_id)
+
+
+@router.patch("/{lead_id}/important", response_model=LeadOut)
+async def toggle_important(
+    lead_id: uuid.UUID,
+    body: LeadImportantToggle,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle the is_important star on a lead. Doesn't change stage —
+    Important is a flag, not a column. Telecallers can star their own
+    leads; admins/managers can star any lead they can see."""
+    service = LeadService(db, company_id)
+    return await service.set_important(lead_id, body.is_important, current_user)
 
 
 @router.post("/bulk-assign")

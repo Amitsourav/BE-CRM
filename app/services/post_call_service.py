@@ -50,7 +50,26 @@ async def post_call_pipeline(
     company_id = call.company_id
 
     if not call.transcript:
-        logger.info("[POST-CALL] No transcript for call %s, skipping AI analysis", call_id)
+        logger.info(
+            "[POST-CALL] No transcript for call %s — running no-connect auto-stage path",
+            call_id,
+        )
+        # No transcript usually means the lead didn't pick up. Still run
+        # the auto-stage path so FMC's "no-connect → DNP, 12 fails → Lost"
+        # rule fires. We pass sentiment=None so the function can branch
+        # on transcript_present=False instead of inventing a sentiment.
+        try:
+            await auto_update_lead_status(
+                db,
+                company_id=company_id,
+                lead_id=call.lead_id,
+                sentiment=None,
+                sentiment_score=None,
+                changed_by=call.agent_id,
+                transcript_present=False,
+            )
+        except Exception:
+            logger.exception("[POST-CALL] No-transcript stage update failed for call %s", call_id)
         return
 
     # 2. Generate summary
@@ -82,6 +101,7 @@ async def post_call_pipeline(
             sentiment=call.sentiment,
             sentiment_score=call.sentiment_score,
             changed_by=call.agent_id,
+            transcript_present=True,
         )
     except Exception:
         # Stage updates write a LeadStageLog row with FKs; don't let a bad
@@ -171,27 +191,43 @@ async def analyze_sentiment(transcript: str) -> tuple[str, float]:
 
 
 def _pick_auto_target(
-    *, slug: str | None, current: LeadStage, sentiment: str | None, score: float,
+    *, slug: str | None, current: LeadStage, sentiment: str | None,
+    score: float, call_attempt_count: int = 0, transcript_present: bool = True,
 ) -> LeadStage | None:
     """Pick the next auto-advance target for the given brand and call outcome.
 
-    FMC: lead → called → (positive ≥ 0.6) connected → (positive ≥ 0.75) qualified_lead
-    Admitverse: created → contacted → (positive ≥ 0.6) connected → (positive ≥ 0.75) qualified
-                contacted/connected + non-positive on no-pickup → dnp_pre_qualified
-                qualified + no-pickup → dnp_post_qualified
+    FMC (May 2026 revamp — loan-processing flow):
+      - No transcript / no-connect → DNP. After 12 DNP attempts → LOST.
+      - CREATED + positive ≥ 0.6 → CONTACTED
+      - CONTACTED + positive ≥ 0.75 → QUALIFIED
+      - DNP + positive (lead picks up later) → CONTACTED (re-engaged)
+      - Anything qualified or beyond is human-driven (loan paperwork, not AI).
+
+    Admitverse (unchanged from original):
+      CREATED → CONTACTED → (positive ≥ 0.6) CONNECTED → (positive ≥ 0.75) QUALIFIED
     """
     is_admitverse = (slug or "").lower() == "admitverse"
 
     if not is_admitverse:
-        if current == LeadStage.LEAD:
-            return LeadStage.CALLED
-        if current == LeadStage.CALLED and sentiment == "positive" and score >= 0.6:
-            return LeadStage.CONNECTED
-        if current == LeadStage.CONNECTED and sentiment == "positive" and score >= 0.75:
-            return LeadStage.QUALIFIED_LEAD
+        # No-connect / silent-fail call → DNP, with hard cap at 12 attempts.
+        if not transcript_present:
+            if call_attempt_count >= 12:
+                return LeadStage.LOST
+            if current in (LeadStage.CREATED, LeadStage.CONTACTED, LeadStage.DNP):
+                return LeadStage.DNP
+            return None
+
+        # Transcript exists — promote based on sentiment.
+        if current == LeadStage.CREATED and sentiment == "positive" and score >= 0.6:
+            return LeadStage.CONTACTED
+        if current == LeadStage.CONTACTED and sentiment == "positive" and score >= 0.75:
+            return LeadStage.QUALIFIED
+        if current == LeadStage.DNP and sentiment == "positive" and score >= 0.6:
+            # Lead finally picked up — pull them out of the DNP loop.
+            return LeadStage.CONTACTED
         return None
 
-    # Admitverse branch
+    # Admitverse branch (legacy, unchanged)
     if current == LeadStage.CREATED:
         return LeadStage.CONTACTED
     if current == LeadStage.CONTACTED and sentiment == "positive" and score >= 0.6:
@@ -209,6 +245,7 @@ async def auto_update_lead_status(
     sentiment: str | None,
     sentiment_score: float | None = None,
     changed_by: uuid.UUID,
+    transcript_present: bool = True,
 ) -> None:
     """Update lead stage based on call outcome.
 
@@ -241,7 +278,14 @@ async def auto_update_lead_status(
     slug = slug_result.scalar_one_or_none()
 
     score = float(sentiment_score or 0.0)
-    target = _pick_auto_target(slug=slug, current=current, sentiment=sentiment, score=score)
+    target = _pick_auto_target(
+        slug=slug,
+        current=current,
+        sentiment=sentiment,
+        score=score,
+        call_attempt_count=lead.call_attempt_count or 0,
+        transcript_present=transcript_present,
+    )
     if target is None:
         return
 

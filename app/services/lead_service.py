@@ -311,6 +311,20 @@ class LeadService:
         await self.db.refresh(lead)
         return lead
 
+    async def set_important(self, lead_id: uuid.UUID, value: bool, user: Profile) -> Lead:
+        """Toggle the is_important flag on a lead.
+
+        Doesn't move the lead between Kanban columns — Important is a
+        flag, not a stage. Same access rules as other lead writes:
+        admin/manager can star anything they can see; telecallers only
+        their own assigned leads.
+        """
+        lead = await self.get_lead(lead_id, user)
+        lead.is_important = bool(value)
+        await self.db.commit()
+        await self.db.refresh(lead)
+        return lead
+
     async def distribute_by_range(
         self,
         ranges: list[dict],

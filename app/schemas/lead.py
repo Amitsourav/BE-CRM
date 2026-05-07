@@ -68,6 +68,11 @@ class LeadUpdate(BaseModel):
     due_date: datetime | None = None
     assigned_agent_id: uuid.UUID | None = None
     current_stage: str | None = None
+    is_important: bool | None = None
+
+
+class LeadImportantToggle(BaseModel):
+    is_important: bool
 
 
 class LeadOut(BaseModel):
@@ -105,6 +110,7 @@ class LeadOut(BaseModel):
     custom_fields: dict = {}
     tags: list[str] = []
     notes: str | None = None
+    is_important: bool = False
     created_by: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
@@ -129,6 +135,7 @@ class LeadCardOut(BaseModel):
     last_contacted_at: datetime | None = None
     call_attempt_count: int = 0
     tags: list[str] = []
+    is_important: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
