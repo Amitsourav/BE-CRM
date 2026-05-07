@@ -562,18 +562,35 @@ class ReportService:
     ) -> dict:
         """One user, one IST day → all metrics. Used by both the daily
         report and the 30-day range. Five DB queries total per call."""
-        # Calls (manual only — AI calls are excluded so telecaller stats
-        # aren't padded by the bot).
+        # Calls (manual only — AI/campaign calls are excluded so the
+        # telecaller's stats aren't padded by the bot).
+        # call_type values in this DB:
+        #   "live"        — manual call logged by telecaller (counted)
+        #   "ai"          — AI call from voice/outbound (excluded)
+        #   "ai_campaign" — campaign worker dial (excluded)
+        # Falling back to attempt timestamps means a half-logged manual
+        # call still gets counted; an AI call without a transcript
+        # doesn't.
+        # Window on created_at, not started_at: manual calls don't
+        # populate started_at (only AI calls do), so filtering on
+        # started_at would drop every telecaller's manual call.
+        # created_at is the server-default insert timestamp — always set.
         call_q = select(
             func.count().label("made"),
-            func.count(case((CallAttempt.transcript.isnot(None), 1))).label("connected"),
+            func.count(case(
+                (
+                    (CallAttempt.transcript.isnot(None))
+                    | (CallAttempt.call_duration_seconds > 10),
+                    1,
+                )
+            )).label("connected"),
             func.coalesce(func.sum(CallAttempt.call_duration_seconds), 0).label("duration_seconds"),
         ).where(
             CallAttempt.company_id == self.company_id,
             CallAttempt.telecaller_id == user_id,
-            CallAttempt.call_type == "manual",
-            CallAttempt.started_at >= start_utc,
-            CallAttempt.started_at < end_utc,
+            CallAttempt.call_type == "live",
+            CallAttempt.created_at >= start_utc,
+            CallAttempt.created_at < end_utc,
         )
         call_row = (await self.db.execute(call_q)).one()
 
