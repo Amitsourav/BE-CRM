@@ -36,6 +36,7 @@ async def list_leads(
     stage: str | None = Query(None, alias="current_stage"),
     agent_id: uuid.UUID | None = Query(None),
     source_id: uuid.UUID | None = Query(None),
+    csv_import_id: uuid.UUID | None = Query(None),
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
 ):
@@ -43,6 +44,7 @@ async def list_leads(
     return await service.list_leads(
         user=current_user, page=page, page_size=page_size,
         stage=stage, agent_id=agent_id, source_id=source_id,
+        csv_import_id=csv_import_id,
         date_from=date_from, date_to=date_to,
     )
 

@@ -178,6 +178,7 @@ class LeadService:
         stage: str | None = None,
         agent_id: uuid.UUID | None = None,
         source_id: uuid.UUID | None = None,
+        csv_import_id: uuid.UUID | None = None,
         tags: list[str] | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
@@ -193,6 +194,8 @@ class LeadService:
             query = query.where(Lead.current_stage == stage)
         if source_id:
             query = query.where(Lead.lead_source_id == source_id)
+        if csv_import_id:
+            query = query.where(Lead.csv_import_id == csv_import_id)
         if tags:
             query = query.where(Lead.tags.overlap(tags))
         if date_from:
