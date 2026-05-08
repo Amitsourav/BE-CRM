@@ -171,6 +171,19 @@ async def get_lead_tasks(
     return await task_service.get_tasks_for_lead(lead_id, current_user)
 
 
+@router.get("/docs/checklist")
+async def get_docs_checklist(
+    current_user: Profile = Depends(get_current_user),
+):
+    """Return the standard FMC document checklist (key + label pairs).
+    FE renders the per-doc checkboxes on the Kanban tile from this list.
+    Hardcoded server-side so adding/removing docs doesn't need a FE
+    change — just a backend constant + migration if defaults shift.
+    """
+    from app.core.constants import FMC_DOC_CHECKLIST
+    return {"items": FMC_DOC_CHECKLIST}
+
+
 @router.post("/{lead_id}/assign", response_model=LeadOut)
 async def assign_lead(
     lead_id: uuid.UUID,

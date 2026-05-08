@@ -75,6 +75,7 @@ class LeadUpdate(BaseModel):
     bank_status: str | None = None
     docs_required: int | None = None
     docs_submitted: int | None = None
+    submitted_docs: list[str] | None = None
     # When current_stage is included, the service routes the change
     # through StageMachine.transition() so transition validity, notes
     # requirements, and lost_reason gating actually run. Without these
@@ -131,6 +132,7 @@ class LeadOut(BaseModel):
     bank_status: str | None = None
     docs_required: int = 6
     docs_submitted: int = 0
+    submitted_docs: list[str] = []
     # Activity rollups (computed in service, not on the model)
     assigned_agent_name: str | None = None
     assigned_agent_role: str | None = None
@@ -170,6 +172,7 @@ class LeadCardOut(BaseModel):
     bank_status: str | None = None
     docs_required: int = 6
     docs_submitted: int = 0
+    submitted_docs: list[str] = []
     assigned_agent_name: str | None = None
     assigned_agent_role: str | None = None
     task_count: int = 0

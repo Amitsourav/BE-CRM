@@ -252,3 +252,20 @@ def get_initial_stage_for_brand(slug: str | None) -> LeadStage:
     start at CREATED — FMC's May 2026 revamp dropped the legacy 'lead'
     stage in favor of the loan-processing pipeline."""
     return LeadStage.CREATED
+
+
+# ── FMC document checklist ─────────────────────────────────────────────
+# The 6 docs every FMC loan application needs. submitted_docs on the
+# lead stores the keys; the FE renders the checklist using the labels.
+# Adding/removing entries here changes the standard checklist length —
+# leads.docs_required default also bumps via migration if you reshape.
+FMC_DOC_CHECKLIST: list[dict[str, str]] = [
+    {"key": "aadhaar", "label": "Aadhaar Card"},
+    {"key": "pan", "label": "PAN Card"},
+    {"key": "academic", "label": "Academic Documents"},
+    {"key": "offer_letter", "label": "Offer Letter"},
+    {"key": "financial", "label": "Financial Documents"},
+    {"key": "itr", "label": "ITR"},
+]
+
+FMC_DOC_KEYS: frozenset[str] = frozenset(d["key"] for d in FMC_DOC_CHECKLIST)

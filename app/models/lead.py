@@ -90,6 +90,7 @@ class Lead(Base, TimestampMixin):
     )
     docs_required: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("6"))
     docs_submitted: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    submitted_docs: Mapped[List[str]] = mapped_column(ARRAY(String), nullable=False, server_default=text("'{}'"))
 
     # Relationships
     company = relationship("Company", back_populates="leads")

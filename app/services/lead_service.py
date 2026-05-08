@@ -157,6 +157,23 @@ class LeadService:
             lead = await self.get_lead(lead_id, user)
             prev_due_date = lead.due_date  # avoid double-creating the callback task
 
+        # Filter submitted_docs to known checklist keys + dedupe. Without
+        # this, FE bugs or stale clients could push junk values into the
+        # array (e.g., trailing whitespace, duplicate keys, or a key
+        # we removed from the checklist later).
+        if "submitted_docs" in data and data["submitted_docs"] is not None:
+            from app.core.constants import FMC_DOC_KEYS
+            cleaned = []
+            seen = set()
+            for k in data["submitted_docs"]:
+                k = (k or "").strip().lower()
+                if k and k in FMC_DOC_KEYS and k not in seen:
+                    cleaned.append(k)
+                    seen.add(k)
+            data["submitted_docs"] = cleaned
+            # Auto-sync the counter so existing widgets keep working.
+            data["docs_submitted"] = len(cleaned)
+
         for key, value in data.items():
             setattr(lead, key, value)
 
