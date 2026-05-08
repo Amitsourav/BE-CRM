@@ -389,8 +389,15 @@ class LeadService:
         )).all()
         notes_count_map = {lid: cnt for lid, cnt in notes_rows}
 
-        # 5. Active AI-campaign membership. A lead is "in active AI
-        # campaign" if it has a campaign_leads row not yet completed.
+        # 5. AI-call history → drives the 🤖 watermark on the card.
+        # Two paths qualify a lead:
+        #   (a) Currently in an active campaign (pending/queued/calling)
+        #   (b) Has at least one AI call_attempt row (completed campaign,
+        #       manually-triggered AI call from /voice/outbound, etc.)
+        # Without (b), the watermark vanished the moment a campaign
+        # finished even though the lead clearly had been AI-contacted —
+        # confusing for telecallers reviewing qualified leads with no
+        # visible signal of how they got there.
         active_rows = (await self.db.execute(
             select(CampaignLead.lead_id).distinct()
             .where(
@@ -399,7 +406,15 @@ class LeadService:
                 CampaignLead.status.in_(["pending", "queued", "calling"]),
             )
         )).all()
-        active_campaign_set = {r[0] for r in active_rows}
+        ai_call_rows = (await self.db.execute(
+            select(CallAttempt.lead_id).distinct()
+            .where(
+                CallAttempt.company_id == self.company_id,
+                CallAttempt.lead_id.in_(lead_ids),
+                CallAttempt.call_type.in_(["ai", "ai_campaign"]),
+            )
+        )).all()
+        active_campaign_set = {r[0] for r in active_rows} | {r[0] for r in ai_call_rows if r[0]}
 
         # Decorate each Lead instance with the rollups. Setattr is fine
         # — these are not mapped columns; SQLAlchemy ignores them on
