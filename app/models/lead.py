@@ -79,6 +79,7 @@ class Lead(Base, TimestampMixin):
     # untouched. loan_amount is free text so the telecaller can write
     # "25 L" or "2.5 cr" without thinking about units.
     loan_amount: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     bank_status: Mapped[Optional[str]] = mapped_column(
         ENUM(
             'applied', 'docs_reviewed', 'under_review', 'loan_login',

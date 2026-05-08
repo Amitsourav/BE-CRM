@@ -71,6 +71,7 @@ class LeadUpdate(BaseModel):
     is_important: bool | None = None
     # FMC enhanced tile fields — editable from the lead form.
     loan_amount: str | None = None
+    bank_name: str | None = None
     bank_status: str | None = None
     docs_required: int | None = None
     docs_submitted: int | None = None
@@ -126,6 +127,7 @@ class LeadOut(BaseModel):
     is_important: bool = False
     # FMC enhanced tile fields (free text, enum, counters)
     loan_amount: str | None = None
+    bank_name: str | None = None
     bank_status: str | None = None
     docs_required: int = 6
     docs_submitted: int = 0
@@ -164,6 +166,7 @@ class LeadCardOut(BaseModel):
     # FMC enhanced tile fields. Always returned; FE renders only on FMC.
     target_degree: str | None = None
     loan_amount: str | None = None
+    bank_name: str | None = None
     bank_status: str | None = None
     docs_required: int = 6
     docs_submitted: int = 0
