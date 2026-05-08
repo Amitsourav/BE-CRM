@@ -69,6 +69,11 @@ class LeadUpdate(BaseModel):
     assigned_agent_id: uuid.UUID | None = None
     current_stage: str | None = None
     is_important: bool | None = None
+    # FMC enhanced tile fields — editable from the lead form.
+    loan_amount: str | None = None
+    bank_status: str | None = None
+    docs_required: int | None = None
+    docs_submitted: int | None = None
     # When current_stage is included, the service routes the change
     # through StageMachine.transition() so transition validity, notes
     # requirements, and lost_reason gating actually run. Without these
@@ -119,6 +124,18 @@ class LeadOut(BaseModel):
     tags: list[str] = []
     notes: str | None = None
     is_important: bool = False
+    # FMC enhanced tile fields (free text, enum, counters)
+    loan_amount: str | None = None
+    bank_status: str | None = None
+    docs_required: int = 6
+    docs_submitted: int = 0
+    # Activity rollups (computed in service, not on the model)
+    assigned_agent_name: str | None = None
+    assigned_agent_role: str | None = None
+    task_count: int = 0
+    call_count: int = 0
+    notes_count: int = 0
+    has_active_ai_campaign: bool = False
     created_by: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
@@ -144,6 +161,18 @@ class LeadCardOut(BaseModel):
     call_attempt_count: int = 0
     tags: list[str] = []
     is_important: bool = False
+    # FMC enhanced tile fields. Always returned; FE renders only on FMC.
+    target_degree: str | None = None
+    loan_amount: str | None = None
+    bank_status: str | None = None
+    docs_required: int = 6
+    docs_submitted: int = 0
+    assigned_agent_name: str | None = None
+    assigned_agent_role: str | None = None
+    task_count: int = 0
+    call_count: int = 0
+    notes_count: int = 0
+    has_active_ai_campaign: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}

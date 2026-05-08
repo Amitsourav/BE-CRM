@@ -11,6 +11,8 @@ from app.models.lead_source import LeadSource
 from app.models.profile import Profile
 from app.models.lead_stage_log import LeadStageLog
 from app.models.task import Task
+from app.models.call_attempt import CallAttempt
+from app.models.campaign_lead import CampaignLead
 from app.models.company import Company
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
 from app.core.constants import (
@@ -281,11 +283,110 @@ class LeadService:
         counts_by_stage = {stage: cnt for stage, cnt in count_rows}
         total = sum(counts_by_stage.values())
 
+        # Enrichment for the FMC-enhanced tile. Five extra batched
+        # queries — same constant cost regardless of how many leads
+        # are on screen, so a 600-card Kanban load stays at ~7 SQL
+        # round trips instead of devolving into N+1.
+        await self._enrich_cards(rows)
+
         return {
             "items_by_stage": items_by_stage,
             "counts_by_stage": counts_by_stage,
             "total": total,
         }
+
+    async def _enrich_cards(self, leads: list[Lead]) -> None:
+        """Decorate each Lead with the activity rollups + agent display
+        name the enhanced FMC tile renders. Sets transient attributes
+        — Pydantic's from_attributes mode picks them up when building
+        LeadCardOut. SQLAlchemy doesn't persist them.
+
+        Five batched queries:
+          1. assigned_agent_id  → agent name + role
+          2. lead_id            → pending+overdue task count
+          3. lead_id            → manual call (call_type='live') count
+          4. lead_id            → stage-log-with-remark count
+          5. lead_id            → has_active_ai_campaign (set membership)
+        """
+        if not leads:
+            return
+
+        lead_ids = [l.id for l in leads]
+        agent_ids = list({l.assigned_agent_id for l in leads if l.assigned_agent_id})
+
+        # 1. Agent name + role lookup. Includes the requester's own
+        # agents — small set, single round trip.
+        agent_map: dict[uuid.UUID, tuple[str, str]] = {}
+        if agent_ids:
+            rows = (await self.db.execute(
+                select(Profile.id, Profile.full_name, Profile.role)
+                .where(Profile.id.in_(agent_ids))
+            )).all()
+            agent_map = {r.id: (r.full_name, r.role) for r in rows}
+
+        # 2. Pending + overdue task counts per lead.
+        task_rows = (await self.db.execute(
+            select(Task.lead_id, func.count())
+            .where(
+                Task.company_id == self.company_id,
+                Task.lead_id.in_(lead_ids),
+                Task.status.in_([TaskStatus.PENDING.value, TaskStatus.OVERDUE.value]),
+            )
+            .group_by(Task.lead_id)
+        )).all()
+        task_count_map = {lid: cnt for lid, cnt in task_rows}
+
+        # 3. Manual (live) call counts per lead. AI campaign calls are
+        # excluded so the badge reflects telecaller effort, not bot work.
+        call_rows = (await self.db.execute(
+            select(CallAttempt.lead_id, func.count())
+            .where(
+                CallAttempt.company_id == self.company_id,
+                CallAttempt.lead_id.in_(lead_ids),
+                CallAttempt.call_type == "live",
+            )
+            .group_by(CallAttempt.lead_id)
+        )).all()
+        call_count_map = {lid: cnt for lid, cnt in call_rows}
+
+        # 4. Notes count = stage transitions with a non-empty remark.
+        # Captures both telecaller-entered notes on the stage modal and
+        # AI auto-transitions (which always include sentiment/score).
+        notes_rows = (await self.db.execute(
+            select(LeadStageLog.lead_id, func.count())
+            .where(
+                LeadStageLog.company_id == self.company_id,
+                LeadStageLog.lead_id.in_(lead_ids),
+                LeadStageLog.conversation_notes.isnot(None),
+                func.length(LeadStageLog.conversation_notes) > 0,
+            )
+            .group_by(LeadStageLog.lead_id)
+        )).all()
+        notes_count_map = {lid: cnt for lid, cnt in notes_rows}
+
+        # 5. Active AI-campaign membership. A lead is "in active AI
+        # campaign" if it has a campaign_leads row not yet completed.
+        active_rows = (await self.db.execute(
+            select(CampaignLead.lead_id).distinct()
+            .where(
+                CampaignLead.company_id == self.company_id,
+                CampaignLead.lead_id.in_(lead_ids),
+                CampaignLead.status.in_(["pending", "queued", "calling"]),
+            )
+        )).all()
+        active_campaign_set = {r[0] for r in active_rows}
+
+        # Decorate each Lead instance with the rollups. Setattr is fine
+        # — these are not mapped columns; SQLAlchemy ignores them on
+        # commit. Pydantic from_attributes reads them when serializing.
+        for lead in leads:
+            agent = agent_map.get(lead.assigned_agent_id) if lead.assigned_agent_id else None
+            lead.assigned_agent_name = agent[0] if agent else None
+            lead.assigned_agent_role = agent[1] if agent else None
+            lead.task_count = task_count_map.get(lead.id, 0)
+            lead.call_count = call_count_map.get(lead.id, 0)
+            lead.notes_count = notes_count_map.get(lead.id, 0)
+            lead.has_active_ai_campaign = lead.id in active_campaign_set
 
     async def search_leads(self, q: str, user: Profile, page: int = 1, page_size: int = 25) -> dict:
         query = select(Lead).where(

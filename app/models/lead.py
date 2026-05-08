@@ -75,6 +75,21 @@ class Lead(Base, TimestampMixin):
     # but renders with a star on the Kanban card.
     is_important: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
+    # FMC enhanced tile fields (May 2026). Admitverse leaves these
+    # untouched. loan_amount is free text so the telecaller can write
+    # "25 L" or "2.5 cr" without thinking about units.
+    loan_amount: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    bank_status: Mapped[Optional[str]] = mapped_column(
+        ENUM(
+            'applied', 'docs_reviewed', 'under_review', 'loan_login',
+            'sanctioned', 'pf_paid', 'disbursed',
+            name='bank_status', create_type=False,
+        ),
+        nullable=True,
+    )
+    docs_required: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("6"))
+    docs_submitted: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+
     # Relationships
     company = relationship("Company", back_populates="leads")
     assigned_agent = relationship("Profile", back_populates="assigned_leads", foreign_keys=[assigned_agent_id])
