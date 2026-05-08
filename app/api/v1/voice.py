@@ -1307,7 +1307,11 @@ async def _save_summary_background(call_id: str, transcript: str):
             await db.commit()
 
             # ── Lead stage auto-update ──
-            if lead and lead.current_stage not in ("won", "lost"):
+            # Skip if the lead is already in a terminal state. FMC's
+            # post-revamp terminals are "disbursed" + "lost"; Admitverse
+            # is "enrolled" + "lost"; legacy "won" stays in for any
+            # pre-revamp leads still hanging around.
+            if lead and lead.current_stage not in ("won", "lost", "disbursed", "enrolled"):
                 try:
                     call_agent = call.agent_id or call.telecaller_id
                     await _auto_update_lead_stage(
@@ -1700,17 +1704,194 @@ async def _analyze_call(transcript: str, system_prompt: Optional[str] = None) ->
     return result
 
 
-# Per-brand AI auto-stage paths. The function steps through these one at
-# a time (e.g. created→contacted→connected, not created→connected
-# directly) so every transition gets its own stage_log row.
+# Per-brand AI auto-stage paths.
+#
+# Admitverse uses linear stepping: CREATED → CONTACTED → CONNECTED →
+# QUALIFIED, never moves backward, walks one step per call.
+#
+# FMC has its own logic in _fmc_auto_advance — DNP and 12-attempt-LOST
+# don't fit a linear path. The "fmc" entry here is unused by the
+# Plivo path post-2026-05 but kept for the call_attempts.py / Bolna
+# webhook code that may still reference it.
 _STAGE_PATHS = {
-    "fmc": ["lead", "called", "connected", "qualified_lead"],
+    "fmc": ["created", "contacted", "qualified"],
     "admitverse": ["created", "contacted", "connected", "qualified"],
 }
 _STAGE_ORDERS = {
     brand: {stage: idx for idx, stage in enumerate(path)}
     for brand, path in _STAGE_PATHS.items()
 }
+
+# FMC auto-advance config — externalized so the DNP-LOST threshold is
+# easy to find and tune.
+_FMC_AUTO_ADVANCE_STAGES = frozenset({"created", "contacted", "dnp"})
+_FMC_DNP_LOST_THRESHOLD = 12
+
+
+async def _fmc_auto_advance(
+    db, call, lead, sentiment: str, interest_level: str,
+    call_summary: str, call_agent_id, call_connected: bool,
+):
+    """FMC-specific AI auto-stage logic for the loan-processing pipeline.
+
+    Auto-advance only covers the qualifying portion (Created → Contacted
+    → Qualified). Anything past Qualified — Processing, Docs Pending,
+    Logged In, Sanctioned, PF Paid, Disbursed — is human-driven loan
+    paperwork, not something an AI call should mutate.
+
+    Decision matrix (one transition per call, no stepping):
+
+      no-pickup at CREATED/CONTACTED   → DNP
+      no-pickup at DNP, attempts ≥ 12  → LOST  (auto-churn)
+      positive at CREATED              → CONTACTED
+      positive at DNP                  → CONTACTED  (re-engaged)
+      positive + high interest + long
+        transcript at CONTACTED        → QUALIFIED
+      anything else                    → no-op
+    """
+    from app.utils.date_helpers import now_utc, add_business_days
+    from app.models.notification import Notification
+
+    old_stage = lead.current_stage
+    if old_stage not in _FMC_AUTO_ADVANCE_STAGES:
+        return
+
+    target: str | None = None
+
+    if not call_connected:
+        attempt_count = lead.call_attempt_count or 0
+        if old_stage == "dnp" and attempt_count >= _FMC_DNP_LOST_THRESHOLD:
+            target = "lost"
+        else:
+            target = "dnp"
+    elif sentiment == "positive":
+        if old_stage == "created":
+            target = "contacted"
+        elif old_stage == "dnp":
+            target = "contacted"
+        elif old_stage == "contacted":
+            transcript = call.transcript or ""
+            qualified_eligible = (
+                interest_level == "high"
+                and len(transcript) >= 500
+                and transcript.count("User:") >= 3
+            )
+            if qualified_eligible:
+                target = "qualified"
+
+    if not target or target == old_stage:
+        return
+
+    # Resolve owner for the LeadStageLog row. Same fallback chain as
+    # the Admitverse path: explicit call_agent_id → assigned agent →
+    # creator → any active admin/manager in the company.
+    changed_by = call_agent_id or lead.assigned_agent_id or lead.created_by
+    if not changed_by:
+        from app.models.profile import Profile
+        from app.core.constants import UserRole
+        fb = (await db.execute(
+            select(Profile).where(
+                Profile.company_id == lead.company_id,
+                Profile.role.in_([UserRole.ADMIN, UserRole.MANAGER]),
+                Profile.is_active == True,  # noqa: E712
+            ).limit(1)
+        )).scalar_one_or_none()
+        if fb:
+            changed_by = fb.id
+        else:
+            logger.warning(
+                "FMC_AUTO_UPDATE skipped — no owner / admin fallback for lead %s",
+                lead.id,
+            )
+            return
+
+    company_id = lead.company_id
+    lead.current_stage = target
+
+    if target == "contacted" and not lead.connected_time:
+        lead.connected_time = now_utc()
+    if target == "qualified":
+        lead.due_date = add_business_days(now_utc(), 1)
+    if target == "lost":
+        lead.lost_time = now_utc()
+        if not lead.lost_reason:
+            lead.lost_reason = (
+                f"Auto-lost: {_FMC_DNP_LOST_THRESHOLD} unanswered AI attempts"
+            )
+
+    db.add(LeadStageLog(
+        lead_id=lead.id,
+        company_id=company_id,
+        from_stage=old_stage,
+        to_stage=target,
+        changed_by=changed_by,
+        conversation_notes=(
+            f"Auto: AI call. Sentiment={sentiment}, Interest={interest_level}"
+        ),
+    ))
+
+    db.add(ActivityLog(
+        company_id=company_id,
+        actor_id=None,
+        action="stage_changed",
+        entity_type="lead",
+        entity_id=lead.id,
+        new_values={
+            "from": old_stage, "to": target,
+            "sentiment": sentiment, "interest": interest_level,
+            "call_id": str(call.id),
+        },
+    ))
+
+    notify_user = lead.assigned_agent_id or changed_by
+    if notify_user:
+        db.add(Notification(
+            company_id=company_id,
+            user_id=notify_user,
+            type="stage_changed",
+            title=f"Lead moved: {old_stage} → {target}",
+            message=f"{lead.full_name} auto-updated after AI call. Sentiment: {sentiment}.",
+            lead_id=lead.id,
+        ))
+
+    if target == "qualified":
+        assignee = lead.assigned_agent_id or changed_by
+        db.add(Task(
+            company_id=company_id,
+            lead_id=lead.id,
+            assigned_to=assignee,
+            created_by=assignee,
+            task_type="follow_up",
+            title=f"Follow up: {lead.full_name} — Qualified Lead",
+            description=(
+                f"AI call showed high interest. Summary: "
+                f"{call_summary[:300] if call_summary else 'N/A'}"
+            ),
+            status="pending",
+            due_date=add_business_days(now_utc(), 1),
+        ))
+        db.add(Notification(
+            company_id=company_id,
+            user_id=assignee,
+            type="task_created",
+            title=f"Follow-up task: {lead.full_name}",
+            message="Auto-created for qualified lead after AI call.",
+            lead_id=lead.id,
+        ))
+
+    # Drop stale callback tasks now that the stage moved on.
+    from app.services.stage_machine import auto_complete_stale_call_tasks
+    await auto_complete_stale_call_tasks(
+        db, lead_id=lead.id, company_id=company_id, new_stage=target,
+    )
+
+    await db.commit()
+
+    logger.info(
+        "FMC_AUTO_UPDATE lead=%s %s→%s sentiment=%s interest=%s call=%s",
+        str(lead.id)[:8], old_stage, target, sentiment, interest_level,
+        str(call.id)[:8],
+    )
 
 
 async def _auto_update_lead_stage(
@@ -1719,9 +1900,15 @@ async def _auto_update_lead_stage(
 ):
     """Auto-update lead stage based on call outcome.
 
-    Brand-aware: FMC walks lead→called→connected→qualified_lead, Admitverse
-    walks created→contacted→connected→qualified. Never moves backward,
-    never auto-marks lost, always steps one stage at a time.
+    Brand-aware:
+      Admitverse walks CREATED → CONTACTED → CONNECTED → QUALIFIED, never
+      moves backward, always steps one stage at a time.
+
+      FMC delegates to _fmc_auto_advance, which handles the new
+      loan-processing pipeline (DNP / 12-attempt LOST / re-engage).
+      The old linear-path logic below would silently no-op on FMC
+      after the May 2026 pipeline revamp because old stage names
+      (lead/called/qualified_lead) no longer exist on FMC leads.
     """
     from app.models.lead import Lead
     from app.models.company import Company
@@ -1734,15 +1921,25 @@ async def _auto_update_lead_stage(
     slug_result = await db.execute(select(Company.slug).where(Company.id == lead.company_id))
     slug = (slug_result.scalar_one_or_none() or "").lower()
     brand = "admitverse" if slug == "admitverse" else "fmc"
-    stage_path = _STAGE_PATHS[brand]
-    stage_order = _STAGE_ORDERS[brand]
-    contacted_stage, connected_stage, qualified_stage = stage_path[1], stage_path[2], stage_path[3]
 
     old_stage = lead.current_stage
     call_connected = bool(
         call.call_duration_seconds and call.call_duration_seconds > 0
         and call.call_status == "ended"
     )
+
+    # FMC uses dedicated handler — new pipeline doesn't fit the linear
+    # path-walking model below.
+    if brand == "fmc":
+        await _fmc_auto_advance(
+            db, call, lead, sentiment, interest_level,
+            call_summary, call_agent_id, call_connected,
+        )
+        return
+
+    stage_path = _STAGE_PATHS[brand]
+    stage_order = _STAGE_ORDERS[brand]
+    contacted_stage, connected_stage, qualified_stage = stage_path[1], stage_path[2], stage_path[3]
 
     # Evidence threshold for "qualified_lead":
     # the LLM hallucinates "high interest" on transcripts where the user
