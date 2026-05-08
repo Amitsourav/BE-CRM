@@ -221,7 +221,15 @@ class LeadService:
         if date_to:
             query = query.where(func.date(Lead.created_at) <= date_to)
 
-        return await paginate(self.db, query, page, page_size)
+        page_data = await paginate(self.db, query, page, page_size)
+        # Same enrichment the Kanban /by-stage endpoint applies. Without
+        # this, GET /leads?... returns assigned_agent_name=null and
+        # task_count=0 even when the lead has data — which makes the
+        # FE Kanban (still using /leads list) render empty rows for
+        # the agent + badges. 5 batched aggregate queries; bounded by
+        # page_size (default 25) so cost stays small.
+        await self._enrich_cards(page_data["items"])
+        return page_data
 
     async def list_leads_by_stage(
         self,
