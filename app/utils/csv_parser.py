@@ -30,7 +30,19 @@ LEAD_FIELD_ALIASES: dict[str, list[str]] = {
 
 def parse_csv_content(content: str | bytes, max_rows: int = 5000) -> tuple[list[str], list[dict]]:
     if isinstance(content, bytes):
-        content = content.decode("utf-8-sig")
+        # Excel on Windows often saves CSV in cp1252; macOS may save in
+        # latin-1; copy-pasted Devanagari/emoji may corrupt sequences. Try
+        # UTF-8 (with BOM stripping) first, then common fallbacks, and as
+        # a last resort replace undecodable bytes so the upload still
+        # parses instead of raising UnicodeDecodeError.
+        for enc in ("utf-8-sig", "cp1252", "latin-1"):
+            try:
+                content = content.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            content = content.decode("utf-8", errors="replace")
 
     reader = csv.DictReader(io.StringIO(content))
     headers = reader.fieldnames or []
