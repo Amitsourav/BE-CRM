@@ -64,6 +64,10 @@ class TaskService:
         # missing key doesn't produce a cryptic IntegrityError at insert time.
         if not data.get("due_date"):
             data["due_date"] = add_business_days(now_utc(), 1)
+        # Strip assigned_to from data before splat — `assigned_to` was
+        # already resolved above (body value or fallback to created_by),
+        # so passing it both via **data and as a keyword raises TypeError.
+        data.pop("assigned_to", None)
         task = Task(**data, created_by=created_by, assigned_to=assigned_to)
         self.db.add(task)
 
