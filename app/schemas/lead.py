@@ -76,6 +76,9 @@ class LeadUpdate(BaseModel):
     docs_required: int | None = None
     docs_submitted: int | None = None
     submitted_docs: list[str] | None = None
+    # Admitverse enhanced tile field — free-text budget figure.
+    # FMC FE doesn't render it. Editable inline from the AV Kanban tile.
+    budget: str | None = None
     # When current_stage is included, the service routes the change
     # through StageMachine.transition() so transition validity, notes
     # requirements, and lost_reason gating actually run. Without these
@@ -133,6 +136,8 @@ class LeadOut(BaseModel):
     docs_required: int = 6
     docs_submitted: int = 0
     submitted_docs: list[str] = []
+    # Admitverse tile field (free text budget). FMC leaves NULL.
+    budget: str | None = None
     # Activity rollups (computed in service, not on the model)
     assigned_agent_name: str | None = None
     assigned_agent_role: str | None = None
@@ -173,6 +178,14 @@ class LeadCardOut(BaseModel):
     docs_required: int = 6
     docs_submitted: int = 0
     submitted_docs: list[str] = []
+    # Admitverse enhanced tile fields. Always returned; FE renders only
+    # on Admitverse (FMC tile ignores). target_intake + preferred_countries
+    # were always on the lead model — just exposing them on the card now
+    # so the AV tile can render Intake + Country chips without an extra
+    # round trip to GET /leads/{id}.
+    target_intake: str | None = None
+    preferred_countries: list[str] = []
+    budget: str | None = None
     assigned_agent_name: str | None = None
     assigned_agent_role: str | None = None
     task_count: int = 0

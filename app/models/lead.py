@@ -92,6 +92,12 @@ class Lead(Base, TimestampMixin):
     docs_submitted: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     submitted_docs: Mapped[List[str]] = mapped_column(ARRAY(String), nullable=False, server_default=text("'{}'"))
 
+    # Admitverse tile field (May 2026). Free-text budget the counsellor
+    # captures from the lead ("50 L", "2 cr", "12,000 GBP"). FMC leaves
+    # this NULL — present here only so the shared model class doesn't
+    # diverge across the two backends.
+    budget: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
     # Relationships
     company = relationship("Company", back_populates="leads")
     assigned_agent = relationship("Profile", back_populates="assigned_leads", foreign_keys=[assigned_agent_id])
