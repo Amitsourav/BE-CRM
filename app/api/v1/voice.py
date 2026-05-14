@@ -1923,9 +1923,18 @@ async def _auto_update_lead_stage(
     brand = "admitverse" if slug == "admitverse" else "fmc"
 
     old_stage = lead.current_stage
+    # A "connected" call needs an actual conversation, not just a brief
+    # pickup-and-hangup. Without the transcript guard, every silent
+    # connect (duration > 0 but the user said nothing) was treated as
+    # connected and fell through to a no-op — leaving the lead frozen at
+    # "created" instead of moving to DNP. 20 chars ≈ 4-5 words, the
+    # minimum to call it a real conversation versus background noise
+    # or a quick "hello" before the line drops.
+    transcript_text = call.transcript or ""
     call_connected = bool(
         call.call_duration_seconds and call.call_duration_seconds > 0
         and call.call_status == "ended"
+        and len(transcript_text) >= 20
     )
 
     # FMC uses dedicated handler — new pipeline doesn't fit the linear
