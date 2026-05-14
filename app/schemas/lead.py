@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LeadCreate(BaseModel):
@@ -186,6 +186,15 @@ class LeadCardOut(BaseModel):
     target_intake: str | None = None
     preferred_countries: list[str] = []
     budget: str | None = None
+
+    @field_validator("preferred_countries", mode="before")
+    @classmethod
+    def _preferred_countries_none_to_empty(cls, v):
+        # leads.preferred_countries is a nullable text[]. Pre-existing FMC
+        # rows have NULL since the FMC tile never used it. Coerce to []
+        # so the card schema (list[str]) always validates.
+        return v or []
+
     assigned_agent_name: str | None = None
     assigned_agent_role: str | None = None
     task_count: int = 0

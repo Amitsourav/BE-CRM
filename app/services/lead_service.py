@@ -214,6 +214,7 @@ class LeadService:
         agent_id: uuid.UUID | None = None,
         source_id: uuid.UUID | None = None,
         csv_import_id: uuid.UUID | None = None,
+        campaign_id: uuid.UUID | None = None,
         tags: list[str] | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
@@ -231,6 +232,14 @@ class LeadService:
             query = query.where(Lead.lead_source_id == source_id)
         if csv_import_id:
             query = query.where(Lead.csv_import_id == csv_import_id)
+        if campaign_id:
+            # JOIN with campaign_leads — every lead enrolled in a campaign
+            # has a campaign_leads row. distinct() guards the rare case a
+            # lead got enrolled twice (shouldn't happen given the unique
+            # constraint, but defensive against historical dirty data).
+            query = query.join(
+                CampaignLead, CampaignLead.lead_id == Lead.id
+            ).where(CampaignLead.campaign_id == campaign_id).distinct()
         if tags:
             query = query.where(Lead.tags.overlap(tags))
         if date_from:
@@ -252,6 +261,7 @@ class LeadService:
         self,
         user: Profile,
         agent_id: uuid.UUID | None = None,
+        campaign_id: uuid.UUID | None = None,
         per_stage_limit: int = 50,
     ) -> dict:
         """Fetch leads grouped by stage in one round trip.
@@ -283,6 +293,13 @@ class LeadService:
             base = base.where(Lead.assigned_agent_id == user.id)
         elif agent_id:
             base = base.where(Lead.assigned_agent_id == agent_id)
+        if campaign_id:
+            # Kanban scoped to a single campaign. Window function still
+            # partitions by stage and caps at per_stage_limit — so the FE
+            # shows the most-recent N leads from THIS campaign per column.
+            base = base.join(
+                CampaignLead, CampaignLead.lead_id == Lead.id
+            ).where(CampaignLead.campaign_id == campaign_id)
 
         sub = base.subquery()
         result = await self.db.execute(
@@ -303,6 +320,10 @@ class LeadService:
             count_query = count_query.where(Lead.assigned_agent_id == user.id)
         elif agent_id:
             count_query = count_query.where(Lead.assigned_agent_id == agent_id)
+        if campaign_id:
+            count_query = count_query.join(
+                CampaignLead, CampaignLead.lead_id == Lead.id
+            ).where(CampaignLead.campaign_id == campaign_id)
         count_query = count_query.group_by(Lead.current_stage)
         count_rows = (await self.db.execute(count_query)).all()
         counts_by_stage = {stage: cnt for stage, cnt in count_rows}

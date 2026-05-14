@@ -38,6 +38,7 @@ async def list_leads(
     agent_id: uuid.UUID | None = Query(None),
     source_id: uuid.UUID | None = Query(None),
     csv_import_id: uuid.UUID | None = Query(None),
+    campaign_id: uuid.UUID | None = Query(None),
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
 ):
@@ -45,7 +46,7 @@ async def list_leads(
     return await service.list_leads(
         user=current_user, page=page, page_size=page_size,
         stage=stage, agent_id=agent_id, source_id=source_id,
-        csv_import_id=csv_import_id,
+        csv_import_id=csv_import_id, campaign_id=campaign_id,
         date_from=date_from, date_to=date_to,
     )
 
@@ -68,6 +69,7 @@ async def list_leads_by_stage(
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
     agent_id: uuid.UUID | None = Query(None),
+    campaign_id: uuid.UUID | None = Query(None),
     per_stage_limit: int = Query(50, ge=1, le=200),
 ):
     """Kanban board endpoint — returns all leads grouped by stage in one
@@ -75,7 +77,8 @@ async def list_leads_by_stage(
     """
     service = LeadService(db, company_id)
     data = await service.list_leads_by_stage(
-        user=current_user, agent_id=agent_id, per_stage_limit=per_stage_limit,
+        user=current_user, agent_id=agent_id, campaign_id=campaign_id,
+        per_stage_limit=per_stage_limit,
     )
     return {
         "items_by_stage": {
