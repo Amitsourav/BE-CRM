@@ -1771,20 +1771,26 @@ async def _fmc_auto_advance(
 ):
     """FMC-specific AI auto-stage logic for the loan-processing pipeline.
 
-    Auto-advance only covers the qualifying portion (Created → Contacted
-    → Qualified). Anything past Qualified — Processing, Docs Pending,
-    Logged In, Sanctioned, PF Paid, Disbursed — is human-driven loan
-    paperwork, not something an AI call should mutate.
+    Decision matrix (one transition per call, no stepping). Per Amit's
+    rule confirmed 2026-05-14:
 
-    Decision matrix (one transition per call, no stepping):
+      no-pickup at CREATED/CONTACTED      → DNP
+      no-pickup at DNP, attempts ≥ 12     → LOST  (auto-churn)
+      negative sentiment (any non-term.)  → LOST   (lead said "don't want")
+      positive + future-intent keywords   → OPPORTUNITY  (later studies)
+      positive (no future signal)         → QUALIFIED    (interested now)
+      neutral on real conversation        → no-op  (counsellor reviews)
+      anything else                       → no-op
 
-      no-pickup at CREATED/CONTACTED   → DNP
-      no-pickup at DNP, attempts ≥ 12  → LOST  (auto-churn)
-      positive at CREATED              → CONTACTED
-      positive at DNP                  → CONTACTED  (re-engaged)
-      positive + high interest + long
-        transcript at CONTACTED        → QUALIFIED
-      anything else                    → no-op
+    Future-intent detection runs on call.summary — keyword match for
+    "future", "later", "next year", "planning", "already has a job",
+    "after current", "completed", "graduated". Conservative — any
+    overlap → opportunity. False positives prefer opportunity (still
+    a real lead) over qualified (treated as hot prospect).
+
+    Anything past qualified — Processing, Docs Pending, Logged In,
+    Sanctioned, PF Paid, Disbursed — is human-driven loan paperwork,
+    not something an AI call should mutate.
     """
     from app.utils.date_helpers import now_utc, add_business_days
     from app.models.notification import Notification
@@ -1801,20 +1807,21 @@ async def _fmc_auto_advance(
             target = "lost"
         else:
             target = "dnp"
+    elif sentiment == "negative":
+        target = "lost"
     elif sentiment == "positive":
-        if old_stage == "created":
-            target = "contacted"
-        elif old_stage == "dnp":
-            target = "contacted"
-        elif old_stage == "contacted":
-            transcript = call.transcript or ""
-            qualified_eligible = (
-                interest_level == "high"
-                and len(transcript) >= 500
-                and transcript.count("User:") >= 3
-            )
-            if qualified_eligible:
-                target = "qualified"
+        summary_lower = (call_summary or "").lower()
+        future_keywords = (
+            "future studies", "future plans", "later", "next year",
+            "planning", "after current", "after my current",
+            "currently has a job", "already has a job", "got placed",
+            "currently working", "completed my", "graduated",
+        )
+        is_future = any(kw in summary_lower for kw in future_keywords)
+        if is_future:
+            target = "opportunity"
+        else:
+            target = "qualified"
 
     if not target or target == old_stage:
         return
