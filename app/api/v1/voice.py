@@ -1147,13 +1147,50 @@ async def end_call(
 
 
 async def _handle_campaign_call_ended(call_id: str, call_duration: int):
-    """Update campaign_lead for unanswered/short calls with no transcript."""
+    """Update campaign_lead for unanswered/short calls with no transcript.
+
+    Also advances the lead's pipeline stage. Without this, silent pickups
+    (lead answered, said nothing, hung up) would update campaign_lead.status
+    but leave lead.current_stage frozen at 'created' forever — auto-advance
+    only runs in _save_summary_background, which requires a transcript and
+    is skipped on no-transcript calls.
+    """
     try:
         from app.workers.campaign_worker import campaign_worker
         success = call_duration > 10
         await campaign_worker.handle_call_completed(call_id, success)
     except Exception as e:
         logger.warning("campaign call ended handler failed: %s", e)
+
+    # Run the same stage-advance logic the transcript path runs. Empty
+    # transcript / null sentiment / null interest → _fmc_auto_advance
+    # treats it as not-connected and routes to DNP (or to LOST after
+    # the 12-attempt threshold). Wrapped in its own try so a failure
+    # here doesn't roll back the campaign_lead update above.
+    try:
+        from app.models.lead import Lead
+        async with AsyncSessionLocal() as _db:
+            call_row = (await _db.execute(
+                select(CallAttempt).where(CallAttempt.id == uuid.UUID(call_id))
+            )).scalar_one_or_none()
+            if not call_row:
+                return
+            lead = (await _db.execute(
+                select(Lead).where(Lead.id == call_row.lead_id)
+            )).scalar_one_or_none()
+            if not lead or lead.current_stage in ("won", "lost", "disbursed", "enrolled"):
+                return
+            call_agent = call_row.agent_id or call_row.telecaller_id
+            await _auto_update_lead_stage(
+                _db, call_row, lead,
+                sentiment="",          # silent call — no sentiment
+                interest_level="",
+                call_summary="",
+                call_agent_id=call_agent,
+            )
+            await _db.commit()
+    except Exception as e:
+        logger.warning("silent-call stage advance failed: %s", e)
 
 
 async def _save_summary_background(call_id: str, transcript: str):
