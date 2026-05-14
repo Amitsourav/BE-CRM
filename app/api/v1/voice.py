@@ -1801,24 +1801,48 @@ async def _fmc_auto_advance(
 
     target: str | None = None
 
+    summary_lower = (call_summary or "").lower()
+
+    # Intent detection on the summary text. The LLM sentiment classifier
+    # historically biases toward "neutral" (the prompt used to say
+    # 'default to neutral in doubt' — fixed 2026-05-14). Even with a
+    # better prompt, some real-intent calls slip through as neutral.
+    # These keyword checks let auto-advance recover those leads.
+    decline_keywords = (
+        "don't want", "do not want", "not interested", "no interest",
+        "declined", "asked not to be called", "stop calling",
+    )
+    future_keywords = (
+        "future studies", "future plans", "later", "next year",
+        "planning", "after current", "after my current",
+        "currently has a job", "already has a job", "got placed",
+        "currently working", "completed my", "graduated",
+    )
+    intent_keywords = (
+        "looking for", "considering", "applied", "asked about fees",
+        "asked about rate", "interested in loan", "interested in education loan",
+        "want loan", "need loan", "shortlisted", "planning to attend",
+        "planning to join", "loan of", "education loan for",
+    )
+    has_decline = any(kw in summary_lower for kw in decline_keywords)
+    has_future = any(kw in summary_lower for kw in future_keywords)
+    has_intent = any(kw in summary_lower for kw in intent_keywords)
+
     if not call_connected:
         attempt_count = lead.call_attempt_count or 0
         if old_stage == "dnp" and attempt_count >= _FMC_DNP_LOST_THRESHOLD:
             target = "lost"
         else:
             target = "dnp"
-    elif sentiment == "negative":
+    elif sentiment == "negative" or has_decline:
+        # LLM marked declined OR summary contains a clear decline phrase
         target = "lost"
-    elif sentiment == "positive":
-        summary_lower = (call_summary or "").lower()
-        future_keywords = (
-            "future studies", "future plans", "later", "next year",
-            "planning", "after current", "after my current",
-            "currently has a job", "already has a job", "got placed",
-            "currently working", "completed my", "graduated",
-        )
-        is_future = any(kw in summary_lower for kw in future_keywords)
-        if is_future:
+    elif sentiment == "positive" or has_intent:
+        # Positive-leaning: LLM said positive, OR summary contains explicit
+        # loan-intent keywords (catches LLM-neutral-but-actually-interested
+        # cases like "looking for ₹1.5 cr loan for IIT Delhi", "considering
+        # IIM Kozhikode"). False positives prefer opportunity over qualified.
+        if has_future:
             target = "opportunity"
         else:
             target = "qualified"
