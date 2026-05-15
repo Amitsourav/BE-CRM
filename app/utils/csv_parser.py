@@ -25,6 +25,14 @@ LEAD_FIELD_ALIASES: dict[str, list[str]] = {
     "gender": ["gender", "sex"],
     "date_of_birth": ["dob", "date of birth", "birth date", "birthday"],
     "notes": ["notes", "remarks", "comments", "additional info"],
+    # FMC-specific: loan amount is always stored in Lakhs as a plain
+    # number string ("25", "300", "30.5"). Aliases cover the most common
+    # spreadsheet headers users use ("amount", "loan amount", "loan amount (lakhs)").
+    # csv_import_service validates the value is numeric-only before insert.
+    "loan_amount": [
+        "loan amount", "loan amount (lakhs)", "amount", "amount (lakhs)",
+        "amount (₹l)", "loan", "loan size",
+    ],
 }
 
 

@@ -163,6 +163,27 @@ class CSVImportService:
                     except ValueError:
                         del lead_data["percentage"]
 
+                # FMC loan_amount: must be plain numeric Lakhs ("25", "300",
+                # "30.5"). Reject anything with letters or suffixes — the
+                # team has been bitten by "25cr"/"25lakh" values diverging
+                # from the convention. Send the row to errors so the user
+                # fixes the file rather than silently dropping the field.
+                if "loan_amount" in lead_data:
+                    raw = lead_data["loan_amount"]
+                    try:
+                        float(raw)
+                        lead_data["loan_amount"] = raw
+                    except ValueError:
+                        errors.append({
+                            "row": row_idx,
+                            "error": (
+                                f"Loan Amount must be a number in Lakhs "
+                                f"(got '{raw}'). e.g. 25 for 25L, 300 for 3Cr."
+                            ),
+                        })
+                        failures += 1
+                        continue
+
                 parsed_rows.append((row_idx, lead_data))
             except Exception as e:
                 errors.append({"row": row_idx, "error": str(e)})

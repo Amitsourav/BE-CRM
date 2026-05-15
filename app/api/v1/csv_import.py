@@ -106,6 +106,10 @@ async def download_template(current_user: Profile = Depends(get_current_user)):
         "Highest Qualification", "Stream", "Passing Year", "College Name",
         "University", "Percentage", "Target Degree", "Target Intake",
         "Preferred Countries", "Preferred Universities", "Notes",
+        # FMC-specific. Admitverse leaves this empty on import. Plain
+        # number in Lakhs, e.g. "25" for 25L or "300" for 3Cr. The
+        # importer rejects non-numeric values like "25cr" or "25lakh".
+        "Loan Amount (Lakhs)",
     ]
     content = ",".join(headers) + "\n"
     return StreamingResponse(
