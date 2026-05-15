@@ -233,7 +233,7 @@ class TaskService:
         lead = result.scalar_one_or_none()
         if not lead:
             raise NotFoundError("Lead not found")
-        if user.role in RESTRICTED_VIEW_ROLES and lead.assigned_agent_id != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and lead.assigned_agent_id != user.id and lead.pre_counsellor_id != user.id:
             raise ForbiddenError("Not authorized")
 
         result = await self.db.execute(

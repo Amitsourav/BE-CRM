@@ -120,7 +120,7 @@ class LeadService:
         lead = result.scalar_one_or_none()
         if not lead:
             raise NotFoundError("Lead not found")
-        if user.role in RESTRICTED_VIEW_ROLES and lead.assigned_agent_id != user.id:
+        if user.role in RESTRICTED_VIEW_ROLES and lead.assigned_agent_id != user.id and lead.pre_counsellor_id != user.id:
             raise ForbiddenError("Not authorized to view this lead")
         return lead
 
@@ -222,7 +222,9 @@ class LeadService:
         query = select(Lead).where(Lead.company_id == self.company_id, Lead.is_deleted == False).order_by(Lead.created_at.desc())
 
         if user.role in RESTRICTED_VIEW_ROLES:
-            query = query.where(Lead.assigned_agent_id == user.id)
+            # Restricted viewers see leads where they're either the Counsellor
+            # or the Pre Counsellor (FMC two-step model).
+            query = query.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
         elif agent_id:
             query = query.where(Lead.assigned_agent_id == agent_id)
 
@@ -290,7 +292,7 @@ class LeadService:
             Lead.is_deleted == False,  # noqa: E712
         )
         if user.role in RESTRICTED_VIEW_ROLES:
-            base = base.where(Lead.assigned_agent_id == user.id)
+            base = base.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
         elif agent_id:
             base = base.where(Lead.assigned_agent_id == agent_id)
         if campaign_id:
@@ -317,7 +319,7 @@ class LeadService:
             Lead.is_deleted == False,  # noqa: E712
         )
         if user.role in RESTRICTED_VIEW_ROLES:
-            count_query = count_query.where(Lead.assigned_agent_id == user.id)
+            count_query = count_query.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
         elif agent_id:
             count_query = count_query.where(Lead.assigned_agent_id == agent_id)
         if campaign_id:
@@ -468,7 +470,7 @@ class LeadService:
         ).order_by(Lead.created_at.desc())
 
         if user.role in RESTRICTED_VIEW_ROLES:
-            query = query.where(Lead.assigned_agent_id == user.id)
+            query = query.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
 
         return await paginate(self.db, query, page, page_size)
 
