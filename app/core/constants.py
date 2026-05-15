@@ -132,7 +132,10 @@ FMC_STAGES: list[LeadStage] = [
     LeadStage.DNP,
     LeadStage.QUALIFIED,
     LeadStage.PROCESSING,
-    LeadStage.DOCS_PENDING,
+    # DOCS_PENDING removed 2026-05-15 per Amit — team handles docs as
+    # part of PROCESSING, no need for a separate column. Enum value
+    # stays defined (legacy data + Admitverse uses it) but FMC pipeline
+    # no longer shows it as a column or accepts transitions to it.
     LeadStage.LOGGED_IN,
     LeadStage.SANCTIONED,
     LeadStage.PF_PAID,

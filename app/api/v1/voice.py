@@ -1788,7 +1788,7 @@ async def _fmc_auto_advance(
     overlap → opportunity. False positives prefer opportunity (still
     a real lead) over qualified (treated as hot prospect).
 
-    Anything past qualified — Processing, Docs Pending, Logged In,
+    Anything past qualified — Processing, Logged In,
     Sanctioned, PF Paid, Disbursed — is human-driven loan paperwork,
     not something an AI call should mutate.
     """
