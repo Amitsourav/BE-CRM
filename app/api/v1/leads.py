@@ -16,7 +16,7 @@ from app.schemas.lead import (
     LeadSearchParams, LeadSourceCreate, LeadSourceOut,
     LeadCardOut, LeadsByStageOut,
     LeadDistributeRangeRequest, LeadDistributeRangeResponse,
-    LeadImportantToggle,
+    LeadImportantToggle, LeadRemarkCreate, LeadRemarkOut,
 )
 from app.schemas.stage import StageLogOut
 from app.schemas.call import CallAttemptOut
@@ -147,6 +147,36 @@ async def delete_lead(
     service = LeadService(db, company_id)
     await service.delete_lead(lead_id)
     return {"message": "Lead deleted"}
+
+
+@router.post("/{lead_id}/remarks", response_model=LeadRemarkOut, status_code=201)
+async def add_lead_remark(
+    lead_id: uuid.UUID,
+    body: LeadRemarkCreate,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a free-form remark on a lead. Visible to anyone with access
+    to the lead (admin, manager, assigned counsellor, pre-counsellor).
+    Captures author identity + role at write time.
+    """
+    service = LeadService(db, company_id)
+    return await service.add_remark(lead_id, body.body, current_user)
+
+
+@router.get("/{lead_id}/remarks", response_model=list[LeadRemarkOut])
+async def list_lead_remarks(
+    lead_id: uuid.UUID,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """List remarks on a lead, newest first. Returns author_name and
+    author_role so the FE can render "Posted by Ashmita (Manager)".
+    """
+    service = LeadService(db, company_id)
+    return await service.list_remarks(lead_id, current_user)
 
 
 @router.get("/{lead_id}/timeline", response_model=list[StageLogOut])

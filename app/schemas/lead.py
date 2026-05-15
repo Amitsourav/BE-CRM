@@ -289,6 +289,22 @@ class LeadSearchParams(BaseModel):
     page_size: int = 25
 
 
+class LeadRemarkCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+
+
+class LeadRemarkOut(BaseModel):
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    author_id: uuid.UUID | None
+    author_name: str | None = None  # enriched in service from profiles
+    author_role: str
+    body: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class LeadSourceCreate(BaseModel):
     name: str
     source_type: str = "manual"

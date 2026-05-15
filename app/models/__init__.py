@@ -20,6 +20,7 @@ __all__ = [
     "LeadSource",
     "Lead",
     "LeadStageLog",
+    "LeadRemark",
     "CallAttempt",
     "Task",
     "Notification",

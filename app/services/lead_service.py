@@ -475,6 +475,71 @@ class LeadService:
 
         return await paginate(self.db, query, page, page_size)
 
+    async def add_remark(self, lead_id: uuid.UUID, body: str, user: Profile) -> dict:
+        """Add a free-form remark to a lead. Access gated by get_lead
+        (which enforces the assigned-agent / pre-counsellor / admin rules).
+        Returns a dict matching LeadRemarkOut shape, with enriched author_name.
+        """
+        from app.models.lead_remark import LeadRemark
+        # get_lead enforces permission — re-use it.
+        await self.get_lead(lead_id, user)
+
+        remark = LeadRemark(
+            company_id=self.company_id,
+            lead_id=lead_id,
+            author_id=user.id,
+            author_role=user.role,
+            body=body,
+        )
+        self.db.add(remark)
+        await self.db.flush()
+        await self.db.commit()
+        return {
+            "id": remark.id,
+            "lead_id": remark.lead_id,
+            "author_id": remark.author_id,
+            "author_name": user.full_name,
+            "author_role": remark.author_role,
+            "body": remark.body,
+            "created_at": remark.created_at,
+        }
+
+    async def list_remarks(self, lead_id: uuid.UUID, user: Profile) -> list[dict]:
+        """List all remarks on a lead, newest first. Access gated by
+        get_lead so a restricted user can't read remarks on leads they
+        don't own. Author names are enriched with one batched profile
+        lookup.
+        """
+        from app.models.lead_remark import LeadRemark
+        await self.get_lead(lead_id, user)
+
+        rows = (await self.db.execute(
+            select(LeadRemark)
+            .where(
+                LeadRemark.lead_id == lead_id,
+                LeadRemark.company_id == self.company_id,
+            )
+            .order_by(LeadRemark.created_at.desc())
+        )).scalars().all()
+
+        author_ids = list({r.author_id for r in rows if r.author_id})
+        names: dict[uuid.UUID, str] = {}
+        if author_ids:
+            name_rows = (await self.db.execute(
+                select(Profile.id, Profile.full_name).where(Profile.id.in_(author_ids))
+            )).all()
+            names = {row.id: row.full_name for row in name_rows}
+
+        return [{
+            "id": r.id,
+            "lead_id": r.lead_id,
+            "author_id": r.author_id,
+            "author_name": names.get(r.author_id) if r.author_id else None,
+            "author_role": r.author_role,
+            "body": r.body,
+            "created_at": r.created_at,
+        } for r in rows]
+
     async def assign_lead(self, lead_id: uuid.UUID, agent_id: uuid.UUID) -> Lead:
         # Verify agent exists and belongs to same company
         result = await self.db.execute(
