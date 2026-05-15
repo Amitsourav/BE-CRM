@@ -226,7 +226,8 @@ class LeadService:
             # or the Pre Counsellor (FMC two-step model).
             query = query.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
         elif agent_id:
-            query = query.where(Lead.assigned_agent_id == agent_id)
+            # Admin/manager filtering by "agent" — match either role on FMC.
+            query = query.where(or_(Lead.assigned_agent_id == agent_id, Lead.pre_counsellor_id == agent_id))
 
         if stage:
             query = query.where(Lead.current_stage == stage)
@@ -294,7 +295,7 @@ class LeadService:
         if user.role in RESTRICTED_VIEW_ROLES:
             base = base.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
         elif agent_id:
-            base = base.where(Lead.assigned_agent_id == agent_id)
+            base = base.where(or_(Lead.assigned_agent_id == agent_id, Lead.pre_counsellor_id == agent_id))
         if campaign_id:
             # Kanban scoped to a single campaign. Window function still
             # partitions by stage and caps at per_stage_limit — so the FE
@@ -321,7 +322,7 @@ class LeadService:
         if user.role in RESTRICTED_VIEW_ROLES:
             count_query = count_query.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
         elif agent_id:
-            count_query = count_query.where(Lead.assigned_agent_id == agent_id)
+            count_query = count_query.where(or_(Lead.assigned_agent_id == agent_id, Lead.pre_counsellor_id == agent_id))
         if campaign_id:
             count_query = count_query.join(
                 CampaignLead, CampaignLead.lead_id == Lead.id
