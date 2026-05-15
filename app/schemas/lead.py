@@ -77,6 +77,11 @@ class LeadUpdate(BaseModel):
     docs_required: int | None = None
     docs_submitted: int | None = None
     submitted_docs: list[str] | None = None
+    # FMC DNP attempt counter — telecallers can manually adjust this
+    # via the card's DNP-N dropdown (1..6). Auto-incremented in
+    # StageMachine on transitions into 'dnp'; manual edit lets the
+    # user correct or align with reality.
+    dnp_count: int | None = None
     # Admitverse enhanced tile field — free-text budget figure.
     # FMC FE doesn't render it. Editable inline from the AV Kanban tile.
     budget: str | None = None
