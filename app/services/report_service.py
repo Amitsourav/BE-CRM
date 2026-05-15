@@ -23,7 +23,7 @@ from app.utils.date_helpers import now_utc, now_ist, start_of_today, end_of_toda
 # Hardcoded daily call targets per role (v1). Once Profile gets a
 # `daily_call_target` column, the per-user value will override these.
 _DEFAULT_CALL_TARGET = {
-    UserRole.TELECALLER: 50,
+    UserRole.PRE_COUNSELLOR: 50,
     UserRole.MANAGER: 30,
     UserRole.ADMIN: None,  # admins don't have a target
 }
@@ -137,7 +137,7 @@ class ReportService:
                 select(
                     func.count().label("total"),
                     func.count(case((Profile.is_active == True, 1))).label("active"),
-                ).where(Profile.role == UserRole.TELECALLER, Profile.company_id == self.company_id)
+                ).where(Profile.role == UserRole.PRE_COUNSELLOR, Profile.company_id == self.company_id)
             )).one()
             agent_total = agent_row.total
             agent_active = agent_row.active
@@ -213,7 +213,7 @@ class ReportService:
         else:
             result = await self.db.execute(
                 select(Profile).where(
-                    Profile.role == UserRole.TELECALLER,
+                    Profile.role == UserRole.PRE_COUNSELLOR,
                     Profile.company_id == self.company_id,
                 ).order_by(Profile.full_name)
             )

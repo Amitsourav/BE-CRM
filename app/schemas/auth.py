@@ -13,7 +13,7 @@ class RegisterRequest(BaseModel):
     password: str
     full_name: str
     phone: str | None = None
-    role: str = "telecaller"
+    role: str = "pre_counsellor"
     vertical: str | None = None
 
 

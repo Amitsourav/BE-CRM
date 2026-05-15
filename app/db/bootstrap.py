@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # All Postgres ENUM types referenced by models with `create_type=False`.
 # Order doesn't matter (no inter-enum dependencies).
 ENUM_TYPES: dict[str, list[str]] = {
-    "user_role": ["admin", "manager", "telecaller"],
+    "user_role": ["admin", "manager", "pre_counsellor"],
     "task_type": ["follow_up", "call", "meeting", "document_collection", "application", "other"],
     "task_status": ["pending", "in_progress", "completed", "overdue"],
     "lead_source_type": ["csv", "meta_ads", "manual", "whatsapp"],

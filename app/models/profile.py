@@ -16,7 +16,7 @@ class Profile(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String, nullable=False)
     phone: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    role: Mapped[str] = mapped_column(ENUM('admin', 'manager', 'telecaller', name='user_role', create_type=False), nullable=False, server_default=text("'telecaller'"))
+    role: Mapped[str] = mapped_column(ENUM('admin', 'manager', 'pre_counsellor', name='user_role', create_type=False), nullable=False, server_default=text("'pre_counsellor'"))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     vertical: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     avatar_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)

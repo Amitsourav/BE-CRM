@@ -137,7 +137,7 @@ class MetaWebhookService:
         """Round-robin: get agent with fewest leads."""
         result = await self.db.execute(
             select(Profile)
-            .where(Profile.role == UserRole.TELECALLER, Profile.is_active == True)
+            .where(Profile.role == UserRole.PRE_COUNSELLOR, Profile.is_active == True)
             .outerjoin(Lead, Lead.assigned_agent_id == Profile.id)
             .group_by(Profile.id)
             .order_by(func.count(Lead.id).asc())

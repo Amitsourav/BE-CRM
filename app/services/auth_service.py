@@ -34,7 +34,7 @@ class AuthService:
         except AuthApiError as e:
             raise UnauthorizedError(str(e))
 
-    def register(self, email: str, password: str, full_name: str, role: str = "telecaller", phone: str | None = None, vertical: str | None = None) -> dict:
+    def register(self, email: str, password: str, full_name: str, role: str = "pre_counsellor", phone: str | None = None, vertical: str | None = None) -> dict:
         """Create the auth.users row only.
 
         Callers should follow up with `create_profile_row` so the user is
@@ -66,7 +66,7 @@ class AuthService:
         company_id: uuid.UUID,
         email: str,
         full_name: str,
-        role: str = "telecaller",
+        role: str = "pre_counsellor",
         phone: str | None = None,
         vertical: str | None = None,
     ) -> None:

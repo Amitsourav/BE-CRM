@@ -90,7 +90,7 @@ async def get_current_manager(
 async def get_current_telecaller(
     current_user: Profile = Depends(get_current_user),
 ) -> Profile:
-    """Any authenticated role (admin, manager, telecaller)."""
-    if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER, UserRole.TELECALLER):
+    """Any authenticated role (admin, manager, pre_counsellor)."""
+    if current_user.role not in (UserRole.ADMIN, UserRole.MANAGER, UserRole.PRE_COUNSELLOR):
         raise ForbiddenError("Access denied")
     return current_user

@@ -6,20 +6,25 @@ import enum
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
     MANAGER = "manager"
-    TELECALLER = "telecaller"
+    # Renamed from TELECALLER on 2026-05-15. FMC's two-step counsellor
+    # model formalised this role as the "Pre Counsellor" — the user
+    # who warms up the lead before a senior Counsellor closes it. The
+    # DB enum value is also 'pre_counsellor' (alembic-renamed in-place,
+    # no profile rows touched).
+    PRE_COUNSELLOR = "pre_counsellor"
 
 
 # Roles that can only see + act on their OWN assigned records (leads,
 # tasks, calls, CSV imports). Admin sees everything; managers and
-# telecallers see only what's assigned to them. The previous design
+# pre-counsellors see only what's assigned to them. The previous design
 # treated managers identically to admins, which broke down once a
 # tenant had multiple managers — every manager could see every other
 # manager's leads. The isolated-portfolio model fixes that:
 #   admin → distributes leads to managers
-#   manager → redistributes to their telecallers (sees only their own)
-#   telecaller → works only their own assigned leads
+#   manager → redistributes to their pre-counsellors (sees only their own)
+#   pre-counsellor → works only their own assigned leads
 RESTRICTED_VIEW_ROLES: frozenset[UserRole] = frozenset(
-    {UserRole.TELECALLER, UserRole.MANAGER}
+    {UserRole.PRE_COUNSELLOR, UserRole.MANAGER}
 )
 
 
