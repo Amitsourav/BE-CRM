@@ -182,11 +182,11 @@ class LeadCardOut(BaseModel):
     docs_required: int = 6
     docs_submitted: int = 0
     submitted_docs: list[str] = []
-    # Admitverse enhanced tile fields. Always returned; FE renders only
-    # on Admitverse (FMC tile ignores). target_intake + preferred_countries
-    # were always on the lead model — just exposing them on the card now
-    # so the AV tile can render Intake + Country chips without an extra
-    # round trip to GET /leads/{id}.
+    # Shared tile fields (FMC + Admitverse both render). university is
+    # the lead's target college (e.g. "MIT", "Oxford"); preferred_countries
+    # is a list because Admitverse leads commonly target 2-3 countries.
+    # FMC FE renders the first country only as a single chip.
+    university: str | None = None
     target_intake: str | None = None
     preferred_countries: list[str] = []
     budget: str | None = None
