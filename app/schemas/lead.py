@@ -138,6 +138,7 @@ class LeadOut(BaseModel):
     docs_required: int = 6
     docs_submitted: int = 0
     submitted_docs: list[str] = []
+    dnp_count: int = 0
     # Admitverse tile field (free text budget). FMC leaves NULL.
     budget: str | None = None
     # Activity rollups (computed in service, not on the model)
@@ -182,6 +183,7 @@ class LeadCardOut(BaseModel):
     docs_required: int = 6
     docs_submitted: int = 0
     submitted_docs: list[str] = []
+    dnp_count: int = 0
     # Shared tile fields (FMC + Admitverse both render). university is
     # the lead's target college (e.g. "MIT", "Oxford"); preferred_countries
     # is a list because Admitverse leads commonly target 2-3 countries.

@@ -160,6 +160,11 @@ class StageMachine:
         if target == LeadStage.LOST:
             lead.lost_time = now_utc()
             lead.lost_reason = lost_reason
+        if target == LeadStage.DNP:
+            # FMC DNP attempt counter — increments each time a lead lands
+            # back in the DNP column. Lets the card render "DNP-3" so the
+            # telecaller knows how many times this lead has been chased.
+            lead.dnp_count = (lead.dnp_count or 0) + 1
         if target == LeadStage.LEAD and from_stage == LeadStage.LOST:
             # Reopen — clear lost fields (FMC only)
             lead.lost_time = None

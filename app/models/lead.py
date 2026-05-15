@@ -91,6 +91,9 @@ class Lead(Base, TimestampMixin):
     )
     docs_required: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("6"))
     docs_submitted: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # FMC DNP attempt counter — auto-incremented in StageMachine when a
+    # lead moves into the 'dnp' stage. Admitverse ignores this counter.
+    dnp_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     submitted_docs: Mapped[List[str]] = mapped_column(ARRAY(String), nullable=False, server_default=text("'{}'"))
 
     # Admitverse tile field (May 2026). Free-text budget the counsellor
