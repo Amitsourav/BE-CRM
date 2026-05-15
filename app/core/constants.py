@@ -28,6 +28,36 @@ RESTRICTED_VIEW_ROLES: frozenset[UserRole] = frozenset(
 )
 
 
+# FMC "lost" reasons. Required when transitioning a lead into the LOST
+# stage. Locked dropdown — set by Amit on 2026-05-15 to standardise
+# reporting and stop telecallers writing free-text variants like
+# "didn't pick" / "didnt pickup" / "not picking up" that all mean the
+# same thing. Order matches Amit's brief.
+LOST_REASONS: tuple[str, ...] = (
+    "Future Plans",
+    "Not responding",
+    "Not Interested",
+    "Not reachable / Out of service / Wrong number",
+    "Plan Dropped",
+    "Repeat lead",
+    "Self funding",
+    "Indian University",
+    "Junk Lead",
+    "Loan already secured",
+    "Low loan amount",
+    "Wrong Product (Personal/Business Loan)",
+    "Country not approved/ Courses not approved.",
+    "Location Not Serviceable",
+    "No collateral",
+    "No Cosigner",
+    "Student profile not eligible",
+    "Cosigner - Ineligible",
+    "Lost to competitor",
+    "Already applied to multiple banks",
+    "Visa Reject",
+)
+
+
 class LeadStage(str, enum.Enum):
     # FMC pipeline (original 6)
     LEAD = "lead"

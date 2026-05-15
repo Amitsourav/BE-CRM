@@ -136,9 +136,18 @@ class StageMachine:
                     f"Stage '{target.value}' requires conversation_notes and agent_agenda"
                 )
 
-        # Require lost_reason when moving to lost
-        if target == LeadStage.LOST and not lost_reason:
-            raise BadRequestError("lost_reason is required when moving to 'lost'")
+        # Require lost_reason when moving to lost, and validate it
+        # against the locked dropdown list. Free-text reasons were
+        # producing 12+ spelling variants of the same intent in reports.
+        if target == LeadStage.LOST:
+            if not lost_reason:
+                raise BadRequestError("lost_reason is required when moving to 'lost'")
+            from app.core.constants import LOST_REASONS
+            if lost_reason not in LOST_REASONS:
+                raise BadRequestError(
+                    f"lost_reason must be one of the canonical FMC values "
+                    f"(got '{lost_reason}'). See GET /leads/lost-reasons."
+                )
 
         # Set due date
         new_due = due_date

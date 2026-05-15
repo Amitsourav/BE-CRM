@@ -90,6 +90,16 @@ async def list_leads_by_stage(
     }
 
 
+@router.get("/lost-reasons", response_model=list[str])
+async def list_lost_reasons():
+    """Canonical FMC dropdown for the "Move to Lost" modal. Locked list —
+    backend rejects any lost_reason not in here. FE should populate the
+    dropdown from this endpoint rather than hardcoding the list.
+    """
+    from app.core.constants import LOST_REASONS
+    return list(LOST_REASONS)
+
+
 @router.get("/search", response_model=PaginatedResponse[LeadOut])
 async def search_leads(
     q: str = Query(..., min_length=1),
