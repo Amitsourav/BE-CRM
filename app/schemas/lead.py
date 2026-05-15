@@ -67,6 +67,7 @@ class LeadUpdate(BaseModel):
     # current_stage here lets simple inline edits work too.
     due_date: datetime | None = None
     assigned_agent_id: uuid.UUID | None = None
+    pre_counsellor_id: uuid.UUID | None = None
     current_stage: str | None = None
     is_important: bool | None = None
     # FMC enhanced tile fields — editable from the lead form.
@@ -118,6 +119,7 @@ class LeadOut(BaseModel):
     preferred_universities: list[str] | None = None
     current_stage: str
     assigned_agent_id: uuid.UUID | None = None
+    pre_counsellor_id: uuid.UUID | None = None
     lead_source_id: uuid.UUID | None = None
     call_attempt_count: int = 0
     due_date: datetime | None = None
@@ -141,6 +143,7 @@ class LeadOut(BaseModel):
     # Activity rollups (computed in service, not on the model)
     assigned_agent_name: str | None = None
     assigned_agent_role: str | None = None
+    pre_counsellor_name: str | None = None
     task_count: int = 0
     call_count: int = 0
     notes_count: int = 0
@@ -164,6 +167,7 @@ class LeadCardOut(BaseModel):
     email: str | None = None
     current_stage: str
     assigned_agent_id: uuid.UUID | None = None
+    pre_counsellor_id: uuid.UUID | None = None
     lead_source_id: uuid.UUID | None = None
     due_date: datetime | None = None
     last_contacted_at: datetime | None = None
@@ -197,6 +201,7 @@ class LeadCardOut(BaseModel):
 
     assigned_agent_name: str | None = None
     assigned_agent_role: str | None = None
+    pre_counsellor_name: str | None = None
     task_count: int = 0
     call_count: int = 0
     notes_count: int = 0

@@ -44,6 +44,7 @@ class Lead(Base, TimestampMixin):
     # Pipeline
     current_stage: Mapped[str] = mapped_column(ENUM(*LEAD_STAGE_VALUES, name='lead_stage', create_type=False), nullable=False, server_default=text("'lead'"))
     assigned_agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)
+    pre_counsellor_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)
     lead_source_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("lead_sources.id", ondelete="SET NULL"), nullable=True)
     csv_import_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("csv_imports.id", ondelete="SET NULL"), nullable=True)
     call_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
@@ -101,6 +102,7 @@ class Lead(Base, TimestampMixin):
     # Relationships
     company = relationship("Company", back_populates="leads")
     assigned_agent = relationship("Profile", back_populates="assigned_leads", foreign_keys=[assigned_agent_id])
+    pre_counsellor = relationship("Profile", foreign_keys=[pre_counsellor_id])
     lead_source = relationship("LeadSource", back_populates="leads")
     stage_logs = relationship("LeadStageLog", back_populates="lead", order_by="LeadStageLog.created_at.desc()")
     call_attempts = relationship("CallAttempt", back_populates="lead", order_by="CallAttempt.created_at.desc()")

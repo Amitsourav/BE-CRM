@@ -358,15 +358,20 @@ class LeadService:
             return
 
         lead_ids = [l.id for l in leads]
-        agent_ids = list({l.assigned_agent_id for l in leads if l.assigned_agent_id})
+        # Union assigned agents + pre-counsellors into one profile lookup so
+        # the FMC tile can render both names without an extra round trip.
+        profile_ids = list(
+            {l.assigned_agent_id for l in leads if l.assigned_agent_id}
+            | {l.pre_counsellor_id for l in leads if getattr(l, "pre_counsellor_id", None)}
+        )
 
         # 1. Agent name + role lookup. Includes the requester's own
         # agents — small set, single round trip.
         agent_map: dict[uuid.UUID, tuple[str, str]] = {}
-        if agent_ids:
+        if profile_ids:
             rows = (await self.db.execute(
                 select(Profile.id, Profile.full_name, Profile.role)
-                .where(Profile.id.in_(agent_ids))
+                .where(Profile.id.in_(profile_ids))
             )).all()
             agent_map = {r.id: (r.full_name, r.role) for r in rows}
 
@@ -444,6 +449,8 @@ class LeadService:
             agent = agent_map.get(lead.assigned_agent_id) if lead.assigned_agent_id else None
             lead.assigned_agent_name = agent[0] if agent else None
             lead.assigned_agent_role = agent[1] if agent else None
+            pre = agent_map.get(lead.pre_counsellor_id) if getattr(lead, "pre_counsellor_id", None) else None
+            lead.pre_counsellor_name = pre[0] if pre else None
             lead.task_count = task_count_map.get(lead.id, 0)
             lead.call_count = call_count_map.get(lead.id, 0)
             lead.notes_count = notes_count_map.get(lead.id, 0)
