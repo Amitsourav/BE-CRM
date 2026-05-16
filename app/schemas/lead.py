@@ -193,6 +193,10 @@ class LeadCardOut(BaseModel):
     # "primary" bank shown on the tile; bank_count tells the FE whether
     # to render a "+N more" badge to expand into the full list.
     bank_count: int = 0
+    # Top 2 banks (by status priority, then oldest first as tie-break) so
+    # the Kanban tile can render two chips inline without a per-card
+    # round trip. Empty list when bank_count == 0.
+    top_banks: list[dict] = []
     # Shared tile fields (FMC + Admitverse both render). university is
     # the lead's target college (e.g. "MIT", "Oxford"); preferred_countries
     # is a list because Admitverse leads commonly target 2-3 countries.

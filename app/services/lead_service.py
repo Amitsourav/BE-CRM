@@ -468,8 +468,10 @@ class LeadService:
         )).all()
         notes_count_map = {lid: cnt for lid, cnt in notes_rows}
 
-        # 5a. Per-lead bank entry count → drives the "+N more" badge
-        # next to the primary bank chip on the FMC tile.
+        # 5a. Per-lead bank entry count + top 2 banks inline so the
+        # FMC tile can render two chips + "+N more" badge with no
+        # per-card round-trip. Order = status priority desc, then
+        # created_at asc as tie-break (stable as new banks are added).
         from app.models.lead_bank import LeadBank
         bank_rows = (await self.db.execute(
             select(LeadBank.lead_id, func.count())
@@ -477,6 +479,30 @@ class LeadService:
             .group_by(LeadBank.lead_id)
         )).all()
         bank_count_map = {lid: cnt for lid, cnt in bank_rows}
+
+        # Pull every bank entry for these leads in one query, then partition
+        # in Python and keep top 2 per lead. Cheap because Kanban page size
+        # is capped (~50 per stage column, max 6 stages × ~50 = 300 leads)
+        # and each lead has 1-5 banks on average.
+        priority = self._BANK_STATUS_PRIORITY  # local alias
+        all_banks = (await self.db.execute(
+            select(LeadBank)
+            .where(LeadBank.company_id == self.company_id, LeadBank.lead_id.in_(lead_ids))
+        )).scalars().all()
+        banks_by_lead: dict[uuid.UUID, list[LeadBank]] = {}
+        for b in all_banks:
+            banks_by_lead.setdefault(b.lead_id, []).append(b)
+        top_banks_map: dict[uuid.UUID, list[dict]] = {}
+        for lid, entries in banks_by_lead.items():
+            entries.sort(key=lambda e: (-priority.get(e.bank_status, 0), e.created_at))
+            top_banks_map[lid] = [
+                {
+                    "id": str(e.id),
+                    "bank_name": e.bank_name,
+                    "bank_status": e.bank_status,
+                }
+                for e in entries[:2]
+            ]
 
         # 5. AI-call history → drives the 🤖 watermark on the card.
         # Two paths qualify a lead:
@@ -518,6 +544,7 @@ class LeadService:
             lead.call_count = call_count_map.get(lead.id, 0)
             lead.notes_count = notes_count_map.get(lead.id, 0)
             lead.bank_count = bank_count_map.get(lead.id, 0)
+            lead.top_banks = top_banks_map.get(lead.id, [])
             lead.has_active_ai_campaign = lead.id in active_campaign_set
 
     async def search_leads(self, q: str, user: Profile, page: int = 1, page_size: int = 25) -> dict:
