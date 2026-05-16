@@ -83,6 +83,45 @@ class LeadService:
 
     async def create_lead(self, data: dict, created_by: uuid.UUID) -> Lead:
         data["company_id"] = self.company_id
+
+        # Normalize phone to +91 format so dedup catches "7004428198" vs
+        # "+917004428198" vs "7004 428 198" as the same number.
+        if data.get("phone"):
+            from app.utils.csv_parser import normalize_phone
+            data["phone"] = normalize_phone(data["phone"])
+
+        # Duplicate check on phone and email — same rule the CSV importer
+        # applies. Without this, the Add Lead form was creating duplicates
+        # (e.g. "amit"/7004428198 vs "Amit"/7004428198 living side-by-side
+        # in different stages). Per-tenant scoped (company_id) and skips
+        # soft-deleted rows.
+        if data.get("phone"):
+            existing = (await self.db.execute(
+                select(Lead.id, Lead.full_name).where(
+                    Lead.company_id == self.company_id,
+                    Lead.phone == data["phone"],
+                    Lead.is_deleted == False,  # noqa: E712
+                )
+            )).first()
+            if existing:
+                raise BadRequestError(
+                    f"A lead with phone {data['phone']} already exists "
+                    f"({existing.full_name})."
+                )
+        if data.get("email"):
+            existing = (await self.db.execute(
+                select(Lead.id, Lead.full_name).where(
+                    Lead.company_id == self.company_id,
+                    Lead.email == data["email"],
+                    Lead.is_deleted == False,  # noqa: E712
+                )
+            )).first()
+            if existing:
+                raise BadRequestError(
+                    f"A lead with email {data['email']} already exists "
+                    f"({existing.full_name})."
+                )
+
         slug_result = await self.db.execute(select(Company.slug).where(Company.id == self.company_id))
         initial_stage = get_initial_stage_for_brand(slug_result.scalar_one_or_none())
         data.setdefault("current_stage", initial_stage.value)
