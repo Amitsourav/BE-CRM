@@ -33,6 +33,33 @@ RESTRICTED_VIEW_ROLES: frozenset[UserRole] = frozenset(
 # reporting and stop telecallers writing free-text variants like
 # "didn't pick" / "didnt pickup" / "not picking up" that all mean the
 # same thing. Order matches Amit's brief.
+# FMC canonical bank list. Used by the bank_name dropdown on the Kanban
+# card and the lead edit form. Locked by Amit on 2026-05-16 — telecallers
+# can't free-text invent new bank names, which had produced 5+ spelling
+# variants in production (sbi / SBI / Unicred / UniCred / Propelld / Propelled).
+# Order = how it should appear in the dropdown.
+FMC_BANKS: tuple[str, ...] = (
+    "Axis",
+    "PNB",
+    "SBI",
+    "Yes Bank",
+    "ICICI",
+    "IDFC",
+    "BOI",
+    "Kuhoo",
+    "Avanse",
+    "Credila",
+    "Propelld",
+    "Tata Capital",
+    "Zolve",
+    "Nomad",
+    "UniCred",
+    "Auxilo",
+    "Incred",
+    "Edgro",
+)
+
+
 LOST_REASONS: tuple[str, ...] = (
     "Future Plans",
     "Not responding",

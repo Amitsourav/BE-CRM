@@ -100,6 +100,16 @@ async def list_lost_reasons():
     return list(LOST_REASONS)
 
 
+@router.get("/banks", response_model=list[str])
+async def list_banks():
+    """Canonical FMC bank dropdown for the Kanban-card bank_name field
+    and the lead edit form. Locked list — backend rejects any bank_name
+    not in here on lead update.
+    """
+    from app.core.constants import FMC_BANKS
+    return list(FMC_BANKS)
+
+
 @router.get("/search", response_model=PaginatedResponse[LeadOut])
 async def search_leads(
     q: str = Query(..., min_length=1),

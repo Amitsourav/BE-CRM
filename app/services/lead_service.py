@@ -157,6 +157,17 @@ class LeadService:
             lead = await self.get_lead(lead_id, user)
             prev_due_date = lead.due_date  # avoid double-creating the callback task
 
+        # Validate bank_name against the canonical FMC bank list. Same
+        # rationale as lost_reason — free text was producing case/spelling
+        # variants that broke reporting (sbi / SBI / Unicred / UniCred).
+        if "bank_name" in data and data["bank_name"]:
+            from app.core.constants import FMC_BANKS
+            if data["bank_name"] not in FMC_BANKS:
+                raise BadRequestError(
+                    f"bank_name must be one of the canonical FMC banks "
+                    f"(got '{data['bank_name']}'). See GET /leads/banks."
+                )
+
         # Filter submitted_docs to known checklist keys + dedupe. Without
         # this, FE bugs or stale clients could push junk values into the
         # array (e.g., trailing whitespace, duplicate keys, or a key
