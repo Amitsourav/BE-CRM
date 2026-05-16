@@ -18,6 +18,11 @@ class UserOut(BaseModel):
     is_active: bool
     vertical: str | None = None
     avatar_url: str | None = None
+    # Total leads where this user is either the Counsellor or the
+    # Pre Counsellor (FMC two-step model). Computed in the list_users
+    # endpoint with one batched query so the Users page can render a
+    # "Leads: N" column per row.
+    lead_count: int = 0
     created_at: datetime
     updated_at: datetime
 

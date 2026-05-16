@@ -51,7 +51,35 @@ async def list_users(
     if is_active is not None:
         query = query.where(Profile.is_active == is_active)
     result = await db.execute(query)
-    return result.scalars().all()
+    users = result.scalars().all()
+
+    # Per-user lead count — counts leads where the user is EITHER the
+    # Counsellor (assigned_agent_id) OR the Pre Counsellor (pre_counsellor_id).
+    # Two batched aggregate queries plus a set union in Python so we
+    # don't double-count leads where the user is on both sides.
+    if users:
+        from app.models.lead import Lead
+        user_ids = [u.id for u in users]
+        # Pull all leads where the user is either role; dedup by lead_id
+        # so a lead with assigned_agent_id = X and pre_counsellor_id = X
+        # only counts once.
+        rows = (await db.execute(
+            select(Lead.id, Lead.assigned_agent_id, Lead.pre_counsellor_id)
+            .where(
+                Lead.company_id == company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                (Lead.assigned_agent_id.in_(user_ids)) | (Lead.pre_counsellor_id.in_(user_ids)),
+            )
+        )).all()
+        per_user: dict[uuid.UUID, set] = {uid: set() for uid in user_ids}
+        for lead_id, agent_id, pre_id in rows:
+            if agent_id in per_user:
+                per_user[agent_id].add(lead_id)
+            if pre_id in per_user:
+                per_user[pre_id].add(lead_id)
+        for u in users:
+            u.lead_count = len(per_user.get(u.id, set()))
+    return users
 
 
 @router.get("/{user_id}", response_model=UserOut)
