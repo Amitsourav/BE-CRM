@@ -468,10 +468,16 @@ class LeadService:
         )).all()
         notes_count_map = {lid: cnt for lid, cnt in notes_rows}
 
-        # 5b. Latest remark per lead → drives the Kanban tile's
-        # "Latest note" row (replaces the old "Top 3 pending tasks"
-        # section). One DISTINCT ON query, capped by lead count.
+        # 5b. Latest note per lead → drives the Kanban tile's "Latest
+        # note" row (replaces "Top 3 pending tasks"). Pulls from BOTH
+        # sources — lead_remarks (the chronological feed) and
+        # lead_stage_logs.conversation_notes (notes attached to stage
+        # transitions) — picks whichever is newer per lead. The notes_count
+        # badge on the card already counts stage-log notes, so they
+        # must be eligible for "latest note" too.
         from app.models.lead_remark import LeadRemark
+
+        # Pull latest remark per lead
         latest_remarks = (await self.db.execute(
             select(
                 LeadRemark.lead_id, LeadRemark.body, LeadRemark.created_at,
@@ -486,15 +492,50 @@ class LeadService:
             .order_by(LeadRemark.lead_id, LeadRemark.created_at.desc())
             .distinct(LeadRemark.lead_id)
         )).all()
-        latest_note_map: dict[uuid.UUID, dict] = {
-            r.lead_id: {
+
+        # Pull latest stage-log note per lead (only those with non-empty
+        # conversation_notes). Joining profiles for author_name.
+        latest_stagelog_notes = (await self.db.execute(
+            select(
+                LeadStageLog.lead_id, LeadStageLog.conversation_notes,
+                LeadStageLog.created_at, LeadStageLog.changed_by,
+                Profile.full_name.label("author_name"),
+                Profile.role.label("author_role"),
+            )
+            .outerjoin(Profile, Profile.id == LeadStageLog.changed_by)
+            .where(
+                LeadStageLog.company_id == self.company_id,
+                LeadStageLog.lead_id.in_(lead_ids),
+                LeadStageLog.conversation_notes.isnot(None),
+                func.length(LeadStageLog.conversation_notes) > 0,
+            )
+            .order_by(LeadStageLog.lead_id, LeadStageLog.created_at.desc())
+            .distinct(LeadStageLog.lead_id)
+        )).all()
+
+        # Merge: take whichever is newer per lead
+        latest_note_map: dict[uuid.UUID, dict] = {}
+        for r in latest_remarks:
+            latest_note_map[r.lead_id] = {
                 "body": r.body,
                 "author_name": r.author_name,
-                "author_role": r.author_role,
+                "author_role": r.author_role or "",
                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                "_created_at_raw": r.created_at,
             }
-            for r in latest_remarks
-        }
+        for s in latest_stagelog_notes:
+            existing = latest_note_map.get(s.lead_id)
+            if not existing or (s.created_at and existing["_created_at_raw"] and s.created_at > existing["_created_at_raw"]):
+                latest_note_map[s.lead_id] = {
+                    "body": s.conversation_notes,
+                    "author_name": s.author_name,
+                    "author_role": s.author_role or "",
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                    "_created_at_raw": s.created_at,
+                }
+        # Strip the helper key before serialisation
+        for v in latest_note_map.values():
+            v.pop("_created_at_raw", None)
 
         # 5a. Per-lead bank entry count + top 2 banks inline so the
         # FMC tile can render two chips + "+N more" badge with no
