@@ -149,6 +149,7 @@ class LeadOut(BaseModel):
     # endpoint (which serves LeadOut) can render the same UI as /by-stage.
     bank_count: int = 0
     top_banks: list[dict] = []
+    latest_note: dict | None = None
     # Admitverse tile field (free text budget). FMC leaves NULL.
     budget: str | None = None
     # Activity rollups (computed in service, not on the model)
@@ -202,6 +203,10 @@ class LeadCardOut(BaseModel):
     # the Kanban tile can render two chips inline without a per-card
     # round trip. Empty list when bank_count == 0.
     top_banks: list[dict] = []
+    # Latest remark on the lead (newest entry from lead_remarks).
+    # Drives the Kanban tile's "Latest note" row, replacing the
+    # previous "Top 3 pending tasks" section. Null when no remarks.
+    latest_note: dict | None = None
     # Shared tile fields (FMC + Admitverse both render). university is
     # the lead's target college (e.g. "MIT", "Oxford"); preferred_countries
     # is a list because Admitverse leads commonly target 2-3 countries.

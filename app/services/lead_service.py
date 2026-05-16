@@ -468,6 +468,34 @@ class LeadService:
         )).all()
         notes_count_map = {lid: cnt for lid, cnt in notes_rows}
 
+        # 5b. Latest remark per lead → drives the Kanban tile's
+        # "Latest note" row (replaces the old "Top 3 pending tasks"
+        # section). One DISTINCT ON query, capped by lead count.
+        from app.models.lead_remark import LeadRemark
+        latest_remarks = (await self.db.execute(
+            select(
+                LeadRemark.lead_id, LeadRemark.body, LeadRemark.created_at,
+                LeadRemark.author_id, LeadRemark.author_role,
+                Profile.full_name.label("author_name"),
+            )
+            .outerjoin(Profile, Profile.id == LeadRemark.author_id)
+            .where(
+                LeadRemark.company_id == self.company_id,
+                LeadRemark.lead_id.in_(lead_ids),
+            )
+            .order_by(LeadRemark.lead_id, LeadRemark.created_at.desc())
+            .distinct(LeadRemark.lead_id)
+        )).all()
+        latest_note_map: dict[uuid.UUID, dict] = {
+            r.lead_id: {
+                "body": r.body,
+                "author_name": r.author_name,
+                "author_role": r.author_role,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in latest_remarks
+        }
+
         # 5a. Per-lead bank entry count + top 2 banks inline so the
         # FMC tile can render two chips + "+N more" badge with no
         # per-card round-trip. Order = status priority desc, then
@@ -545,6 +573,7 @@ class LeadService:
             lead.notes_count = notes_count_map.get(lead.id, 0)
             lead.bank_count = bank_count_map.get(lead.id, 0)
             lead.top_banks = top_banks_map.get(lead.id, [])
+            lead.latest_note = latest_note_map.get(lead.id)
             lead.has_active_ai_campaign = lead.id in active_campaign_set
 
     async def search_leads(self, q: str, user: Profile, page: int = 1, page_size: int = 25) -> dict:
