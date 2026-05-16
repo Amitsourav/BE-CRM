@@ -17,6 +17,7 @@ from app.schemas.lead import (
     LeadCardOut, LeadsByStageOut,
     LeadDistributeRangeRequest, LeadDistributeRangeResponse,
     LeadImportantToggle, LeadRemarkCreate, LeadRemarkOut,
+    LeadBankCreate, LeadBankUpdate, LeadBankOut,
 )
 from app.schemas.stage import StageLogOut
 from app.schemas.call import CallAttemptOut
@@ -157,6 +158,65 @@ async def delete_lead(
     service = LeadService(db, company_id)
     await service.delete_lead(lead_id)
     return {"message": "Lead deleted"}
+
+
+@router.get("/{lead_id}/banks", response_model=list[LeadBankOut])
+async def list_lead_banks(
+    lead_id: uuid.UUID,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """All bank entries for a lead, newest first. Each entry has its
+    own status. lead.bank_name + lead.bank_status reflect the highest-
+    priority entry as the "primary" bank shown on the Kanban tile.
+    """
+    service = LeadService(db, company_id)
+    return await service.list_banks(lead_id, current_user)
+
+
+@router.post("/{lead_id}/banks", response_model=LeadBankOut, status_code=201)
+async def add_lead_bank(
+    lead_id: uuid.UUID,
+    body: LeadBankCreate,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a bank entry to a lead. bank_name must be in GET /leads/banks.
+    Returns 400 if this lead already has an entry for that bank — use
+    PATCH instead.
+    """
+    service = LeadService(db, company_id)
+    return await service.add_bank(lead_id, body.bank_name, body.bank_status, body.notes, current_user)
+
+
+@router.patch("/{lead_id}/banks/{entry_id}", response_model=LeadBankOut)
+async def update_lead_bank(
+    lead_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    body: LeadBankUpdate,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update bank_status and/or notes on a single bank entry."""
+    service = LeadService(db, company_id)
+    return await service.update_bank_entry(lead_id, entry_id, body.bank_status, body.notes, current_user)
+
+
+@router.delete("/{lead_id}/banks/{entry_id}")
+async def delete_lead_bank(
+    lead_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a bank entry from a lead."""
+    service = LeadService(db, company_id)
+    await service.delete_bank_entry(lead_id, entry_id, current_user)
+    return {"message": "Bank entry deleted"}
 
 
 @router.post("/{lead_id}/remarks", response_model=LeadRemarkOut, status_code=201)

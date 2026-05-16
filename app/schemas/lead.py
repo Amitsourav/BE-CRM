@@ -189,6 +189,10 @@ class LeadCardOut(BaseModel):
     docs_submitted: int = 0
     submitted_docs: list[str] = []
     dnp_count: int = 0
+    # FMC multi-bank counter. bank_name / bank_status above remain the
+    # "primary" bank shown on the tile; bank_count tells the FE whether
+    # to render a "+N more" badge to expand into the full list.
+    bank_count: int = 0
     # Shared tile fields (FMC + Admitverse both render). university is
     # the lead's target college (e.g. "MIT", "Oxford"); preferred_countries
     # is a list because Admitverse leads commonly target 2-3 countries.
@@ -287,6 +291,29 @@ class LeadSearchParams(BaseModel):
     date_to: date | None = None
     page: int = 1
     page_size: int = 25
+
+
+class LeadBankCreate(BaseModel):
+    bank_name: str
+    bank_status: str = "applied"
+    notes: str | None = None
+
+
+class LeadBankUpdate(BaseModel):
+    bank_status: str | None = None
+    notes: str | None = None
+
+
+class LeadBankOut(BaseModel):
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    bank_name: str
+    bank_status: str
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class LeadRemarkCreate(BaseModel):

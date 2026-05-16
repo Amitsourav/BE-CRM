@@ -4,6 +4,8 @@ from app.models.profile import Profile
 from app.models.lead_source import LeadSource
 from app.models.lead import Lead
 from app.models.lead_stage_log import LeadStageLog
+from app.models.lead_remark import LeadRemark
+from app.models.lead_bank import LeadBank
 from app.models.call_attempt import CallAttempt
 from app.models.task import Task
 from app.models.notification import Notification
@@ -21,6 +23,7 @@ __all__ = [
     "Lead",
     "LeadStageLog",
     "LeadRemark",
+    "LeadBank",
     "CallAttempt",
     "Task",
     "Notification",

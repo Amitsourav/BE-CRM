@@ -468,6 +468,16 @@ class LeadService:
         )).all()
         notes_count_map = {lid: cnt for lid, cnt in notes_rows}
 
+        # 5a. Per-lead bank entry count → drives the "+N more" badge
+        # next to the primary bank chip on the FMC tile.
+        from app.models.lead_bank import LeadBank
+        bank_rows = (await self.db.execute(
+            select(LeadBank.lead_id, func.count())
+            .where(LeadBank.company_id == self.company_id, LeadBank.lead_id.in_(lead_ids))
+            .group_by(LeadBank.lead_id)
+        )).all()
+        bank_count_map = {lid: cnt for lid, cnt in bank_rows}
+
         # 5. AI-call history → drives the 🤖 watermark on the card.
         # Two paths qualify a lead:
         #   (a) Currently in an active campaign (pending/queued/calling)
@@ -507,6 +517,7 @@ class LeadService:
             lead.task_count = task_count_map.get(lead.id, 0)
             lead.call_count = call_count_map.get(lead.id, 0)
             lead.notes_count = notes_count_map.get(lead.id, 0)
+            lead.bank_count = bank_count_map.get(lead.id, 0)
             lead.has_active_ai_campaign = lead.id in active_campaign_set
 
     async def search_leads(self, q: str, user: Profile, page: int = 1, page_size: int = 25) -> dict:
@@ -524,6 +535,133 @@ class LeadService:
             query = query.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
 
         return await paginate(self.db, query, page, page_size)
+
+    # ─── Multi-bank tracking ────────────────────────────────────────────
+    # Status priority for auto-syncing lead.bank_name / lead.bank_status
+    # to the "best" entry across the lead's banks.
+    _BANK_STATUS_PRIORITY = {
+        "disbursed": 7, "pf_paid": 6, "sanctioned": 5, "loan_login": 4,
+        "under_review": 3, "docs_reviewed": 2, "applied": 1,
+    }
+    _BANK_VALID_STATUSES = set(_BANK_STATUS_PRIORITY.keys())
+
+    async def _resync_primary_bank(self, lead: Lead) -> None:
+        """After any add/update/delete on lead_banks, refresh lead.bank_name
+        and lead.bank_status to point at the highest-priority entry. Falls
+        back to NULL if the lead has no entries.
+        """
+        from app.models.lead_bank import LeadBank
+        rows = (await self.db.execute(
+            select(LeadBank).where(LeadBank.lead_id == lead.id)
+        )).scalars().all()
+        if not rows:
+            lead.bank_name = None
+            lead.bank_status = None
+            return
+        best = max(rows, key=lambda r: (self._BANK_STATUS_PRIORITY.get(r.bank_status, 0), r.updated_at))
+        lead.bank_name = best.bank_name
+        lead.bank_status = best.bank_status
+
+    async def list_banks(self, lead_id: uuid.UUID, user: Profile) -> list:
+        """Return all bank entries for a lead, ordered by created_at desc."""
+        from app.models.lead_bank import LeadBank
+        await self.get_lead(lead_id, user)
+        rows = (await self.db.execute(
+            select(LeadBank)
+            .where(LeadBank.lead_id == lead_id, LeadBank.company_id == self.company_id)
+            .order_by(LeadBank.created_at.desc())
+        )).scalars().all()
+        return list(rows)
+
+    async def add_bank(self, lead_id: uuid.UUID, bank_name: str, bank_status: str, notes: str | None, user: Profile):
+        """Add a bank entry to a lead. Bank name must be in the canonical
+        FMC list; status must be a valid bank_status enum value; a lead
+        can't have the same bank twice (DB unique constraint backstops
+        the service check)."""
+        from app.models.lead_bank import LeadBank
+        from app.core.constants import FMC_BANKS
+        if bank_name not in FMC_BANKS:
+            raise BadRequestError(
+                f"bank_name must be one of the canonical FMC banks (got '{bank_name}'). See GET /leads/banks."
+            )
+        if bank_status not in self._BANK_VALID_STATUSES:
+            raise BadRequestError(
+                f"bank_status must be one of {sorted(self._BANK_VALID_STATUSES)} (got '{bank_status}')."
+            )
+
+        lead = await self.get_lead(lead_id, user)
+
+        # Pre-check for dup (cleaner error than catching the IntegrityError)
+        existing = (await self.db.execute(
+            select(LeadBank.id).where(
+                LeadBank.lead_id == lead_id,
+                LeadBank.bank_name == bank_name,
+            )
+        )).scalar_one_or_none()
+        if existing:
+            raise BadRequestError(
+                f"This lead already has an entry for '{bank_name}'. "
+                f"Use PATCH /leads/{{id}}/banks/{{entry_id}} to update its status."
+            )
+
+        entry = LeadBank(
+            company_id=self.company_id,
+            lead_id=lead_id,
+            bank_name=bank_name,
+            bank_status=bank_status,
+            notes=notes,
+        )
+        self.db.add(entry)
+        await self.db.flush()
+        await self._resync_primary_bank(lead)
+        await self.db.commit()
+        await self.db.refresh(entry)
+        return entry
+
+    async def update_bank_entry(self, lead_id: uuid.UUID, entry_id: uuid.UUID, bank_status: str | None, notes: str | None, user: Profile):
+        from app.models.lead_bank import LeadBank
+        from app.utils.date_helpers import now_utc
+        lead = await self.get_lead(lead_id, user)
+        entry = (await self.db.execute(
+            select(LeadBank).where(
+                LeadBank.id == entry_id,
+                LeadBank.lead_id == lead_id,
+                LeadBank.company_id == self.company_id,
+            )
+        )).scalar_one_or_none()
+        if not entry:
+            raise NotFoundError("Bank entry not found")
+        if bank_status is not None:
+            if bank_status not in self._BANK_VALID_STATUSES:
+                raise BadRequestError(
+                    f"bank_status must be one of {sorted(self._BANK_VALID_STATUSES)} (got '{bank_status}')."
+                )
+            entry.bank_status = bank_status
+        if notes is not None:
+            entry.notes = notes
+        entry.updated_at = now_utc()
+        await self.db.flush()
+        await self._resync_primary_bank(lead)
+        await self.db.commit()
+        await self.db.refresh(entry)
+        return entry
+
+    async def delete_bank_entry(self, lead_id: uuid.UUID, entry_id: uuid.UUID, user: Profile) -> None:
+        from app.models.lead_bank import LeadBank
+        lead = await self.get_lead(lead_id, user)
+        entry = (await self.db.execute(
+            select(LeadBank).where(
+                LeadBank.id == entry_id,
+                LeadBank.lead_id == lead_id,
+                LeadBank.company_id == self.company_id,
+            )
+        )).scalar_one_or_none()
+        if not entry:
+            raise NotFoundError("Bank entry not found")
+        await self.db.delete(entry)
+        await self.db.flush()
+        await self._resync_primary_bank(lead)
+        await self.db.commit()
 
     async def add_remark(self, lead_id: uuid.UUID, body: str, user: Profile) -> dict:
         """Add a free-form remark to a lead. Access gated by get_lead
