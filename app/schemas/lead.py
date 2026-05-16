@@ -144,6 +144,11 @@ class LeadOut(BaseModel):
     docs_submitted: int = 0
     submitted_docs: list[str] = []
     dnp_count: int = 0
+    # Multi-bank fields. bank_count = how many entries in lead_banks;
+    # top_banks = top 2 entries (by status priority) so the Kanban list
+    # endpoint (which serves LeadOut) can render the same UI as /by-stage.
+    bank_count: int = 0
+    top_banks: list[dict] = []
     # Admitverse tile field (free text budget). FMC leaves NULL.
     budget: str | None = None
     # Activity rollups (computed in service, not on the model)
