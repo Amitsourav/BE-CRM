@@ -149,6 +149,16 @@ class StageMachine:
                     f"(got '{lost_reason}'). See GET /leads/lost-reasons."
                 )
 
+        # Follow-up date is mandatory for every non-terminal transition.
+        # Terminal stages (FMC: disbursed + lost) don't need one — the
+        # lead is done. Telecallers were leaving leads in active stages
+        # with no scheduled follow-up, so nothing pulled the lead back
+        # onto someone's Tasks page.
+        if target not in terminal_stages and not due_date:
+            raise BadRequestError(
+                f"Follow-up date is required when moving a lead to '{target.value}'."
+            )
+
         # Set due date
         new_due = due_date
         if target in notes_required and not new_due:
