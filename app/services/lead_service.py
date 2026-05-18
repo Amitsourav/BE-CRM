@@ -1,11 +1,43 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 import logging
 from datetime import date
 from sqlalchemy import select, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+# In-memory TTL cache for the Kanban endpoint. Keyed by
+# (company_id, user_id, hash_of_filter_args). The Kanban does not need
+# to be real-time — a 15-second staleness window means a counsellor who
+# clicks Pipeline twice in quick succession gets an instant second
+# paint, while edits propagate within 15s. The cache is per-process;
+# multiple Railway workers each maintain their own (acceptable since
+# misses just hit the DB again).
+_KANBAN_CACHE_TTL_S = 15.0
+_kanban_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+def _kanban_cache_get(key: tuple) -> dict | None:
+    hit = _kanban_cache.get(key)
+    if not hit:
+        return None
+    expires_at, payload = hit
+    if time.monotonic() > expires_at:
+        _kanban_cache.pop(key, None)
+        return None
+    return payload
+
+
+def _kanban_cache_set(key: tuple, payload: dict) -> None:
+    _kanban_cache[key] = (time.monotonic() + _KANBAN_CACHE_TTL_S, payload)
+    # Cheap LRU-ish eviction so this never grows unbounded under load.
+    if len(_kanban_cache) > 256:
+        # Drop the oldest 32 entries
+        for k in list(_kanban_cache.keys())[:32]:
+            _kanban_cache.pop(k, None)
 from sqlalchemy.orm import selectinload
 from app.models.lead import Lead
 from app.models.lead_source import LeadSource
@@ -437,6 +469,24 @@ class LeadService:
         stage. A second tiny query collects total counts so the Kanban can
         show "+N more" if a column is truncated.
         """
+        # Cache hit short-circuit. Keyed by the requester (so per-user
+        # visibility is preserved), the company, and every filter/scope
+        # arg. 15-second TTL — short enough that edits propagate quickly,
+        # long enough that the second/third Pipeline click is instant.
+        # tags is converted to a frozen tuple so it's hashable.
+        cache_key = (
+            self.company_id, user.id, user.role,
+            agent_id, campaign_id, per_stage_limit,
+            q, source_id, loan_min, loan_max,
+            bank_name, bank_status, target_country, target_intake,
+            tuple(tags) if tags else None,
+            created_from, created_to, due_from, due_to,
+            dnp_min, dnp_max, important_only,
+        )
+        cached = _kanban_cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         # Per-stage row cap via a window function: rank rows within their
         # stage by created_at desc and keep the top N. One scan, one
         # round trip.
@@ -528,11 +578,13 @@ class LeadService:
         # round trips instead of devolving into N+1.
         await self._enrich_cards(rows)
 
-        return {
+        payload = {
             "items_by_stage": items_by_stage,
             "counts_by_stage": counts_by_stage,
             "total": total,
         }
+        _kanban_cache_set(cache_key, payload)
+        return payload
 
     async def _enrich_cards(self, leads: list[Lead]) -> None:
         """Decorate each Lead with the activity rollups + agent display
