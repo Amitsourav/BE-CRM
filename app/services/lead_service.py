@@ -125,6 +125,14 @@ class LeadService:
         slug_result = await self.db.execute(select(Company.slug).where(Company.id == self.company_id))
         initial_stage = get_initial_stage_for_brand(slug_result.scalar_one_or_none())
         data.setdefault("current_stage", initial_stage.value)
+
+        # Mirror loan_amount → loan_amount_lakh (numeric, in lakhs) so the
+        # Kanban budget filter can compare numbers without parsing text
+        # in the query. Display column stays untouched.
+        if data.get("loan_amount") is not None:
+            from app.utils.loan_parser import parse_loan_amount
+            data["loan_amount_lakh"] = parse_loan_amount(data["loan_amount"])
+
         lead = Lead(**data, created_by=created_by)
         self.db.add(lead)
         await self.db.flush()
@@ -206,6 +214,13 @@ class LeadService:
                     f"bank_name must be one of the canonical FMC banks "
                     f"(got '{data['bank_name']}'). See GET /leads/banks."
                 )
+
+        # Mirror loan_amount → loan_amount_lakh on update too, same reason
+        # as create_lead. If loan_amount is being explicitly cleared
+        # (set to None or empty string), wipe the numeric mirror as well.
+        if "loan_amount" in data:
+            from app.utils.loan_parser import parse_loan_amount
+            data["loan_amount_lakh"] = parse_loan_amount(data["loan_amount"])
 
         # Filter submitted_docs to known checklist keys + dedupe. Without
         # this, FE bugs or stale clients could push junk values into the
@@ -310,12 +325,106 @@ class LeadService:
         await self._enrich_cards(page_data["items"])
         return page_data
 
+    def _apply_kanban_filters(
+        self,
+        query,
+        *,
+        q: str | None = None,
+        source_id: uuid.UUID | None = None,
+        loan_min: float | None = None,
+        loan_max: float | None = None,
+        bank_name: str | None = None,
+        bank_status: str | None = None,
+        target_country: str | None = None,
+        target_intake: str | None = None,
+        tags: list[str] | None = None,
+        created_from=None,
+        created_to=None,
+        due_from=None,
+        due_to=None,
+        dnp_min: int | None = None,
+        dnp_max: int | None = None,
+        important_only: bool = False,
+    ):
+        """Apply Kanban filter set to a query. The visibility gate
+        (assigned_agent_id / pre_counsellor_id ANDed in the caller) is
+        deliberately NOT touched here — these filters compose on top.
+        Same helper feeds both the items query and the counts query so
+        the column counters stay consistent with the cards rendered.
+        """
+        if q:
+            term = f"%{q.strip()}%"
+            query = query.where(or_(
+                Lead.full_name.ilike(term),
+                Lead.phone.ilike(term),
+                Lead.email.ilike(term),
+            ))
+        if source_id is not None:
+            query = query.where(Lead.lead_source_id == source_id)
+        if loan_min is not None:
+            query = query.where(Lead.loan_amount_lakh >= loan_min)
+        if loan_max is not None:
+            query = query.where(Lead.loan_amount_lakh <= loan_max)
+        if bank_name:
+            query = query.where(Lead.bank_name == bank_name)
+        if bank_status:
+            query = query.where(Lead.bank_status == bank_status)
+        if target_country:
+            # preferred_countries is text[] — `any` checks membership.
+            query = query.where(Lead.preferred_countries.any(target_country))
+        if target_intake:
+            query = query.where(Lead.target_intake == target_intake)
+        if tags:
+            # tags is text[] — `overlap` is "any tag in the filter matches",
+            # which is the standard "OR-of-tags" UX. Use `contains` if you
+            # ever want "AND-of-tags" instead. Explicit TEXT[] cast or
+            # Postgres complains "text[] && varchar[] — no operator".
+            from sqlalchemy import cast
+            from sqlalchemy.dialects.postgresql import ARRAY
+            from sqlalchemy import Text
+            query = query.where(Lead.tags.overlap(cast(tags, ARRAY(Text))))
+        if created_from is not None:
+            query = query.where(Lead.created_at >= created_from)
+        if created_to is not None:
+            query = query.where(Lead.created_at <= created_to)
+        if due_from is not None:
+            query = query.where(Lead.due_date >= due_from)
+        if due_to is not None:
+            query = query.where(Lead.due_date <= due_to)
+        if dnp_min is not None:
+            query = query.where(Lead.dnp_count >= dnp_min)
+        if dnp_max is not None:
+            query = query.where(Lead.dnp_count <= dnp_max)
+        if important_only:
+            query = query.where(Lead.is_important == True)  # noqa: E712
+        return query
+
     async def list_leads_by_stage(
         self,
         user: Profile,
         agent_id: uuid.UUID | None = None,
         campaign_id: uuid.UUID | None = None,
         per_stage_limit: int = 50,
+        # Filter set added May 2026 for the FMC pipeline page. All
+        # optional; FE drops them when not in use. Filters apply to BOTH
+        # the items query and the count query so column counts stay in
+        # sync with the rendered cards.
+        q: str | None = None,
+        source_id: uuid.UUID | None = None,
+        loan_min: float | None = None,
+        loan_max: float | None = None,
+        bank_name: str | None = None,
+        bank_status: str | None = None,
+        target_country: str | None = None,
+        target_intake: str | None = None,
+        tags: list[str] | None = None,
+        created_from=None,
+        created_to=None,
+        due_from=None,
+        due_to=None,
+        dnp_min: int | None = None,
+        dnp_max: int | None = None,
+        important_only: bool = False,
     ) -> dict:
         """Fetch leads grouped by stage in one round trip.
 
@@ -354,6 +463,20 @@ class LeadService:
                 CampaignLead, CampaignLead.lead_id == Lead.id
             ).where(CampaignLead.campaign_id == campaign_id)
 
+        # Apply the Kanban filter set on top of the visibility + scope WHEREs.
+        base = self._apply_kanban_filters(
+            base,
+            q=q, source_id=source_id,
+            loan_min=loan_min, loan_max=loan_max,
+            bank_name=bank_name, bank_status=bank_status,
+            target_country=target_country, target_intake=target_intake,
+            tags=tags,
+            created_from=created_from, created_to=created_to,
+            due_from=due_from, due_to=due_to,
+            dnp_min=dnp_min, dnp_max=dnp_max,
+            important_only=important_only,
+        )
+
         sub = base.subquery()
         result = await self.db.execute(
             select(Lead).join(sub, Lead.id == sub.c.id).where(sub.c.rn <= per_stage_limit)
@@ -377,6 +500,22 @@ class LeadService:
             count_query = count_query.join(
                 CampaignLead, CampaignLead.lead_id == Lead.id
             ).where(CampaignLead.campaign_id == campaign_id)
+        # Same filter helper feeds the count query so the column headers
+        # always reflect the rendered card set. Drift here = "Qualified ·
+        # 23" header with only 4 cards inside, which is the bug we're
+        # explicitly preventing.
+        count_query = self._apply_kanban_filters(
+            count_query,
+            q=q, source_id=source_id,
+            loan_min=loan_min, loan_max=loan_max,
+            bank_name=bank_name, bank_status=bank_status,
+            target_country=target_country, target_intake=target_intake,
+            tags=tags,
+            created_from=created_from, created_to=created_to,
+            due_from=due_from, due_to=due_to,
+            dnp_min=dnp_min, dnp_max=dnp_max,
+            important_only=important_only,
+        )
         count_query = count_query.group_by(Lead.current_stage)
         count_rows = (await self.db.execute(count_query)).all()
         counts_by_stage = {stage: cnt for stage, cnt in count_rows}

@@ -72,6 +72,26 @@ async def list_leads_by_stage(
     agent_id: uuid.UUID | None = Query(None),
     campaign_id: uuid.UUID | None = Query(None),
     per_stage_limit: int = Query(50, ge=1, le=200),
+    # FMC pipeline filter set. Every filter is optional; if all are None
+    # the endpoint behaves exactly as before. Filters apply to BOTH the
+    # card list and the per-column counters so the Kanban stays self-
+    # consistent.
+    q: str | None = Query(None, description="Search name/phone/email (ILIKE)"),
+    source_id: uuid.UUID | None = Query(None),
+    loan_min: float | None = Query(None, ge=0, description="Min loan amount in lakhs"),
+    loan_max: float | None = Query(None, ge=0, description="Max loan amount in lakhs"),
+    bank_name: str | None = Query(None, description="Exact bank name (use FMC_BANKS values)"),
+    bank_status: str | None = Query(None, description="applied/sanctioned/disbursed/etc."),
+    target_country: str | None = Query(None, description="Preferred study destination"),
+    target_intake: str | None = Query(None, description="e.g. Jan-2026, Sep-2026"),
+    tags: list[str] | None = Query(None, description="Repeatable; matches any of the supplied tags"),
+    created_from: date | None = Query(None),
+    created_to: date | None = Query(None),
+    due_from: date | None = Query(None, description="Follow-up date range start (e.g. today's callbacks)"),
+    due_to: date | None = Query(None),
+    dnp_min: int | None = Query(None, ge=0),
+    dnp_max: int | None = Query(None, ge=0),
+    important_only: bool = Query(False, description="Only starred leads"),
 ):
     """Kanban board endpoint — returns all leads grouped by stage in one
     round trip (replaces 19 per-column requests for Admitverse, 6 for FMC).
@@ -80,6 +100,15 @@ async def list_leads_by_stage(
     data = await service.list_leads_by_stage(
         user=current_user, agent_id=agent_id, campaign_id=campaign_id,
         per_stage_limit=per_stage_limit,
+        q=q, source_id=source_id,
+        loan_min=loan_min, loan_max=loan_max,
+        bank_name=bank_name, bank_status=bank_status,
+        target_country=target_country, target_intake=target_intake,
+        tags=tags,
+        created_from=created_from, created_to=created_to,
+        due_from=due_from, due_to=due_to,
+        dnp_min=dnp_min, dnp_max=dnp_max,
+        important_only=important_only,
     )
     return {
         "items_by_stage": {

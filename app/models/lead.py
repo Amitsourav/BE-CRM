@@ -80,6 +80,11 @@ class Lead(Base, TimestampMixin):
     # untouched. loan_amount is free text so the telecaller can write
     # "25 L" or "2.5 cr" without thinking about units.
     loan_amount: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    # Parsed numeric mirror of `loan_amount` (in lakhs). Auto-populated
+    # on create/update/CSV import via app.utils.loan_parser. Used by the
+    # Kanban budget-range filter so the query compares numbers instead
+    # of guessing whether "25 lakh" is bigger than "1cr".
+    loan_amount_lakh: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
     bank_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     bank_status: Mapped[Optional[str]] = mapped_column(
         ENUM(

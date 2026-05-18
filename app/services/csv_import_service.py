@@ -183,6 +183,12 @@ class CSVImportService:
                         })
                         failures += 1
                         continue
+                    # Mirror to the numeric loan_amount_lakh column so the
+                    # Kanban budget filter works on imported rows. CSV
+                    # values are already numeric-validated above, so the
+                    # parser will always return a Decimal here.
+                    from app.utils.loan_parser import parse_loan_amount
+                    lead_data["loan_amount_lakh"] = parse_loan_amount(raw)
 
                 parsed_rows.append((row_idx, lead_data))
             except Exception as e:
