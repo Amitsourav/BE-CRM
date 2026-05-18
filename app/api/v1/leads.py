@@ -92,13 +92,22 @@ async def list_leads_by_stage(
 
 
 @router.get("/lost-reasons", response_model=list[str])
-async def list_lost_reasons():
-    """Canonical FMC dropdown for the "Move to Lost" modal. Locked list —
-    backend rejects any lost_reason not in here. FE should populate the
-    dropdown from this endpoint rather than hardcoding the list.
+async def list_lost_reasons(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Brand-scoped dropdown for the "Move to Lost" modal. FMC returns
+    its locked 21-value list (backend enforces membership). Admitverse
+    returns [] — FE should render a free-text field when the list is
+    empty, since AV doesn't have a canonical reason list yet.
     """
-    from app.core.constants import LOST_REASONS
-    return list(LOST_REASONS)
+    from app.models.company import Company
+    from app.core.constants import get_lost_reasons_for_brand
+    slug = (await db.execute(
+        select(Company.slug).where(Company.id == company_id)
+    )).scalar_one_or_none()
+    reasons = get_lost_reasons_for_brand(slug)
+    return list(reasons) if reasons else []
 
 
 @router.get("/banks", response_model=list[str])

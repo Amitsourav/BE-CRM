@@ -312,6 +312,17 @@ def get_notes_required_for_brand(slug: str | None) -> set[LeadStage]:
     return FMC_STAGES_REQUIRING_NOTES
 
 
+def get_lost_reasons_for_brand(slug: str | None) -> tuple[str, ...] | None:
+    # FMC has a locked 21-value dropdown (LOST_REASONS) so reports stay
+    # comparable across telecallers. Admitverse doesn't have a canonical
+    # list yet (Phase 5 pipeline customization still open), so FE renders
+    # a free-text field. Returning None tells stage_machine to skip the
+    # membership check and only require a non-empty string.
+    if (slug or "").lower() == "admitverse":
+        return None
+    return LOST_REASONS
+
+
 def get_initial_stage_for_brand(slug: str | None) -> LeadStage:
     """Initial stage assigned to a freshly-created lead. Both brands now
     start at CREATED — FMC's May 2026 revamp dropped the legacy 'lead'

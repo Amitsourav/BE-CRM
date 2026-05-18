@@ -18,6 +18,7 @@ from app.core.constants import (
     get_transitions_for_brand,
     get_terminal_stages_for_brand,
     get_notes_required_for_brand,
+    get_lost_reasons_for_brand,
 )
 from app.core.exceptions import (
     NotFoundError, ForbiddenError, BadRequestError, InvalidTransitionError,
@@ -136,14 +137,15 @@ class StageMachine:
                     f"Stage '{target.value}' requires conversation_notes and agent_agenda"
                 )
 
-        # Require lost_reason when moving to lost, and validate it
-        # against the locked dropdown list. Free-text reasons were
-        # producing 12+ spelling variants of the same intent in reports.
+        # Require lost_reason when moving to lost. FMC has a locked
+        # 21-value dropdown (free-text was producing 12+ spelling variants
+        # of the same intent in reports); Admitverse still accepts
+        # free-text until Phase 5 lands its own canonical list.
         if target == LeadStage.LOST:
             if not lost_reason:
                 raise BadRequestError("lost_reason is required when moving to 'lost'")
-            from app.core.constants import LOST_REASONS
-            if lost_reason not in LOST_REASONS:
+            allowed_reasons = get_lost_reasons_for_brand(slug)
+            if allowed_reasons is not None and lost_reason not in allowed_reasons:
                 raise BadRequestError(
                     f"lost_reason must be one of the canonical FMC values "
                     f"(got '{lost_reason}'). See GET /leads/lost-reasons."
