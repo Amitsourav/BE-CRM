@@ -733,11 +733,19 @@ class LeadService:
         active_rows = [(r[1],) for r in ai_signal_rows if r[0] == "camp"]
         ai_call_rows = [(r[1],) for r in ai_signal_rows if r[0] == "ai"]
 
-        # Merge: take whichever is newer per lead
+        # Merge: take whichever is newer per lead. Body is truncated to
+        # 150 chars for the Kanban tile — the full note is fetched only
+        # when the user opens the lead detail page. This cuts the
+        # Kanban payload by ~30-50% on FMC (notes were up to 5000 chars).
+        def _truncate(body: str | None, limit: int = 150) -> str | None:
+            if not body:
+                return body
+            return body if len(body) <= limit else body[:limit].rstrip() + "…"
+
         latest_note_map: dict[uuid.UUID, dict] = {}
         for r in latest_remarks:
             latest_note_map[r.lead_id] = {
-                "body": r.body,
+                "body": _truncate(r.body),
                 "author_name": r.author_name,
                 "author_role": r.author_role or "",
                 "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -747,7 +755,7 @@ class LeadService:
             existing = latest_note_map.get(s.lead_id)
             if not existing or (s.created_at and existing["_created_at_raw"] and s.created_at > existing["_created_at_raw"]):
                 latest_note_map[s.lead_id] = {
-                    "body": s.conversation_notes,
+                    "body": _truncate(s.conversation_notes),
                     "author_name": s.author_name,
                     "author_role": s.author_role or "",
                     "created_at": s.created_at.isoformat() if s.created_at else None,
