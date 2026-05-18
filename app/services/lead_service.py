@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 import logging
 from datetime import date
@@ -557,8 +558,16 @@ class LeadService:
             | {l.pre_counsellor_id for l in leads if getattr(l, "pre_counsellor_id", None)}
         )
 
-        # 1. Agent name + role lookup. Includes the requester's own
-        # agents — small set, single round trip.
+        # OPTIMIZATION: combine the 4 count queries (tasks / live-calls /
+        # stage-log-notes / lead-banks) into ONE UNION ALL query plus
+        # AI-call signals into another, so the Kanban refresh costs
+        # 5 round-trips total instead of 9. Sequential on self.db (one
+        # connection avoids pgbouncer session-mode limits in production).
+        from app.models.lead_remark import LeadRemark
+        from app.models.lead_bank import LeadBank
+        from sqlalchemy import literal, union_all
+
+        # 1. Agent name + role lookup (small, fast — only ~5-30 profile IDs)
         agent_map: dict[uuid.UUID, tuple[str, str]] = {}
         if profile_ids:
             rows = (await self.db.execute(
@@ -567,36 +576,28 @@ class LeadService:
             )).all()
             agent_map = {r.id: (r.full_name, r.role) for r in rows}
 
-        # 2. Pending + overdue task counts per lead.
-        task_rows = (await self.db.execute(
-            select(Task.lead_id, func.count())
+        # 2. Unified counts query — 4 aggregations in one round-trip.
+        # 'kind' discriminator splits the buckets in Python.
+        task_q = (
+            select(literal("task").label("kind"), Task.lead_id, func.count().label("n"))
             .where(
                 Task.company_id == self.company_id,
                 Task.lead_id.in_(lead_ids),
                 Task.status.in_([TaskStatus.PENDING.value, TaskStatus.OVERDUE.value]),
             )
             .group_by(Task.lead_id)
-        )).all()
-        task_count_map = {lid: cnt for lid, cnt in task_rows}
-
-        # 3. Manual (live) call counts per lead. AI campaign calls are
-        # excluded so the badge reflects telecaller effort, not bot work.
-        call_rows = (await self.db.execute(
-            select(CallAttempt.lead_id, func.count())
+        )
+        call_q = (
+            select(literal("call").label("kind"), CallAttempt.lead_id, func.count().label("n"))
             .where(
                 CallAttempt.company_id == self.company_id,
                 CallAttempt.lead_id.in_(lead_ids),
                 CallAttempt.call_type == "live",
             )
             .group_by(CallAttempt.lead_id)
-        )).all()
-        call_count_map = {lid: cnt for lid, cnt in call_rows}
-
-        # 4. Notes count = stage transitions with a non-empty remark.
-        # Captures both telecaller-entered notes on the stage modal and
-        # AI auto-transitions (which always include sentiment/score).
-        notes_rows = (await self.db.execute(
-            select(LeadStageLog.lead_id, func.count())
+        )
+        notes_q = (
+            select(literal("notes").label("kind"), LeadStageLog.lead_id, func.count().label("n"))
             .where(
                 LeadStageLog.company_id == self.company_id,
                 LeadStageLog.lead_id.in_(lead_ids),
@@ -604,19 +605,18 @@ class LeadService:
                 func.length(LeadStageLog.conversation_notes) > 0,
             )
             .group_by(LeadStageLog.lead_id)
-        )).all()
-        notes_count_map = {lid: cnt for lid, cnt in notes_rows}
+        )
+        union_counts = union_all(task_q, call_q, notes_q)
+        count_rows = (await self.db.execute(union_counts)).all()
+        task_count_map: dict[uuid.UUID, int] = {}
+        call_count_map: dict[uuid.UUID, int] = {}
+        notes_count_map: dict[uuid.UUID, int] = {}
+        for kind, lid, n in count_rows:
+            if kind == "task": task_count_map[lid] = n
+            elif kind == "call": call_count_map[lid] = n
+            elif kind == "notes": notes_count_map[lid] = n
 
-        # 5b. Latest note per lead → drives the Kanban tile's "Latest
-        # note" row (replaces "Top 3 pending tasks"). Pulls from BOTH
-        # sources — lead_remarks (the chronological feed) and
-        # lead_stage_logs.conversation_notes (notes attached to stage
-        # transitions) — picks whichever is newer per lead. The notes_count
-        # badge on the card already counts stage-log notes, so they
-        # must be eligible for "latest note" too.
-        from app.models.lead_remark import LeadRemark
-
-        # Pull latest remark per lead
+        # 3. Latest remark per lead (chronological feed)
         latest_remarks = (await self.db.execute(
             select(
                 LeadRemark.lead_id, LeadRemark.body, LeadRemark.created_at,
@@ -632,8 +632,7 @@ class LeadService:
             .distinct(LeadRemark.lead_id)
         )).all()
 
-        # Pull latest stage-log note per lead (only those with non-empty
-        # conversation_notes). Joining profiles for author_name.
+        # 4. Latest stage-log note per lead (merged with remarks below)
         latest_stagelog_notes = (await self.db.execute(
             select(
                 LeadStageLog.lead_id, LeadStageLog.conversation_notes,
@@ -651,6 +650,36 @@ class LeadService:
             .order_by(LeadStageLog.lead_id, LeadStageLog.created_at.desc())
             .distinct(LeadStageLog.lead_id)
         )).all()
+
+        # 5. All bank entries (count derived in Python — saves a round-trip
+        # vs the previous count + entries pair).
+        all_banks = (await self.db.execute(
+            select(LeadBank)
+            .where(LeadBank.company_id == self.company_id, LeadBank.lead_id.in_(lead_ids))
+        )).scalars().all()
+
+        # 6. AI signals (active campaign + ai_campaign call history) combined
+        # via UNION so it's one round-trip instead of two. Result rows are
+        # just lead_ids; we drop them into a set.
+        active_q = (
+            select(literal("camp").label("kind"), CampaignLead.lead_id).distinct()
+            .where(
+                CampaignLead.company_id == self.company_id,
+                CampaignLead.lead_id.in_(lead_ids),
+                CampaignLead.status.in_(["pending", "queued", "calling"]),
+            )
+        )
+        ai_q = (
+            select(literal("ai").label("kind"), CallAttempt.lead_id).distinct()
+            .where(
+                CallAttempt.company_id == self.company_id,
+                CallAttempt.lead_id.in_(lead_ids),
+                CallAttempt.call_type.in_(["ai", "ai_campaign"]),
+            )
+        )
+        ai_signal_rows = (await self.db.execute(union_all(active_q, ai_q))).all()
+        active_rows = [(r[1],) for r in ai_signal_rows if r[0] == "camp"]
+        ai_call_rows = [(r[1],) for r in ai_signal_rows if r[0] == "ai"]
 
         # Merge: take whichever is newer per lead
         latest_note_map: dict[uuid.UUID, dict] = {}
@@ -676,30 +705,15 @@ class LeadService:
         for v in latest_note_map.values():
             v.pop("_created_at_raw", None)
 
-        # 5a. Per-lead bank entry count + top 2 banks inline so the
-        # FMC tile can render two chips + "+N more" badge with no
-        # per-card round-trip. Order = status priority desc, then
+        # Bank rollups computed in Python from the all_banks rowset
+        # fetched above (saves one round-trip vs the previous separate
+        # count + entries queries). Order = status priority desc, then
         # created_at asc as tie-break (stable as new banks are added).
-        from app.models.lead_bank import LeadBank
-        bank_rows = (await self.db.execute(
-            select(LeadBank.lead_id, func.count())
-            .where(LeadBank.company_id == self.company_id, LeadBank.lead_id.in_(lead_ids))
-            .group_by(LeadBank.lead_id)
-        )).all()
-        bank_count_map = {lid: cnt for lid, cnt in bank_rows}
-
-        # Pull every bank entry for these leads in one query, then partition
-        # in Python and keep top 2 per lead. Cheap because Kanban page size
-        # is capped (~50 per stage column, max 6 stages × ~50 = 300 leads)
-        # and each lead has 1-5 banks on average.
         priority = self._BANK_STATUS_PRIORITY  # local alias
-        all_banks = (await self.db.execute(
-            select(LeadBank)
-            .where(LeadBank.company_id == self.company_id, LeadBank.lead_id.in_(lead_ids))
-        )).scalars().all()
-        banks_by_lead: dict[uuid.UUID, list[LeadBank]] = {}
+        banks_by_lead: dict[uuid.UUID, list] = {}
         for b in all_banks:
             banks_by_lead.setdefault(b.lead_id, []).append(b)
+        bank_count_map = {lid: len(v) for lid, v in banks_by_lead.items()}
         top_banks_map: dict[uuid.UUID, list[dict]] = {}
         for lid, entries in banks_by_lead.items():
             entries.sort(key=lambda e: (-priority.get(e.bank_status, 0), e.created_at))
@@ -712,31 +726,9 @@ class LeadService:
                 for e in entries[:2]
             ]
 
-        # 5. AI-call history → drives the 🤖 watermark on the card.
-        # Two paths qualify a lead:
-        #   (a) Currently in an active campaign (pending/queued/calling)
-        #   (b) Has at least one AI call_attempt row (completed campaign,
-        #       manually-triggered AI call from /voice/outbound, etc.)
-        # Without (b), the watermark vanished the moment a campaign
-        # finished even though the lead clearly had been AI-contacted —
-        # confusing for telecallers reviewing qualified leads with no
-        # visible signal of how they got there.
-        active_rows = (await self.db.execute(
-            select(CampaignLead.lead_id).distinct()
-            .where(
-                CampaignLead.company_id == self.company_id,
-                CampaignLead.lead_id.in_(lead_ids),
-                CampaignLead.status.in_(["pending", "queued", "calling"]),
-            )
-        )).all()
-        ai_call_rows = (await self.db.execute(
-            select(CallAttempt.lead_id).distinct()
-            .where(
-                CallAttempt.company_id == self.company_id,
-                CallAttempt.lead_id.in_(lead_ids),
-                CallAttempt.call_type.in_(["ai", "ai_campaign"]),
-            )
-        )).all()
+        # AI-call watermark: lead has an active campaign row OR an ai/ai_campaign
+        # call_attempt. Without the second arm, the watermark vanished as soon as
+        # a campaign finished even though the lead clearly had been AI-contacted.
         active_campaign_set = {r[0] for r in active_rows} | {r[0] for r in ai_call_rows if r[0]}
 
         # Decorate each Lead instance with the rollups. Setattr is fine
