@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.company import Company
 from app.models.csv_import import CSVImport
 from app.models.lead import Lead
+from app.models.lead_source import LeadSource
 from app.models.notification import Notification
 from app.models.profile import Profile
 from app.core.constants import (
@@ -228,6 +229,16 @@ class CSVImportService:
 
         # --- Phase 3: Build lead dicts for true bulk insert ---
         lead_dicts = []
+        # Cache of source name → source_id resolved during THIS import so
+        # we don't re-query the DB for every row. Pre-seeded with all
+        # existing sources for this company.
+        source_name_cache: dict[str, uuid.UUID] = {}
+        existing_sources = (await self.db.execute(
+            select(LeadSource.id, LeadSource.name)
+            .where(LeadSource.company_id == self.company_id)
+        )).all()
+        for sid, sname in existing_sources:
+            source_name_cache[sname.strip().lower()] = sid
         for row_idx, lead_data in parsed_rows:
             try:
                 phone = lead_data.get("phone")
@@ -248,10 +259,26 @@ class CSVImportService:
                 if email:
                     seen_emails.add(email)
 
+                # Per-row source override. When the CSV has a "source"
+                # column (any of its aliases), each lead is tagged with
+                # that label — auto-creating a lead_sources row the first
+                # time we see a new name in this upload. Falls back to
+                # the dropdown's lead_source_id when the cell is empty.
+                row_source_name = lead_data.pop("source", None)
+                if row_source_name:
+                    cleaned = row_source_name.strip()
+                    if cleaned:
+                        lead_data["lead_source_id"] = await self._get_or_create_source(
+                            cleaned, user.id, source_name_cache,
+                        )
+                    else:
+                        lead_data["lead_source_id"] = lead_source_id
+                else:
+                    lead_data["lead_source_id"] = lead_source_id
+
                 lead_data["company_id"] = self.company_id
                 lead_data["current_stage"] = initial_stage
                 lead_data["assigned_agent_id"] = assigned_agent_id
-                lead_data["lead_source_id"] = lead_source_id
                 lead_data["csv_import_id"] = csv_import.id
                 lead_data["created_by"] = user.id
                 lead_dicts.append(lead_data)
@@ -299,6 +326,35 @@ class CSVImportService:
             .limit(100)
         )
         return result.scalars().all()
+
+    async def _get_or_create_source(
+        self,
+        name: str,
+        created_by: uuid.UUID,
+        cache: dict[str, uuid.UUID],
+    ) -> uuid.UUID:
+        """Find an existing lead_sources row by name (case-insensitive)
+        or create one. Cached in `cache` so the same name within one
+        upload reuses the same row without a re-query. New sources are
+        marked source_type='csv' so admin can spot CSV-originated
+        entries in the Sources page.
+        """
+        key = name.strip().lower()
+        if key in cache:
+            return cache[key]
+        # Create — race-safe because Phase 3 holds the company advisory
+        # lock from process_locked, so two concurrent imports for the same
+        # company can't double-create the same source.
+        new_source = LeadSource(
+            company_id=self.company_id,
+            name=name.strip(),
+            source_type="csv",
+            is_active=True,
+        )
+        self.db.add(new_source)
+        await self.db.flush()
+        cache[key] = new_source.id
+        return new_source.id
 
     async def _get_import(self, import_id: uuid.UUID, user: Profile) -> CSVImport:
         result = await self.db.execute(
