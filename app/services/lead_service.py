@@ -458,6 +458,9 @@ class LeadService:
         dnp_min: int | None = None,
         dnp_max: int | None = None,
         important_only: bool = False,
+        # Sort: created_desc (default), loan_asc (Low→High), loan_desc (High→Low).
+        # Affects only the per-column row order; counts are unchanged.
+        sort_by: str = "created_desc",
     ) -> dict:
         """Fetch leads grouped by stage in one round trip.
 
@@ -482,20 +485,32 @@ class LeadService:
             tuple(tags) if tags else None,
             created_from, created_to, due_from, due_to,
             dnp_min, dnp_max, important_only,
+            sort_by,
         )
         cached = _kanban_cache_get(cache_key)
         if cached is not None:
             return cached
 
         # Per-stage row cap via a window function: rank rows within their
-        # stage by created_at desc and keep the top N. One scan, one
-        # round trip.
-        from sqlalchemy import literal_column, asc, desc
+        # stage by the chosen sort order and keep the top N per stage.
+        # One scan, one round trip.
+        from sqlalchemy import literal_column, asc, desc, nullslast
         from sqlalchemy.sql import over
+
+        # Resolve sort_by → ORDER BY expression. For loan-amount sorts we
+        # put NULLs last in both directions; without nullslast the "Low
+        # to High" view would lead with all the unknown-budget leads at
+        # the top, which is exactly the noise telecallers want to avoid.
+        if sort_by == "loan_asc":
+            window_order = (nullslast(Lead.loan_amount_lakh.asc()), Lead.created_at.desc())
+        elif sort_by == "loan_desc":
+            window_order = (nullslast(Lead.loan_amount_lakh.desc()), Lead.created_at.desc())
+        else:  # "created_desc" (default) — original behavior
+            window_order = (Lead.created_at.desc(),)
 
         rn = func.row_number().over(
             partition_by=Lead.current_stage,
-            order_by=Lead.created_at.desc(),
+            order_by=window_order,
         ).label("rn")
 
         base = select(Lead, rn).where(
@@ -529,8 +544,16 @@ class LeadService:
         )
 
         sub = base.subquery()
+        # Outer ORDER BY matches the window function order so the result
+        # set arrives in the right per-card order (stage clustering kept
+        # via current_stage, then rn). Without this, Postgres returns
+        # rows in physical/hash-join order — fine for created_at DESC by
+        # accident, but visibly wrong for loan_asc / loan_desc.
         result = await self.db.execute(
-            select(Lead).join(sub, Lead.id == sub.c.id).where(sub.c.rn <= per_stage_limit)
+            select(Lead)
+            .join(sub, Lead.id == sub.c.id)
+            .where(sub.c.rn <= per_stage_limit)
+            .order_by(Lead.current_stage, sub.c.rn)
         )
         rows = result.scalars().all()
 

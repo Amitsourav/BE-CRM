@@ -92,6 +92,11 @@ async def list_leads_by_stage(
     dnp_min: int | None = Query(None, ge=0),
     dnp_max: int | None = Query(None, ge=0),
     important_only: bool = Query(False, description="Only starred leads"),
+    sort_by: str = Query(
+        "created_desc",
+        regex="^(created_desc|loan_asc|loan_desc)$",
+        description="Per-column row order: created_desc (newest first, default), loan_asc (Low→High), loan_desc (High→Low). Leads without a loan_amount_lakh value are placed at the end in loan_asc/desc.",
+    ),
 ):
     """Kanban board endpoint — returns all leads grouped by stage in one
     round trip (replaces 19 per-column requests for Admitverse, 6 for FMC).
@@ -109,6 +114,7 @@ async def list_leads_by_stage(
         due_from=due_from, due_to=due_to,
         dnp_min=dnp_min, dnp_max=dnp_max,
         important_only=important_only,
+        sort_by=sort_by,
     )
     return {
         "items_by_stage": {
