@@ -156,6 +156,10 @@ class LeadOut(BaseModel):
     assigned_agent_name: str | None = None
     assigned_agent_role: str | None = None
     pre_counsellor_name: str | None = None
+    # Human-readable source label (e.g. "WhatsApp Campaign", "Facebook Ads").
+    # Resolved from lead_source_id via a batched lookup in the service.
+    # Without this, the FE would need a separate /sources fetch per card.
+    source_name: str | None = None
     task_count: int = 0
     call_count: int = 0
     notes_count: int = 0
@@ -227,6 +231,10 @@ class LeadCardOut(BaseModel):
     assigned_agent_name: str | None = None
     assigned_agent_role: str | None = None
     pre_counsellor_name: str | None = None
+    # Human-readable source label resolved from lead_source_id. Lets the
+    # Kanban tile render a chip like "Source: WhatsApp Campaign" without
+    # a separate /sources fetch per card.
+    source_name: str | None = None
     task_count: int = 0
     call_count: int = 0
     notes_count: int = 0

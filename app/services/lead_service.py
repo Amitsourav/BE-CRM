@@ -651,6 +651,18 @@ class LeadService:
             )).all()
             agent_map = {r.id: (r.full_name, r.role) for r in rows}
 
+        # 1b. Source name lookup so the Kanban / lead detail can render
+        # the human label ("WhatsApp Campaign") instead of an opaque UUID.
+        # One query for all unique source IDs in the current result set.
+        source_ids = list({l.lead_source_id for l in leads if getattr(l, "lead_source_id", None)})
+        source_name_map: dict[uuid.UUID, str] = {}
+        if source_ids:
+            rows = (await self.db.execute(
+                select(LeadSource.id, LeadSource.name)
+                .where(LeadSource.id.in_(source_ids))
+            )).all()
+            source_name_map = {r.id: r.name for r in rows}
+
         # 2. Unified counts query — 4 aggregations in one round-trip.
         # 'kind' discriminator splits the buckets in Python.
         task_q = (
@@ -830,6 +842,7 @@ class LeadService:
             lead.top_banks = top_banks_map.get(lead.id, [])
             lead.latest_note = latest_note_map.get(lead.id)
             lead.has_active_ai_campaign = lead.id in active_campaign_set
+            lead.source_name = source_name_map.get(lead.lead_source_id) if lead.lead_source_id else None
 
     async def search_leads(self, q: str, user: Profile, page: int = 1, page_size: int = 25) -> dict:
         query = select(Lead).where(
