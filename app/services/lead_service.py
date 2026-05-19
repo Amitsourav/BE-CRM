@@ -114,8 +114,23 @@ class LeadService:
         ))
         return True
 
-    async def create_lead(self, data: dict, created_by: uuid.UUID) -> Lead:
+    async def create_lead(self, data: dict, created_by: uuid.UUID, creator_role: str | None = None) -> Lead:
         data["company_id"] = self.company_id
+
+        # Auto-own rule (FMC, May 2026):
+        #   • Pre-Counsellor creates a lead → set pre_counsellor_id = self
+        #     so it shows on their queue immediately. Counsellor slot
+        #     stays empty until admin routes the lead.
+        #   • Manager creates a lead → set assigned_agent_id = self if
+        #     the form didn't already pick one (Manager owns it as
+        #     Counsellor).
+        #   • Admin's flow is untouched — admin picks the assignee in
+        #     the form, or deliberately leaves it null for manual
+        #     assignment from the lead list later.
+        if creator_role == UserRole.PRE_COUNSELLOR.value:
+            data.setdefault("pre_counsellor_id", created_by)
+        elif creator_role == UserRole.MANAGER.value:
+            data.setdefault("assigned_agent_id", created_by)
 
         # Normalize phone to +91 format so dedup catches "7004428198" vs
         # "+917004428198" vs "7004 428 198" as the same number.

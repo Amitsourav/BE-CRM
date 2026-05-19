@@ -65,7 +65,7 @@ async def create_lead(
 ):
     service = LeadService(db, company_id)
     data = body.model_dump(exclude_unset=True)
-    return await service.create_lead(data, current_user.id)
+    return await service.create_lead(data, current_user.id, creator_role=current_user.role)
 
 
 @router.get("/by-stage", response_model=LeadsByStageOut)
