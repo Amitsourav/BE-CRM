@@ -55,12 +55,11 @@ async def list_leads(
 @router.post("", response_model=LeadOut, status_code=201)
 async def create_lead(
     body: LeadCreate,
-    # Lead creation is Manager+/Admin only. Pre-Counsellors get leads
-    # assigned to them by the upstream router; they don't generate
-    # new ones. Hole closed May 2026 — previously open to any
-    # authenticated user, which let a pre-counsellor inject leads
-    # outside the normal source/campaign pipeline.
-    current_user: Profile = Depends(get_current_manager),
+    # Single-lead create is open to any authenticated user — including
+    # Pre-Counsellors who occasionally need to enter a walk-in / phone-in
+    # lead they personally got. CSV bulk-import stays gated to Manager+/Admin
+    # so it can't be used to mass-inject leads outside the source pipeline.
+    current_user: Profile = Depends(get_current_user),
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
