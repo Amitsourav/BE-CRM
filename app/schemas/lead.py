@@ -316,6 +316,19 @@ class LeadBankCreate(BaseModel):
 class LeadBankUpdate(BaseModel):
     bank_status: str | None = None
     notes: str | None = None
+    # Sanction details — backend rejects these if the bank entry is not
+    # yet in a sanctioned-or-later state. FMC enters them via the
+    # "Sanction Details" card on the lead detail page once the bank
+    # actually sanctions the loan.
+    application_id: str | None = None
+    sanction_date: date | None = None
+    loan_amount: Decimal | None = None
+    roi: Decimal | None = None
+    tenure_months: int | None = None
+    pf_amount: Decimal | None = None
+    first_tranche_amount: Decimal | None = None
+    no_of_tranches: int | None = None
+    pf_status: str | None = None  # 'paid' | 'pending'
 
 
 class LeadBankOut(BaseModel):
@@ -324,6 +337,15 @@ class LeadBankOut(BaseModel):
     bank_name: str
     bank_status: str
     notes: str | None = None
+    application_id: str | None = None
+    sanction_date: date | None = None
+    loan_amount: Decimal | None = None
+    roi: Decimal | None = None
+    tenure_months: int | None = None
+    pf_amount: Decimal | None = None
+    first_tranche_amount: Decimal | None = None
+    no_of_tranches: int | None = None
+    pf_status: str | None = None
     created_at: datetime
     updated_at: datetime
 

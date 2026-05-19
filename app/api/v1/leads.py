@@ -238,9 +238,13 @@ async def update_lead_bank(
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update bank_status and/or notes on a single bank entry."""
+    """Update bank_status, notes, and/or the 9 sanction-detail fields on
+    a single bank entry. Sanction details are only writable once the
+    bank reaches sanctioned/pf_paid/disbursed.
+    """
     service = LeadService(db, company_id)
-    return await service.update_bank_entry(lead_id, entry_id, body.bank_status, body.notes, current_user)
+    payload = body.model_dump(exclude_unset=True)
+    return await service.update_bank_entry(lead_id, entry_id, payload, current_user)
 
 
 @router.delete("/{lead_id}/banks/{entry_id}")

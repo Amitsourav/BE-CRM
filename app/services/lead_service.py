@@ -906,9 +906,17 @@ class LeadService:
         await self.db.refresh(entry)
         return entry
 
-    async def update_bank_entry(self, lead_id: uuid.UUID, entry_id: uuid.UUID, bank_status: str | None, notes: str | None, user: Profile):
+    async def update_bank_entry(self, lead_id: uuid.UUID, entry_id: uuid.UUID, payload: dict, user: Profile):
+        """Update a lead-bank entry. Accepts bank_status, notes, and the
+        9 sanction-detail fields (application_id, sanction_date,
+        loan_amount, roi, tenure_months, pf_amount, first_tranche_amount,
+        no_of_tranches, pf_status). Sanction-detail writes are gated:
+        the bank must already be sanctioned-or-later, otherwise we 400
+        ('record sanction status first').
+        """
         from app.models.lead_bank import LeadBank
         from app.utils.date_helpers import now_utc
+
         lead = await self.get_lead(lead_id, user)
         entry = (await self.db.execute(
             select(LeadBank).where(
@@ -919,14 +927,41 @@ class LeadService:
         )).scalar_one_or_none()
         if not entry:
             raise NotFoundError("Bank entry not found")
-        if bank_status is not None:
-            if bank_status not in self._BANK_VALID_STATUSES:
+
+        # Apply bank_status first so the gate below sees the new value
+        # (FE often sends status change + sanction details in one PATCH).
+        new_status = payload.get("bank_status")
+        if new_status is not None:
+            if new_status not in self._BANK_VALID_STATUSES:
                 raise BadRequestError(
-                    f"bank_status must be one of {sorted(self._BANK_VALID_STATUSES)} (got '{bank_status}')."
+                    f"bank_status must be one of {sorted(self._BANK_VALID_STATUSES)} (got '{new_status}')."
                 )
-            entry.bank_status = bank_status
-        if notes is not None:
-            entry.notes = notes
+            entry.bank_status = new_status
+        if "notes" in payload and payload["notes"] is not None:
+            entry.notes = payload["notes"]
+
+        # Sanction detail fields. Gate: only writable once the bank is at
+        # sanctioned or beyond (pf_paid / disbursed). Otherwise the data
+        # is meaningless — there's no sanction to record yet.
+        sanction_fields = (
+            "application_id", "sanction_date", "loan_amount", "roi",
+            "tenure_months", "pf_amount", "first_tranche_amount",
+            "no_of_tranches", "pf_status",
+        )
+        has_sanction_update = any(payload.get(f) is not None for f in sanction_fields)
+        if has_sanction_update:
+            if entry.bank_status not in {"sanctioned", "pf_paid", "disbursed"}:
+                raise BadRequestError(
+                    "Sanction details can only be entered once the bank is "
+                    "in sanctioned status or later. Move bank_status to "
+                    "'sanctioned' first."
+                )
+            if payload.get("pf_status") is not None and payload["pf_status"] not in {"paid", "pending"}:
+                raise BadRequestError("pf_status must be 'paid' or 'pending'.")
+            for f in sanction_fields:
+                if f in payload and payload[f] is not None:
+                    setattr(entry, f, payload[f])
+
         entry.updated_at = now_utc()
         await self.db.flush()
         await self._resync_primary_bank(lead)

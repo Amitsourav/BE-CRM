@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional
-from sqlalchemy import String, Text, DateTime, text, ForeignKey, UniqueConstraint
+from sqlalchemy import String, Text, DateTime, Date, Integer, Numeric, text, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, ENUM
 from app.models.base import Base
@@ -35,6 +36,23 @@ class LeadBank(Base):
         nullable=False, server_default=text("'applied'"),
     )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Sanction details — populated once bank_status reaches 'sanctioned'
+    # or beyond. All nullable; the API gates write access so they can
+    # only be set when the bank is in a sanctioned-or-later state.
+    application_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    sanction_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    loan_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
+    roi: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2), nullable=True)
+    tenure_months: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    pf_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    first_tranche_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
+    no_of_tranches: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    pf_status: Mapped[Optional[str]] = mapped_column(
+        ENUM("paid", "pending", name="pf_status_enum", create_type=False),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
