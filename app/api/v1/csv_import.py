@@ -21,7 +21,11 @@ _upload_cache: dict[str, bytes] = {}
 @router.post("/upload", response_model=CSVImportOut, status_code=201)
 async def upload_csv(
     file: UploadFile = File(...),
-    current_user: Profile = Depends(get_current_user),
+    # CSV bulk-create is Manager+/Admin only. Pre-Counsellors don't
+    # generate leads — they work the queue assigned to them. Hole
+    # closed May 2026 — previously any authenticated user could
+    # bulk-upload, bypassing the source/campaign pipeline.
+    current_user: Profile = Depends(get_current_manager),
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
@@ -35,7 +39,8 @@ async def upload_csv(
 @router.post("/{import_id}/preview", response_model=CSVPreviewOut)
 async def preview_csv(
     import_id: uuid.UUID,
-    current_user: Profile = Depends(get_current_user),
+    # Same gate as /upload — preview is step 2 of the same import flow.
+    current_user: Profile = Depends(get_current_manager),
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
@@ -55,7 +60,8 @@ async def preview_csv(
 async def process_csv(
     import_id: uuid.UUID,
     body: CSVProcessRequest,
-    current_user: Profile = Depends(get_current_user),
+    # Same gate — final step of CSV import.
+    current_user: Profile = Depends(get_current_manager),
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
 ):
