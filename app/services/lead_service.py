@@ -252,6 +252,31 @@ class LeadService:
             lead = await self.get_lead(lead_id, user)
             prev_due_date = lead.due_date  # avoid double-creating the callback task
 
+        # DNP-N change (FMC, May 2026): when the user manually moves a
+        # lead's DNP attempt counter via the Kanban card's "DNP-1..DNP-6"
+        # dropdown, we require a note explaining the change — same UX as
+        # a stage transition. The note lands on the lead's remarks
+        # timeline so it shows up in the activity feed.
+        # Skipped when dnp_count was auto-incremented inside StageMachine
+        # (which re-fetched the lead, so lead.dnp_count == new value
+        # already and this check is a no-op).
+        new_dnp = data.get("dnp_count")
+        if new_dnp is not None and new_dnp != (lead.dnp_count or 0):
+            note = (transition_notes or "").strip()
+            if not note:
+                raise BadRequestError(
+                    f"A note is required when changing DNP attempt count "
+                    f"(DNP-{lead.dnp_count or 0} → DNP-{new_dnp})."
+                )
+            from app.models.lead_remark import LeadRemark
+            self.db.add(LeadRemark(
+                company_id=self.company_id,
+                lead_id=lead.id,
+                author_id=user.id,
+                author_role=user.role,
+                body=f"DNP-{lead.dnp_count or 0} → DNP-{new_dnp}: {note}",
+            ))
+
         # Validate bank_name against the canonical FMC bank list. Same
         # rationale as lost_reason — free text was producing case/spelling
         # variants that broke reporting (sbi / SBI / Unicred / UniCred).
