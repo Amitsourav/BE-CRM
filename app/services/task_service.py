@@ -3,13 +3,13 @@ from __future__ import annotations
 import uuid
 import logging
 from datetime import timedelta
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.task import Task
 from app.models.lead import Lead
 from app.models.profile import Profile
 from app.models.notification import Notification
-from app.core.constants import TaskStatus, UserRole, NotificationType, RESTRICTED_VIEW_ROLES
+from app.core.constants import TaskStatus, TaskType, UserRole, NotificationType, RESTRICTED_VIEW_ROLES
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
 from app.utils.date_helpers import now_utc, start_of_today, end_of_today, add_business_days
 from app.utils.pagination import paginate
@@ -132,6 +132,7 @@ class TaskService:
             setattr(task, key, value)
         await self.db.commit()
         await self.db.refresh(task)
+        await self._sync_lead_due_date_and_invalidate(task.lead_id)
         return task
 
     async def complete_task(self, task_id: uuid.UUID, user: Profile, completion_notes: str | None = None) -> Task:
@@ -141,7 +142,42 @@ class TaskService:
         task.completion_notes = completion_notes
         await self.db.commit()
         await self.db.refresh(task)
+        await self._sync_lead_due_date_and_invalidate(task.lead_id)
         return task
+
+    async def _sync_lead_due_date_and_invalidate(self, lead_id) -> None:
+        """After any task mutation, refresh the lead's due_date to point
+        at the earliest still-active callback task (pending / overdue /
+        in_progress). If no active tasks remain, clear it. Then drop
+        the Kanban cache for this tenant so the tile reflects the new
+        state instead of waiting out the 15s TTL.
+
+        Without this, completing a task or pushing its date forward
+        would leave "Follow up: Today" stuck on the Kanban card.
+        """
+        if not lead_id:
+            return
+        from app.models.lead import Lead
+        from app.services.lead_service import invalidate_kanban_cache_for_company
+
+        next_due = (await self.db.execute(
+            select(func.min(Task.due_date)).where(
+                Task.lead_id == lead_id,
+                Task.company_id == self.company_id,
+                Task.task_type == TaskType.CALL.value,
+                Task.status.in_([
+                    TaskStatus.PENDING.value,
+                    TaskStatus.OVERDUE.value,
+                    TaskStatus.IN_PROGRESS.value,
+                ]),
+            )
+        )).scalar()
+
+        await self.db.execute(
+            update(Lead).where(Lead.id == lead_id).values(due_date=next_due)
+        )
+        await self.db.commit()
+        invalidate_kanban_cache_for_company(self.company_id)
 
     async def list_tasks(
         self,

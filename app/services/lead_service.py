@@ -38,6 +38,19 @@ def _kanban_cache_set(key: tuple, payload: dict) -> None:
         # Drop the oldest 32 entries
         for k in list(_kanban_cache.keys())[:32]:
             _kanban_cache.pop(k, None)
+
+
+def invalidate_kanban_cache_for_company(company_id) -> None:
+    """Drop every cached /by-stage payload for a tenant. Call after any
+    write that changes a lead's display state — stage transitions,
+    task completions, due_date changes — so the next Kanban refresh
+    sees fresh data instead of waiting out the 15s TTL.
+
+    company_id is the first element of the cache key (see list_leads_by_stage).
+    """
+    keys = [k for k in _kanban_cache.keys() if k and k[0] == company_id]
+    for k in keys:
+        _kanban_cache.pop(k, None)
 from sqlalchemy.orm import selectinload
 from app.models.lead import Lead
 from app.models.lead_source import LeadSource
