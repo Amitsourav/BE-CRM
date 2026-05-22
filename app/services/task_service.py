@@ -97,6 +97,20 @@ class TaskService:
         if not task:
             raise NotFoundError("Task not found")
         if user.role in RESTRICTED_VIEW_ROLES and task.assigned_to != user.id:
+            # Fallback: allow if the user owns the underlying LEAD as
+            # Counsellor (assigned_agent_id) or Pre-Counsellor
+            # (pre_counsellor_id). Without this, CSV-imported leads
+            # whose callback task got auto-assigned to the admin
+            # uploader were untouchable by the pre-counsellor who
+            # actually owns the lead.
+            from app.models.lead import Lead
+            if task.lead_id:
+                lead = (await self.db.execute(
+                    select(Lead.assigned_agent_id, Lead.pre_counsellor_id)
+                    .where(Lead.id == task.lead_id)
+                )).first()
+                if lead and (lead.assigned_agent_id == user.id or lead.pre_counsellor_id == user.id):
+                    return task
             raise ForbiddenError("Not authorized")
         return task
 

@@ -99,7 +99,13 @@ class LeadService:
         if existing.scalar_one_or_none():
             return False
 
-        assignee = lead.assigned_agent_id or actor_id
+        # Prefer the actual lead owner over the actor: Counsellor first
+        # (assigned_agent_id), then Pre-Counsellor (pre_counsellor_id),
+        # then fall back to whoever triggered this create. Previously
+        # admin-uploaded CSVs with no assigned_agent_id pinned every
+        # callback task to the admin — the pre_counsellor who owned
+        # the lead couldn't act on it.
+        assignee = lead.assigned_agent_id or getattr(lead, "pre_counsellor_id", None) or actor_id
         title = f"Callback: {lead.full_name}"
         self.db.add(Task(
             company_id=self.company_id,
