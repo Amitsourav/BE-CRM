@@ -70,6 +70,31 @@ async def auto_complete_stale_call_tasks(
             "STAGE_TRANSITION_AUTO_COMPLETED_TASKS lead=%s count=%d new_stage=%s",
             lead_id, closed, new_stage,
         )
+        # Recompute lead.due_date from earliest remaining active call
+        # task. Without this, a stage transition that bulk-closes the
+        # just-created callback (e.g. user moved to DNP with today's
+        # date — task auto-closes immediately) leaves lead.due_date
+        # stuck on the old value, so the Kanban tile keeps showing
+        # "Follow up: Today" even though there are 0 active tasks.
+        from sqlalchemy import func as sa_func
+        from app.models.lead import Lead
+        from app.services.lead_service import invalidate_kanban_cache_for_company
+        next_due = (await db.execute(
+            select(sa_func.min(Task.due_date)).where(
+                Task.lead_id == lead_id,
+                Task.company_id == company_id,
+                Task.task_type == TaskType.CALL.value,
+                Task.status.in_([
+                    TaskStatus.PENDING.value,
+                    TaskStatus.OVERDUE.value,
+                    TaskStatus.IN_PROGRESS.value,
+                ]),
+            )
+        )).scalar()
+        await db.execute(
+            update(Lead).where(Lead.id == lead_id).values(due_date=next_due)
+        )
+        invalidate_kanban_cache_for_company(company_id)
     return closed
 
 
