@@ -96,6 +96,11 @@ async def list_leads_by_stage(
     dnp_min: int | None = Query(None, ge=0),
     dnp_max: int | None = Query(None, ge=0),
     important_only: bool = Query(False, description="Only starred leads"),
+    lead_segment: str | None = Query(
+        None,
+        regex="^(campaign|unassigned|counsellor|pre_counsellor)$",
+        description="Admin-only slice: campaign | unassigned | counsellor | pre_counsellor. FE should hide this dropdown for non-admin roles since restricted-view roles already only see their own leads.",
+    ),
     sort_by: str = Query(
         "created_desc",
         regex="^(created_desc|loan_asc|loan_desc)$",
@@ -118,6 +123,7 @@ async def list_leads_by_stage(
         due_from=due_from, due_to=due_to,
         dnp_min=dnp_min, dnp_max=dnp_max,
         important_only=important_only,
+        lead_segment=lead_segment,
         sort_by=sort_by,
     )
     return {

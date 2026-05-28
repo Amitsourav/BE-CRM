@@ -437,6 +437,7 @@ class LeadService:
         dnp_min: int | None = None,
         dnp_max: int | None = None,
         important_only: bool = False,
+        lead_segment: str | None = None,
     ):
         """Apply Kanban filter set to a query. The visibility gate
         (assigned_agent_id / pre_counsellor_id ANDed in the caller) is
@@ -489,6 +490,27 @@ class LeadService:
             query = query.where(Lead.dnp_count <= dnp_max)
         if important_only:
             query = query.where(Lead.is_important == True)  # noqa: E712
+        # Admin-facing "segment" filter: slices the pipeline by who owns
+        # the leads. FE shows this dropdown only to admin since restricted
+        # roles can already only see their own leads.
+        if lead_segment == "unassigned":
+            query = query.where(
+                Lead.assigned_agent_id.is_(None),
+                Lead.pre_counsellor_id.is_(None),
+            )
+        elif lead_segment == "counsellor":
+            # Lead has been routed to a Counsellor (assigned_agent_id set).
+            query = query.where(Lead.assigned_agent_id.isnot(None))
+        elif lead_segment == "pre_counsellor":
+            # Lead has been picked up by a Pre-Counsellor.
+            query = query.where(Lead.pre_counsellor_id.isnot(None))
+        elif lead_segment == "campaign":
+            # Lead has at least one campaign_leads row — i.e. it's
+            # currently in or has been part of an AI / drip campaign.
+            query = query.where(Lead.id.in_(
+                select(CampaignLead.lead_id)
+                .where(CampaignLead.company_id == self.company_id)
+            ))
         return query
 
     async def list_leads_by_stage(
@@ -517,6 +539,10 @@ class LeadService:
         dnp_min: int | None = None,
         dnp_max: int | None = None,
         important_only: bool = False,
+        # Admin-only segment slice: campaign | unassigned | counsellor | pre_counsellor.
+        # FE only shows this dropdown to admin users; non-admins can't
+        # see other people's leads anyway via the visibility gate.
+        lead_segment: str | None = None,
         # Sort: created_desc (default), loan_asc (Low→High), loan_desc (High→Low).
         # Affects only the per-column row order; counts are unchanged.
         sort_by: str = "created_desc",
@@ -544,6 +570,7 @@ class LeadService:
             tuple(tags) if tags else None,
             created_from, created_to, due_from, due_to,
             dnp_min, dnp_max, important_only,
+            lead_segment,
             sort_by,
         )
         cached = _kanban_cache_get(cache_key)
@@ -600,6 +627,7 @@ class LeadService:
             due_from=due_from, due_to=due_to,
             dnp_min=dnp_min, dnp_max=dnp_max,
             important_only=important_only,
+            lead_segment=lead_segment,
         )
 
         sub = base.subquery()
@@ -648,6 +676,7 @@ class LeadService:
             due_from=due_from, due_to=due_to,
             dnp_min=dnp_min, dnp_max=dnp_max,
             important_only=important_only,
+            lead_segment=lead_segment,
         )
         count_query = count_query.group_by(Lead.current_stage)
         count_rows = (await self.db.execute(count_query)).all()
