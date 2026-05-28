@@ -494,9 +494,17 @@ class LeadService:
         # the leads. FE shows this dropdown only to admin since restricted
         # roles can already only see their own leads.
         if lead_segment == "unassigned":
+            # "Truly unassigned" — no human owner AND not in any AI
+            # campaign. Leads in a campaign are effectively assigned to
+            # the AI agent, so they don't belong in the admin's
+            # "needs distribution" pile.
             query = query.where(
                 Lead.assigned_agent_id.is_(None),
                 Lead.pre_counsellor_id.is_(None),
+                ~Lead.id.in_(
+                    select(CampaignLead.lead_id)
+                    .where(CampaignLead.company_id == self.company_id)
+                ),
             )
         elif lead_segment == "counsellor":
             # Lead has been routed to a Counsellor (assigned_agent_id set).
