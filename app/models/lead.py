@@ -17,6 +17,14 @@ class Lead(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     company_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
 
+    # Per-company serial. Resets to 1 per tenant — each company sees
+    # leads as #1, #2, #3, ... in created-at order. Used by the
+    # admin "Distribute by range" flow and shown on every Kanban card.
+    # Auto-assigned in LeadService.create_lead via the company_lead_counters
+    # table; nullable for backwards compatibility with rows created
+    # before the migration ran (none on FMC/AV — backfill assigned to all).
+    serial_no: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # Identity
     full_name: Mapped[str] = mapped_column(String, nullable=False)
     email: Mapped[Optional[str]] = mapped_column(String, nullable=True)

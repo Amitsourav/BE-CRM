@@ -133,6 +133,32 @@ class LeadService:
         ))
         return True
 
+    async def _reserve_serial_numbers(self, count: int = 1) -> int:
+        """Atomically reserve `count` consecutive serial numbers for this
+        tenant. Returns the FIRST serial in the reserved range — caller
+        uses [start, start+count) for the leads it's about to insert.
+
+        Backed by company_lead_counters with row-level locking via the
+        UPDATE … RETURNING pattern — concurrent inserts can't collide.
+        Auto-creates the counter row for tenants that don't have one yet
+        (e.g. a brand-new tenant created post-migration).
+        """
+        from sqlalchemy import text as sa_text
+        result = (await self.db.execute(
+            sa_text(
+                """
+                INSERT INTO company_lead_counters (company_id, next_serial)
+                VALUES (:cid, :inc + 1)
+                ON CONFLICT (company_id) DO UPDATE
+                  SET next_serial = company_lead_counters.next_serial + :inc,
+                      updated_at = now()
+                RETURNING next_serial - :inc AS start_serial
+                """
+            ),
+            {"cid": self.company_id, "inc": count},
+        )).first()
+        return int(result.start_serial)
+
     async def create_lead(self, data: dict, created_by: uuid.UUID, creator_role: str | None = None) -> Lead:
         data["company_id"] = self.company_id
 
@@ -199,6 +225,13 @@ class LeadService:
         if data.get("loan_amount") is not None:
             from app.utils.loan_parser import parse_loan_amount
             data["loan_amount_lakh"] = parse_loan_amount(data["loan_amount"])
+
+        # Reserve a per-tenant serial number so the lead shows up as
+        # #N on the Kanban card and lead detail page. Won't overwrite
+        # serial_no if the caller already set one (e.g. a future
+        # admin restore flow).
+        if "serial_no" not in data or data.get("serial_no") is None:
+            data["serial_no"] = await self._reserve_serial_numbers(1)
 
         lead = Lead(**data, created_by=created_by)
         self.db.add(lead)

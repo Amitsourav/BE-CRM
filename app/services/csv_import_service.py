@@ -287,6 +287,29 @@ class CSVImportService:
                 errors.append({"row": row_idx, "error": str(e)})
                 failures += 1
 
+        # Reserve a contiguous block of per-company serial numbers for
+        # the whole import in ONE atomic UPDATE on company_lead_counters,
+        # then distribute them across the rows before bulk insert. Way
+        # cheaper than per-row reservation for 1000-row uploads.
+        if lead_dicts:
+            from sqlalchemy import text as sa_text
+            row = (await self.db.execute(
+                sa_text(
+                    """
+                    INSERT INTO company_lead_counters (company_id, next_serial)
+                    VALUES (:cid, :inc + 1)
+                    ON CONFLICT (company_id) DO UPDATE
+                      SET next_serial = company_lead_counters.next_serial + :inc,
+                          updated_at = now()
+                    RETURNING next_serial - :inc AS start_serial
+                    """
+                ),
+                {"cid": self.company_id, "inc": len(lead_dicts)},
+            )).first()
+            start_serial = int(row.start_serial)
+            for i, d in enumerate(lead_dicts):
+                d["serial_no"] = start_serial + i
+
         # True bulk insert in batches of 500 (single INSERT with multiple VALUES)
         from sqlalchemy import insert
         BATCH_SIZE = 500

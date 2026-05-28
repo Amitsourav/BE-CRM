@@ -102,6 +102,11 @@ class LeadImportantToggle(BaseModel):
 class LeadOut(BaseModel):
     id: uuid.UUID
     company_id: uuid.UUID
+    # Per-tenant serial. FMC sees #1, #2, #3…; AV starts independently
+    # from #1. Used by the admin Distribute-by-range flow and shown on
+    # every Kanban card / lead detail page so users can refer to a lead
+    # by a short readable number instead of a UUID.
+    serial_no: int | None = None
     full_name: str
     email: str | None = None
     phone: str | None = None
@@ -178,6 +183,9 @@ class LeadCardOut(BaseModel):
     refresh. The card UI only needs identity + routing + due date.
     """
     id: uuid.UUID
+    # Per-tenant serial — shown as "#42" on the Kanban tile so the
+    # team can refer to leads by short readable numbers.
+    serial_no: int | None = None
     full_name: str
     phone: str | None = None
     email: str | None = None
