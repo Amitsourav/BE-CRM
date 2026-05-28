@@ -12,10 +12,25 @@ from app.services.report_service import ReportService
 from app.services.call_service import CallService
 from app.schemas.report import (
     DashboardReport, PipelineReport, AgentPerformance,
-    SourcePerformance, TrendData,
+    SourcePerformance, TrendData, UserPipelineStatsReport,
 )
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
+
+
+@router.get("/user-pipeline-stats", response_model=UserPipelineStatsReport)
+async def user_pipeline_stats(
+    admin: Profile = Depends(get_current_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """One row per user × pipeline stage. Designed for the Reports →
+    "User Performance" table where admins see every counsellor and
+    pre-counsellor's lead distribution at a glance, plus an AI row.
+    """
+    service = ReportService(db, company_id)
+    rows = await service.user_pipeline_stats()
+    return {"rows": rows}
 
 
 @router.get("/dashboard", response_model=DashboardReport)

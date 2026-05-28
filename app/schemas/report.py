@@ -50,3 +50,22 @@ class TrendData(BaseModel):
     won: int = 0
     lost: int = 0
     calls_made: int = 0
+
+
+class UserPipelineStats(BaseModel):
+    """Per-user pipeline breakdown for the User Performance report.
+
+    `user_id` is None on the virtual "AI" row (leads touched by an AI
+    campaign / AI call), so the FE can render it as a special tile.
+    `by_stage` keys are LeadStage values present for this owner; missing
+    stages mean the user has zero leads in that stage.
+    """
+    user_id: uuid.UUID | None = None
+    user_name: str
+    user_role: str  # 'admin' | 'manager' | 'pre_counsellor' | 'ai'
+    total_leads: int = 0
+    by_stage: dict[str, int] = {}
+
+
+class UserPipelineStatsReport(BaseModel):
+    rows: list[UserPipelineStats]

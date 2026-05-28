@@ -800,6 +800,122 @@ class ReportService:
             "percent_of_target": pct_of_target,
         }
 
+    async def user_pipeline_stats(self) -> list[dict]:
+        """One row per user × pipeline stage for the User Performance report.
+
+        Returns a list of rows shaped:
+          {user_id, user_name, user_role, total_leads, by_stage{stage:count}}
+
+        A lead counts toward a user if that user is EITHER the assigned
+        Counsellor (assigned_agent_id) OR the Pre-Counsellor
+        (pre_counsellor_id). A lead with the same user on both sides is
+        counted once. A lead with two different users on each side
+        contributes to BOTH users' rows — intentional, since both users
+        have visibility / responsibility on that lead.
+
+        Plus one virtual "AI Calls" row aggregating leads that were ever
+        in an AI campaign, so admins can see how much pipeline the bot
+        is generating relative to human counsellors.
+        """
+        from app.models.campaign_lead import CampaignLead
+        from sqlalchemy import union_all
+
+        # UNION of (assigned_agent_id, lead_id, stage) and
+        # (pre_counsellor_id, lead_id, stage). count(DISTINCT lead_id)
+        # in the outer aggregate dedups when the same user is on both
+        # sides of the same lead.
+        assigned_q = (
+            select(
+                Lead.assigned_agent_id.label("user_id"),
+                Lead.id.label("lead_id"),
+                Lead.current_stage.label("stage"),
+            )
+            .where(
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                Lead.assigned_agent_id.isnot(None),
+            )
+        )
+        pre_q = (
+            select(
+                Lead.pre_counsellor_id.label("user_id"),
+                Lead.id.label("lead_id"),
+                Lead.current_stage.label("stage"),
+            )
+            .where(
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                Lead.pre_counsellor_id.isnot(None),
+            )
+        )
+        owner_cte = union_all(assigned_q, pre_q).subquery("owners")
+        agg = (
+            select(
+                owner_cte.c.user_id,
+                owner_cte.c.stage,
+                func.count(func.distinct(owner_cte.c.lead_id)).label("n"),
+            )
+            .group_by(owner_cte.c.user_id, owner_cte.c.stage)
+        )
+        rows = (await self.db.execute(agg)).all()
+
+        per_user: dict[uuid.UUID, dict] = {}
+        for user_id, stage, n in rows:
+            entry = per_user.setdefault(user_id, {"total": 0, "by_stage": {}})
+            entry["by_stage"][stage] = entry["by_stage"].get(stage, 0) + int(n)
+            entry["total"] += int(n)
+
+        # Resolve user names + roles in one batch query
+        user_ids = list(per_user.keys())
+        name_map: dict[uuid.UUID, tuple[str, str]] = {}
+        if user_ids:
+            profile_rows = (await self.db.execute(
+                select(Profile.id, Profile.full_name, Profile.role)
+                .where(Profile.id.in_(user_ids))
+            )).all()
+            name_map = {p.id: (p.full_name, p.role) for p in profile_rows}
+
+        result: list[dict] = []
+        for uid, entry in per_user.items():
+            name, role = name_map.get(uid, ("(unknown)", "unknown"))
+            result.append({
+                "user_id": uid,
+                "user_name": name,
+                "user_role": role,
+                "total_leads": entry["total"],
+                "by_stage": entry["by_stage"],
+            })
+        # Sort: pre_counsellor → manager → admin → unknown.
+        # Within each role, highest-total first.
+        role_order = {"pre_counsellor": 0, "manager": 1, "admin": 2, "unknown": 9}
+        result.sort(key=lambda r: (role_order.get(r["user_role"], 9), -r["total_leads"]))
+
+        # Virtual "AI Calls" row: leads ever touched by a campaign,
+        # grouped by current stage. Same shape so the FE renders it
+        # alongside human rows.
+        ai_rows = (await self.db.execute(
+            select(Lead.current_stage, func.count(func.distinct(Lead.id)))
+            .join(CampaignLead, CampaignLead.lead_id == Lead.id)
+            .where(
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                CampaignLead.company_id == self.company_id,
+            )
+            .group_by(Lead.current_stage)
+        )).all()
+        ai_by_stage: dict[str, int] = {s: int(n) for s, n in ai_rows}
+        ai_total = sum(ai_by_stage.values())
+        if ai_total:
+            result.append({
+                "user_id": None,
+                "user_name": "AI Calls",
+                "user_role": "ai",
+                "total_leads": ai_total,
+                "by_stage": ai_by_stage,
+            })
+
+        return result
+
     async def daily_activity_range(
         self, *, requesting_user: Profile, target_user_id: uuid.UUID | None = None,
         days: int = 30,
