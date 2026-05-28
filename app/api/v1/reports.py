@@ -29,8 +29,7 @@ async def user_pipeline_stats(
     pre-counsellor's lead distribution at a glance, plus an AI row.
     """
     service = ReportService(db, company_id)
-    rows = await service.user_pipeline_stats()
-    return {"rows": rows}
+    return await service.user_pipeline_stats()
 
 
 @router.get("/dashboard", response_model=DashboardReport)

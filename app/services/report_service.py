@@ -800,7 +800,7 @@ class ReportService:
             "percent_of_target": pct_of_target,
         }
 
-    async def user_pipeline_stats(self) -> list[dict]:
+    async def user_pipeline_stats(self) -> dict:
         """One row per user × pipeline stage for the User Performance report.
 
         Returns a list of rows shaped:
@@ -914,7 +914,28 @@ class ReportService:
                 "by_stage": ai_by_stage,
             })
 
-        return result
+        # Company-wide aggregate. Distinct count over the full leads
+        # table so leads owned by both a Counsellor and Pre-Counsellor
+        # don't double-count (which would happen if we just summed the
+        # per-user rows above).
+        company_rows = (await self.db.execute(
+            select(Lead.current_stage, func.count())
+            .where(
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
+            .group_by(Lead.current_stage)
+        )).all()
+        company_by_stage: dict[str, int] = {s: int(n) for s, n in company_rows}
+        company_total_leads = sum(company_by_stage.values())
+
+        return {
+            "rows": result,
+            "company_totals": {
+                "total_leads": company_total_leads,
+                "by_stage": company_by_stage,
+            },
+        }
 
     async def daily_activity_range(
         self, *, requesting_user: Profile, target_user_id: uuid.UUID | None = None,

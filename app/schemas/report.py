@@ -67,5 +67,16 @@ class UserPipelineStats(BaseModel):
     by_stage: dict[str, int] = {}
 
 
+class CompanyPipelineTotals(BaseModel):
+    """Company-wide aggregate, included alongside the per-user rows so
+    the FE can render an accurate "Total in CRM" stat without summing
+    rows (which double-counts leads owned by both a Counsellor and a
+    Pre-Counsellor).
+    """
+    total_leads: int = 0
+    by_stage: dict[str, int] = {}
+
+
 class UserPipelineStatsReport(BaseModel):
     rows: list[UserPipelineStats]
+    company_totals: CompanyPipelineTotals
