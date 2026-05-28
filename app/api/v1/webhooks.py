@@ -1,9 +1,13 @@
+from __future__ import annotations
+
 import logging
 import uuid
-from fastapi import APIRouter, Request, Query, BackgroundTasks
+from fastapi import APIRouter, Request, Query, BackgroundTasks, Header, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.session import AsyncSessionLocal
+from app.db.session import AsyncSessionLocal, get_db
 from app.services.meta_webhook_service import MetaWebhookService
 from app.services.bolna_service import bolna_service
 from app.utils.hmac_verify import verify_meta_signature
@@ -12,6 +16,7 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
+internal_router = APIRouter(prefix="/internal", tags=["Internal"])
 
 
 # ── Meta Lead Ads Webhooks (existing) ─────────────────────────────
@@ -160,3 +165,101 @@ async def _process_bolna_event(
 
         except Exception:
             logger.exception("[WEBHOOK] Error processing Bolna event %s for call %s", event_type, call_id)
+
+
+# ── Internal: cross-backend Meta ingest ───────────────────────────────
+#
+# FMC backend acts as the Meta webhook gateway. When the routing table
+# says a form belongs to AV, FMC POSTs the parsed lead here. Authorized
+# only via the shared INTERNAL_META_SECRET — not exposed to the public
+# beyond the secret check.
+
+class _InternalMetaIngest(BaseModel):
+    full_name: str
+    email: str | None = None
+    phone: str | None = None
+    city: str | None = None
+    state: str | None = None
+    form_id: str
+    leadgen_id: str
+    source_id: str | None = None
+    extra_fields: dict = {}
+
+
+@internal_router.post("/meta/ingest")
+async def internal_meta_ingest(
+    body: _InternalMetaIngest,
+    x_internal_secret: str | None = Header(None, alias="X-Internal-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Receive a Meta lead forwarded from the FMC gateway. Only callable
+    with the shared INTERNAL_META_SECRET header.
+    """
+    settings = get_settings()
+    expected = settings.internal_meta_secret
+    if not expected or x_internal_secret != expected:
+        logger.warning("Internal meta ingest: bad or missing secret")
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Resolve company_id from source_id (the routing row's source lives
+    # on the AV DB, scoped to the AV company). If no source_id provided,
+    # fall back to the first admin's company on this DB.
+    from app.models.lead_source import LeadSource
+    from app.models.profile import Profile
+    from app.services.lead_service import LeadService
+    from app.utils.csv_parser import normalize_phone
+    from app.models.lead import Lead
+
+    company_id = None
+    if body.source_id:
+        try:
+            sid = uuid.UUID(body.source_id)
+        except Exception:
+            sid = None
+        if sid:
+            row = (await db.execute(select(LeadSource.company_id).where(LeadSource.id == sid))).first()
+            if row:
+                company_id = row[0]
+    if not company_id:
+        # Last resort: any admin on this tenant
+        admin = (await db.execute(select(Profile).where(Profile.role == "admin").limit(1))).scalar_one_or_none()
+        if not admin:
+            raise HTTPException(status_code=400, detail="No company resolvable")
+        company_id = admin.company_id
+
+    svc = LeadService(db, company_id)
+    phone = normalize_phone(body.phone) if body.phone else None
+    if phone:
+        exists = (await db.execute(
+            select(Lead.id).where(
+                Lead.company_id == company_id,
+                Lead.phone == phone,
+                Lead.is_deleted == False,  # noqa: E712
+            )
+        )).first()
+        if exists:
+            return {"status": "duplicate", "phone": phone}
+
+    admin = (await db.execute(
+        select(Profile).where(Profile.company_id == company_id, Profile.role == "admin").limit(1)
+    )).scalar_one_or_none()
+    creator_id = admin.id if admin else None
+
+    sid = uuid.UUID(body.source_id) if body.source_id else None
+    data = {
+        "full_name": body.full_name,
+        "email": body.email,
+        "phone": phone,
+        "city": body.city,
+        "state": body.state,
+        "lead_source_id": sid,
+        "custom_fields": {
+            "meta_leadgen_id": body.leadgen_id,
+            "meta_form_id": body.form_id,
+            **(body.extra_fields or {}),
+        },
+    }
+    lead = await svc.create_lead(data, creator_id, creator_role=None)
+    logger.info("Internal meta ingest: created lead %s (#%s) on tenant %s from form %s",
+                lead.id, lead.serial_no, company_id, body.form_id)
+    return {"status": "ok", "lead_id": str(lead.id), "serial_no": lead.serial_no}

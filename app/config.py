@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     meta_app_secret: str = ""
     meta_access_token: str = ""
     meta_page_id: str = ""
+    # FMC acts as the Meta webhook gateway (single Meta app → single
+    # webhook URL). Forms registered with target='av' are forwarded to
+    # the AV backend over HTTP using a shared secret. av_backend_url
+    # only needs to be set on FMC; internal_meta_secret must match on
+    # both ends to authorize the internal POST.
+    av_backend_url: str = ""
+    internal_meta_secret: str = ""
 
     # Backend URL (for webhook callbacks)
     backend_url: str = "https://be-crm-production.up.railway.app"

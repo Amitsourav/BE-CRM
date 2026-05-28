@@ -447,6 +447,82 @@ async def list_lead_sources(
     return result.scalars().all()
 
 
+# ── Meta Lead Ads — admin routing table ────────────────────────────────
+
+@router.get("/meta-routing", tags=["Meta Routing"])
+async def list_meta_routing(
+    admin: Profile = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List every meta_form_routing entry. Admin-only.
+
+    Only meaningful on the FMC gateway deployment — AV deployment will
+    return an empty list since it never writes here.
+    """
+    from app.models.meta_form_routing import MetaFormRouting
+    rows = (await db.execute(
+        select(MetaFormRouting).order_by(MetaFormRouting.created_at.desc())
+    )).scalars().all()
+    return [
+        {
+            "form_id": r.form_id,
+            "target": r.target,
+            "source_id": str(r.source_id) if r.source_id else None,
+            "display_name": r.display_name,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@router.post("/meta-routing", status_code=201, tags=["Meta Routing"])
+async def upsert_meta_routing(
+    body: dict,
+    admin: Profile = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add or update a meta_form_routing entry. Body:
+    {"form_id": "...", "target": "fmc"|"av", "source_id": uuid|null, "display_name": "..."}.
+    """
+    from app.models.meta_form_routing import MetaFormRouting
+    from sqlalchemy import insert
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    form_id = (body.get("form_id") or "").strip()
+    target = (body.get("target") or "").strip()
+    display_name = (body.get("display_name") or "").strip()
+    if not form_id or target not in ("fmc", "av") or not display_name:
+        from app.core.exceptions import BadRequestError
+        raise BadRequestError(
+            "form_id, target ('fmc' or 'av'), and display_name are required"
+        )
+    sid_raw = body.get("source_id")
+    sid = uuid.UUID(sid_raw) if sid_raw else None
+
+    stmt = pg_insert(MetaFormRouting).values(
+        form_id=form_id, target=target, source_id=sid, display_name=display_name,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["form_id"],
+        set_={"target": target, "source_id": sid, "display_name": display_name},
+    )
+    await db.execute(stmt)
+    await db.commit()
+    return {"form_id": form_id, "target": target, "source_id": str(sid) if sid else None, "display_name": display_name}
+
+
+@router.delete("/meta-routing/{form_id}", tags=["Meta Routing"])
+async def delete_meta_routing(
+    form_id: str,
+    admin: Profile = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.meta_form_routing import MetaFormRouting
+    from sqlalchemy import delete as sqla_delete
+    await db.execute(sqla_delete(MetaFormRouting).where(MetaFormRouting.form_id == form_id))
+    await db.commit()
+    return {"status": "deleted", "form_id": form_id}
+
+
 @router.post("/sources", response_model=LeadSourceOut, status_code=201, tags=["Lead Sources"])
 async def create_lead_source(
     body: LeadSourceCreate,
