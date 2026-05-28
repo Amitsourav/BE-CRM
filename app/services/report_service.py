@@ -914,6 +914,47 @@ class ReportService:
                 "by_stage": ai_by_stage,
             })
 
+        # Overdue task counts per user × lead-stage. Overdue means:
+        # status is overdue, OR status is pending/in_progress AND
+        # due_date has passed. The check_overdue_tasks() cron flips
+        # pending→overdue but might lag, so we check both shapes here.
+        now = now_utc()
+        overdue_rows = (await self.db.execute(
+            select(
+                Task.assigned_to,
+                Lead.current_stage,
+                func.count().label("n"),
+            )
+            .join(Lead, Lead.id == Task.lead_id)
+            .where(
+                Task.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                Task.assigned_to.isnot(None),
+                Task.task_type == "call",
+                # Open + past-due
+                Task.status.in_([
+                    TaskStatus.OVERDUE.value,
+                    TaskStatus.PENDING.value,
+                    TaskStatus.IN_PROGRESS.value,
+                ]),
+                Task.due_date < now,
+            )
+            .group_by(Task.assigned_to, Lead.current_stage)
+        )).all()
+
+        # Decorate the user rows with overdue totals + per-stage breakdown.
+        overdue_per_user: dict[uuid.UUID, dict] = {}
+        for uid, stage, n in overdue_rows:
+            entry = overdue_per_user.setdefault(uid, {"total": 0, "by_stage": {}})
+            entry["by_stage"][stage] = entry["by_stage"].get(stage, 0) + int(n)
+            entry["total"] += int(n)
+        for row in result:
+            if row.get("user_id"):
+                od = overdue_per_user.get(row["user_id"])
+                if od:
+                    row["overdue_task_count"] = od["total"]
+                    row["overdue_by_stage"] = od["by_stage"]
+
         # Company-wide aggregate. Distinct count over the full leads
         # table so leads owned by both a Counsellor and Pre-Counsellor
         # don't double-count (which would happen if we just summed the

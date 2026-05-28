@@ -59,12 +59,18 @@ class UserPipelineStats(BaseModel):
     campaign / AI call), so the FE can render it as a special tile.
     `by_stage` keys are LeadStage values present for this owner; missing
     stages mean the user has zero leads in that stage.
+
+    Overdue task fields surface workload pressure: how many call tasks
+    are past their due_date and still open, and which stages the
+    underlying leads are sitting in.
     """
     user_id: uuid.UUID | None = None
     user_name: str
     user_role: str  # 'admin' | 'manager' | 'pre_counsellor' | 'ai'
     total_leads: int = 0
     by_stage: dict[str, int] = {}
+    overdue_task_count: int = 0
+    overdue_by_stage: dict[str, int] = {}
 
 
 class CompanyPipelineTotals(BaseModel):
