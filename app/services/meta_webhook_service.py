@@ -22,82 +22,122 @@ class MetaWebhookService:
         self.settings = get_settings()
 
     async def process_webhook(self, data: dict) -> None:
-        """Process incoming Meta Lead Ads webhook payload."""
-        entries = data.get("entry", [])
-        for entry in entries:
-            changes = entry.get("changes", [])
-            for change in changes:
-                if change.get("field") == "leadgen":
-                    value = change.get("value", {})
-                    leadgen_id = value.get("leadgen_id")
-                    form_id = value.get("form_id")
-                    if leadgen_id:
-                        await self._process_lead(leadgen_id, form_id)
+        """Walk a raw Meta webhook payload and process every leadgen change.
 
-    async def _process_lead(self, leadgen_id: str, form_id: str | None) -> None:
-        """Fetch lead data from Graph API, look up the form_id in
-        meta_form_routing, and either:
-          • create the lead locally (target='fmc'), OR
-          • forward to the AV backend's internal ingest endpoint (target='av')
-          • drop (no mapping → unknown form, possibly spam)
+        Used by tests / direct calls. In production, the HTTP handler
+        instead enqueues every change into meta_webhook_events and the
+        background worker calls `process_leadgen_event` per row.
         """
-        try:
-            lead_data = await self._fetch_lead_from_graph(leadgen_id)
-            if not lead_data:
-                logger.error("Meta: failed to fetch lead data for %s", leadgen_id)
-                return
-
-            # Parse Graph API field_data into a flat dict
-            fields = {}
-            for f in lead_data.get("field_data", []):
-                name = f.get("name", "").lower()
-                values = f.get("values", [])
-                if values:
-                    fields[name] = values[0]
-
-            full_name = fields.get("full_name") or fields.get("name", "Unknown")
-            email = fields.get("email")
-            phone = fields.get("phone_number") or fields.get("phone")
-
-            # Look up the form's routing. Missing form_id → can't route → drop.
-            if not form_id:
-                logger.warning("Meta: webhook with no form_id, leadgen=%s — dropping", leadgen_id)
-                return
-            from app.models.meta_form_routing import MetaFormRouting
-            routing = (await self.db.execute(
-                select(MetaFormRouting).where(MetaFormRouting.form_id == str(form_id))
-            )).scalar_one_or_none()
-            if not routing:
-                logger.warning(
-                    "Meta: unmapped form_id=%s (leadgen=%s, phone=%s) — add a row in meta_form_routing to ingest",
-                    form_id, leadgen_id, phone,
+        for entry in data.get("entry", []) or []:
+            page_id = entry.get("id")
+            for change in entry.get("changes", []) or []:
+                if change.get("field") != "leadgen":
+                    continue
+                value = change.get("value") or {}
+                leadgen_id = value.get("leadgen_id")
+                if not leadgen_id:
+                    continue
+                await self.process_leadgen_event(
+                    leadgen_id=leadgen_id,
+                    form_id=value.get("form_id"),
+                    page_id=value.get("page_id") or page_id,
+                    raw_change=change,
                 )
-                return
 
-            payload = {
-                "full_name": full_name,
-                "email": email,
-                "phone": phone,
-                "city": fields.get("city"),
-                "state": fields.get("state"),
-                "form_id": str(form_id),
-                "leadgen_id": str(leadgen_id),
-                "source_id": str(routing.source_id) if routing.source_id else None,
-                "extra_fields": {k: v for k, v in fields.items() if k not in {"full_name", "name", "email", "phone_number", "phone", "city", "state"}},
-            }
+    async def process_leadgen_event(
+        self, *, leadgen_id: str, form_id: str | None,
+        page_id: str | None, raw_change: dict | None,
+    ) -> None:
+        """Per-event entrypoint called by the retry worker. Raises on
+        failure so the worker can mark the row pending+backoff.
+        """
+        await self._process_lead(leadgen_id, form_id, page_id=page_id, raw_change=raw_change or {})
 
-            if routing.target == "fmc":
-                # Create locally on this DB.
-                await self._ingest_lead_local(payload, routing)
-            elif routing.target == "av":
-                # Forward to AV backend's internal endpoint.
-                await self._forward_to_av(payload)
-            else:
-                logger.error("Meta: unknown target %r for form_id=%s", routing.target, form_id)
+    async def _process_lead(
+        self, leadgen_id: str, form_id: str | None,
+        *, page_id: str | None = None, raw_change: dict | None = None,
+    ) -> None:
+        """Fetch lead data from Graph API, look up the form_id in
+        meta_form_routing, and route:
+          • target='fmc' → create lead locally (this DB)
+          • target='av'  → POST to AV's /api/v1/internal/meta/ingest
+          • no routing row → log + drop
 
-        except Exception:
-            logger.exception("Meta: error processing leadgen=%s form_id=%s", leadgen_id, form_id)
-            await self.db.rollback()
+        Raises on failure so the retry worker can mark the event
+        pending + bump backoff.
+        """
+        lead_data = await self._fetch_lead_from_graph(leadgen_id)
+        if not lead_data:
+            raise RuntimeError(f"Graph API returned no lead_data for {leadgen_id}")
+
+        # Parse Graph API field_data into a flat dict
+        fields = {}
+        for f in lead_data.get("field_data", []):
+            name = f.get("name", "").lower()
+            values = f.get("values", [])
+            if values:
+                fields[name] = values[0]
+
+        full_name = fields.get("full_name") or fields.get("name", "Unknown")
+        email = fields.get("email")
+        phone = fields.get("phone_number") or fields.get("phone")
+
+        # Look up routing. Missing form_id → can't route → drop (raised so worker doesn't endlessly retry).
+        if not form_id:
+            logger.warning("Meta: webhook with no form_id, leadgen=%s — dropping", leadgen_id)
+            return
+        from app.models.meta_form_routing import MetaFormRouting
+        routing = (await self.db.execute(
+            select(MetaFormRouting).where(MetaFormRouting.form_id == str(form_id))
+        )).scalar_one_or_none()
+        if not routing:
+            logger.warning(
+                "Meta: unmapped form_id=%s (leadgen=%s, phone=%s) — add a row in meta_form_routing to ingest",
+                form_id, leadgen_id, phone,
+            )
+            return
+
+        # Pull the extra Meta IDs from the raw webhook change (Gap B fix).
+        # These come from the raw payload, NOT Graph API, so we use the
+        # value the webhook sent (not what Graph returned for the leadgen).
+        rc = raw_change or {}
+        rc_value = rc.get("value") or {}
+        meta_ad_id = rc_value.get("ad_id")
+        meta_adgroup_id = rc_value.get("adgroup_id")
+        meta_page_id_raw = rc_value.get("page_id") or page_id
+        meta_created_time = rc_value.get("created_time")
+
+        payload = {
+            "full_name": full_name,
+            "email": email,
+            "phone": phone,
+            "city": fields.get("city"),
+            "state": fields.get("state"),
+            "form_id": str(form_id),
+            "leadgen_id": str(leadgen_id),
+            "source_id": str(routing.source_id) if routing.source_id else None,
+            "extra_fields": {
+                # Meta IDs — full attribution context
+                "meta_page_id": str(meta_page_id_raw) if meta_page_id_raw else None,
+                "meta_ad_id": str(meta_ad_id) if meta_ad_id else None,
+                "meta_adgroup_id": str(meta_adgroup_id) if meta_adgroup_id else None,
+                "meta_created_time": str(meta_created_time) if meta_created_time else None,
+                # Anything the form asked for that we didn't promote to a column
+                **{
+                    k: v for k, v in fields.items()
+                    if k not in {"full_name", "name", "email", "phone_number", "phone", "city", "state"}
+                },
+            },
+        }
+        # Drop None values for cleanliness
+        payload["extra_fields"] = {k: v for k, v in payload["extra_fields"].items() if v is not None}
+
+        if routing.target == "fmc":
+            await self._ingest_lead_local(payload, routing)
+        elif routing.target == "av":
+            await self._forward_to_av(payload)
+        else:
+            raise ValueError(f"unknown routing target {routing.target!r} for form_id={form_id}")
 
     async def _ingest_lead_local(self, payload: dict, routing) -> None:
         """Create the lead on THIS backend's DB. Uses the company_id of
@@ -126,7 +166,23 @@ class MetaWebhookService:
         svc = LeadService(self.db, company_id)
         phone = normalize_phone(payload["phone"]) if payload.get("phone") else None
 
-        # Dedup at the tenant level
+        # Gap D — dedup on meta_leadgen_id FIRST. Catches retries on
+        # forms that didn't collect phone/email, and prevents Meta's
+        # 36-hour retry window from creating duplicates after we've
+        # already ingested the lead.
+        leadgen_dup = (await self.db.execute(
+            select(Lead.id).where(
+                Lead.company_id == company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                Lead.custom_fields["meta_leadgen_id"].astext == str(payload["leadgen_id"]),
+            )
+        )).first()
+        if leadgen_dup:
+            logger.info("Meta: duplicate leadgen_id=%s in tenant %s — skipping",
+                        payload["leadgen_id"], company_id)
+            return
+
+        # Dedup at the tenant level on phone (most ad forms collect it)
         if phone:
             exists = (await self.db.execute(
                 select(Lead.id).where(

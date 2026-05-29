@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, Request, Query, BackgroundTasks, Header, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import AsyncSessionLocal, get_db
 from app.services.meta_webhook_service import MetaWebhookService
@@ -37,29 +37,106 @@ async def verify_meta_webhook(
 
 @router.post("/meta")
 async def receive_meta_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Receive Meta Lead Ads webhook. Responds 200 immediately, processes in background."""
+    """Receive Meta Lead Ads webhook. Persists every entry to the
+    meta_webhook_events queue before returning 200 — durable against
+    AV outages, restart during processing, and Meta's 36h retry window.
+
+    Signature check is mandatory in production. APP_ENV=development
+    accepts unsigned payloads for local testing.
+    """
     settings = get_settings()
     body = await request.body()
 
+    # Signature check — REQUIRED in production. Without this, anyone
+    # who knows the webhook URL can inject leads.
     signature = request.headers.get("X-Hub-Signature-256", "")
     if settings.meta_app_secret:
         if not verify_meta_signature(body, signature, settings.meta_app_secret):
             logger.warning("Invalid Meta webhook signature")
             return PlainTextResponse("Invalid signature", status_code=403)
+    else:
+        # No secret configured. Acceptable only in development; refuse
+        # in production so a misconfigured env var doesn't silently
+        # turn off signature verification.
+        if settings.app_env == "production":
+            logger.error("META_APP_SECRET missing in production — refusing webhook")
+            return PlainTextResponse("Server misconfigured", status_code=503)
+        logger.warning(
+            "META_APP_SECRET not set (env=%s) — accepting unsigned payload",
+            settings.app_env,
+        )
 
-    data = await request.json()
-    background_tasks.add_task(_process_meta_webhook, data)
+    try:
+        data = await request.json()
+    except Exception:
+        logger.warning("Meta webhook: invalid JSON body")
+        return {"status": "ok"}  # always 200 so Meta doesn't retry malformed
+
+    # Persist every leadgen change to the queue. Background worker
+    # processes them. We return 200 fast so Meta is happy + we never
+    # lose a lead even if downstream (AV, Graph API) is down.
+    background_tasks.add_task(_enqueue_meta_events, data)
     return {"status": "ok"}
 
 
-async def _process_meta_webhook(data: dict):
-    """Background task to process Meta webhook."""
+async def _enqueue_meta_events(data: dict):
+    """Walk the webhook payload, extract each leadgen change, and insert
+    a meta_webhook_events row per change. UNIQUE index on leadgen_id
+    handles Meta retries: second insert no-ops via ON CONFLICT.
+    """
+    from app.models.meta_webhook_event import MetaWebhookEvent
+    from app.models.meta_form_routing import MetaFormRouting
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     async with AsyncSessionLocal() as db:
         try:
-            service = MetaWebhookService(db)
-            await service.process_webhook(data)
+            entries = data.get("entry", []) or []
+            for entry in entries:
+                page_id = str(entry.get("id", "")) if entry.get("id") is not None else None
+                for change in entry.get("changes", []) or []:
+                    if change.get("field") != "leadgen":
+                        continue
+                    value = change.get("value") or {}
+                    leadgen_id = value.get("leadgen_id")
+                    form_id = value.get("form_id")
+                    if not leadgen_id:
+                        continue
+
+                    # Pre-resolve routing target so admin can see at a
+                    # glance whether the row will go to FMC/AV/dropped.
+                    target = None
+                    source_id = None
+                    if form_id:
+                        routing = (await db.execute(
+                            sa_select(MetaFormRouting).where(MetaFormRouting.form_id == str(form_id))
+                        )).scalar_one_or_none()
+                        if routing:
+                            target = routing.target
+                            source_id = routing.source_id
+
+                    stmt = pg_insert(MetaWebhookEvent).values(
+                        leadgen_id=str(leadgen_id),
+                        form_id=str(form_id) if form_id else None,
+                        page_id=str(value.get("page_id") or page_id) if value.get("page_id") or page_id else None,
+                        raw_payload={"entry": entry, "change": change},
+                        target=target,
+                        source_id=source_id,
+                        status="pending",
+                    )
+                    # UNIQUE(leadgen_id) WHERE leadgen_id IS NOT NULL —
+                    # Meta retries can't double-enqueue. The partial
+                    # index needs the same predicate in the ON CONFLICT
+                    # clause to match.
+                    stmt = stmt.on_conflict_do_nothing(
+                        index_elements=["leadgen_id"],
+                        index_where=MetaWebhookEvent.leadgen_id.isnot(None),
+                    )
+                    await db.execute(stmt)
+            await db.commit()
+            logger.info("Meta: enqueued events from payload (entries=%d)", len(entries))
         except Exception:
-            logger.exception("Error processing Meta webhook")
+            logger.exception("Meta: failed to enqueue webhook events")
+            await db.rollback()
 
 
 # ── Bolna AI Webhooks ─────────────────────────────────────────────
@@ -229,6 +306,20 @@ async def internal_meta_ingest(
 
     svc = LeadService(db, company_id)
     phone = normalize_phone(body.phone) if body.phone else None
+
+    # Gap D — dedup on leadgen_id FIRST. FMC gateway might call us
+    # twice (worker retry after a transient blip), and Meta itself
+    # retries for 36h. Without this, retries create duplicates.
+    leadgen_dup = (await db.execute(
+        select(Lead.id).where(
+            Lead.company_id == company_id,
+            Lead.is_deleted == False,  # noqa: E712
+            Lead.custom_fields["meta_leadgen_id"].astext == str(body.leadgen_id),
+        )
+    )).first()
+    if leadgen_dup:
+        return {"status": "duplicate", "leadgen_id": body.leadgen_id}
+
     if phone:
         exists = (await db.execute(
             select(Lead.id).where(
