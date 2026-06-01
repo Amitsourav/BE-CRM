@@ -370,7 +370,12 @@ async def upload_leads_csv(
 
     stats = {
         "total_rows": 0, "new_leads_created": 0, "existing_leads_added": 0,
-        "duplicates_skipped": 0, "invalid_rows": 0, "errors": [],
+        "duplicates_skipped": 0, "invalid_rows": 0,
+        # Leads from the CSV that already exist in the CRM (by phone) —
+        # NOT added to the campaign. Counsellor / Pre-Counsellor is
+        # presumably already working them; AI calls would step on their toes.
+        "existing_in_crm_skipped": 0,
+        "errors": [],
     }
 
     # ── STEP 1: Parse all rows into clean records ──
@@ -416,6 +421,11 @@ async def upload_leads_csv(
         return {"success": True, "message": "No valid rows", **stats}
 
     # ── STEP 2: Batch lookup existing leads by phone (1 query) ──
+    # If a phone in the CSV already corresponds to a lead in the CRM,
+    # we SKIP it entirely — don't enroll into the campaign. Reason:
+    # a Counsellor / Pre-Counsellor is presumably working that lead
+    # already, and an AI call would step on their toes (and confuse
+    # the lead with a "second" contact attempt from the same brand).
     all_phones = list({r["phone"] for r in parsed})
     result = await db.execute(
         select(Lead).where(Lead.company_id == company_id, Lead.phone.in_(all_phones), Lead.is_deleted == False)
@@ -423,16 +433,23 @@ async def upload_leads_csv(
     existing_leads = {lead.phone: lead for lead in result.scalars().all()}
 
     # ── STEP 3: Create missing leads in batch ──
+    # Only rows whose phone is NOT already in the CRM get created as
+    # new leads + added to the campaign. Pre-existing phones are
+    # bucketed under existing_in_crm_skipped for the response stats.
     new_leads = []
+    fresh_phones: set[str] = set()
     for r in parsed:
-        if r["phone"] not in existing_leads:
-            lead = Lead(
-                company_id=company_id, full_name=r["name"], phone=r["phone"],
-                email=r["email"], city=r["city"], state=r["state"],
-                notes=r["notes"], current_stage="lead",
-            )
-            db.add(lead)
-            new_leads.append(lead)
+        if r["phone"] in existing_leads:
+            stats["existing_in_crm_skipped"] += 1
+            continue
+        lead = Lead(
+            company_id=company_id, full_name=r["name"], phone=r["phone"],
+            email=r["email"], city=r["city"], state=r["state"],
+            notes=r["notes"], current_stage="lead",
+        )
+        db.add(lead)
+        new_leads.append(lead)
+        fresh_phones.add(r["phone"])
 
     if new_leads:
         await db.flush()  # single flush for all new leads
@@ -440,17 +457,26 @@ async def upload_leads_csv(
             existing_leads[lead.phone] = lead
     stats["new_leads_created"] = len(new_leads)
 
-    # ── STEP 4: Batch lookup existing campaign_leads (1 query) ──
-    all_lead_ids = [existing_leads[r["phone"]].id for r in parsed if r["phone"] in existing_leads]
-    result = await db.execute(
-        select(CampaignLead.lead_id).where(
-            CampaignLead.campaign_id == campaign_id, CampaignLead.lead_id.in_(all_lead_ids),
+    # ── STEP 4: Batch lookup existing campaign_leads (defensive) ──
+    # By construction we should only be enrolling brand-new leads, but
+    # if two CSV uploads run back-to-back on the same campaign we might
+    # still see a campaign_leads row for one of these new IDs. Cheap to
+    # check and prevents UNIQUE constraint violations.
+    all_lead_ids = [existing_leads[p].id for p in fresh_phones]
+    if all_lead_ids:
+        result = await db.execute(
+            select(CampaignLead.lead_id).where(
+                CampaignLead.campaign_id == campaign_id, CampaignLead.lead_id.in_(all_lead_ids),
+            )
         )
-    )
-    already_in_campaign = {row[0] for row in result.all()}
+        already_in_campaign = {row[0] for row in result.all()}
+    else:
+        already_in_campaign = set()
 
-    # ── STEP 5: Create campaign_leads in batch ──
+    # ── STEP 5: Enroll the brand-new leads into the campaign ──
     for r in parsed:
+        if r["phone"] not in fresh_phones:
+            continue  # already counted in existing_in_crm_skipped
         lead = existing_leads.get(r["phone"])
         if not lead:
             continue
@@ -460,20 +486,26 @@ async def upload_leads_csv(
         db.add(CampaignLead(
             campaign_id=campaign_id, lead_id=lead.id, company_id=company_id, status="pending",
         ))
-        already_in_campaign.add(lead.id)  # prevent intra-CSV dupes
-        if lead.phone in {nl.phone for nl in new_leads}:
-            pass  # already counted
-        else:
-            stats["existing_leads_added"] += 1
+        already_in_campaign.add(lead.id)
 
-    total_added = stats["new_leads_created"] + stats["existing_leads_added"]
+    # Only fresh-CRM-leads get added to a campaign now. existing_leads_added
+    # stays 0 (kept in the response for FE back-compat) since we
+    # deliberately skip already-in-CRM phones.
+    total_added = stats["new_leads_created"]
     campaign.total_leads = (campaign.total_leads or 0) + total_added
     await db.commit()
 
     log.info(
-        "CSV_UPLOAD_DONE campaign=%s rows=%d new=%d existing=%d dupes=%d invalid=%d",
+        "CSV_UPLOAD_DONE campaign=%s rows=%d new=%d crm_skipped=%d dupes=%d invalid=%d",
         campaign_id, stats["total_rows"], stats["new_leads_created"],
-        stats["existing_leads_added"], stats["duplicates_skipped"], stats["invalid_rows"],
+        stats["existing_in_crm_skipped"], stats["duplicates_skipped"], stats["invalid_rows"],
     )
 
-    return {"success": True, "message": f"Processed {stats['total_rows']} rows", **stats}
+    return {
+        "success": True,
+        "message": (
+            f"Processed {stats['total_rows']} rows — added {stats['new_leads_created']} new, "
+            f"skipped {stats['existing_in_crm_skipped']} already in CRM"
+        ),
+        **stats,
+    }
