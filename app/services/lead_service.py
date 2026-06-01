@@ -408,6 +408,11 @@ class LeadService:
         tags: list[str] | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
+        # Admin-only segment slice: campaign | unassigned | counsellor | pre_counsellor.
+        # Mirrors the /by-stage filter so the Leads list page can show
+        # the same "needs distribution" view. Restricted-view roles
+        # always see only their own leads regardless of this param.
+        lead_segment: str | None = None,
     ) -> dict:
         query = select(Lead).where(Lead.company_id == self.company_id, Lead.is_deleted == False).order_by(Lead.created_at.desc())
 
@@ -439,6 +444,26 @@ class LeadService:
             query = query.where(func.date(Lead.created_at) >= date_from)
         if date_to:
             query = query.where(func.date(Lead.created_at) <= date_to)
+        # Segment filter — same semantics as /by-stage. "unassigned"
+        # excludes campaign leads (those are owned by the AI agent).
+        if lead_segment == "unassigned":
+            query = query.where(
+                Lead.assigned_agent_id.is_(None),
+                Lead.pre_counsellor_id.is_(None),
+                ~Lead.id.in_(
+                    select(CampaignLead.lead_id)
+                    .where(CampaignLead.company_id == self.company_id)
+                ),
+            )
+        elif lead_segment == "counsellor":
+            query = query.where(Lead.assigned_agent_id.isnot(None))
+        elif lead_segment == "pre_counsellor":
+            query = query.where(Lead.pre_counsellor_id.isnot(None))
+        elif lead_segment == "campaign":
+            query = query.where(Lead.id.in_(
+                select(CampaignLead.lead_id)
+                .where(CampaignLead.company_id == self.company_id)
+            ))
 
         page_data = await paginate(self.db, query, page, page_size)
         # Same enrichment the Kanban /by-stage endpoint applies. Without

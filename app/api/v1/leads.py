@@ -42,6 +42,11 @@ async def list_leads(
     campaign_id: uuid.UUID | None = Query(None),
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
+    lead_segment: str | None = Query(
+        None,
+        regex="^(campaign|unassigned|counsellor|pre_counsellor)$",
+        description="Admin-only slice: campaign | unassigned | counsellor | pre_counsellor.",
+    ),
 ):
     service = LeadService(db, company_id)
     return await service.list_leads(
@@ -49,6 +54,7 @@ async def list_leads(
         stage=stage, agent_id=agent_id, source_id=source_id,
         csv_import_id=csv_import_id, campaign_id=campaign_id,
         date_from=date_from, date_to=date_to,
+        lead_segment=lead_segment,
     )
 
 
