@@ -193,48 +193,67 @@ async def analyze_sentiment(transcript: str) -> tuple[str, float]:
 def _pick_auto_target(
     *, slug: str | None, current: LeadStage, sentiment: str | None,
     score: float, call_attempt_count: int = 0, transcript_present: bool = True,
-) -> LeadStage | None:
-    """Pick the next auto-advance target for the given brand and call outcome.
+) -> tuple[LeadStage | None, str | None]:
+    """Pick the next auto-advance target + optional lost_reason.
 
-    FMC (May 2026 revamp — loan-processing flow):
-      - No transcript / no-connect → DNP. After 12 DNP attempts → LOST.
-      - CREATED + positive ≥ 0.6 → CONTACTED
-      - CONTACTED + positive ≥ 0.75 → QUALIFIED
-      - DNP + positive (lead picks up later) → CONTACTED (re-engaged)
-      - Anything qualified or beyond is human-driven (loan paperwork, not AI).
+    Returns (target_stage, lost_reason). lost_reason is non-None only
+    when target == LOST.
 
-    Admitverse (unchanged from original):
-      CREATED → CONTACTED → (positive ≥ 0.6) CONNECTED → (positive ≥ 0.75) QUALIFIED
+    OPTION A — aggressive close policy (user-chosen, Jun 2026):
+      Any AI call that doesn't return strong-positive sentiment ends
+      the lead with LOST. Earlier DNP-then-retry loop is gone.
+
+    FMC + Admitverse — same logic:
+      • No transcript (voicemail / no answer)     → LOST  "Not responding"
+      • Negative sentiment                         → LOST  "Not Interested"
+      • Neutral or weak-positive (score < 0.6)     → LOST  "Not responding"
+      • Positive ≥ 0.6  at CREATED                 → CONTACTED
+      • Positive ≥ 0.6  at CONTACTED (AV only)     → CONNECTED
+      • Positive ≥ 0.75 at CONTACTED (FMC)         → QUALIFIED
+      • Positive ≥ 0.75 at CONNECTED (AV only)     → QUALIFIED
+
+    Beyond QUALIFIED is human-driven only — AI never auto-promotes
+    leads to opportunity/processing/sanctioned/etc. Already-LOST or
+    already-terminal leads return (None, None).
     """
     is_admitverse = (slug or "").lower() == "admitverse"
 
-    if not is_admitverse:
-        # No-connect / silent-fail call → DNP, with hard cap at 12 attempts.
-        if not transcript_present:
-            if call_attempt_count >= 12:
-                return LeadStage.LOST
-            if current in (LeadStage.CREATED, LeadStage.CONTACTED, LeadStage.DNP):
-                return LeadStage.DNP
-            return None
+    # Don't touch already-terminal leads
+    terminal = (
+        {LeadStage.LOST, LeadStage.ENROLLED} if is_admitverse
+        else {LeadStage.LOST, LeadStage.DISBURSED}
+    )
+    if current in terminal:
+        return None, None
 
-        # Transcript exists — promote based on sentiment.
-        if current == LeadStage.CREATED and sentiment == "positive" and score >= 0.6:
-            return LeadStage.CONTACTED
-        if current == LeadStage.CONTACTED and sentiment == "positive" and score >= 0.75:
-            return LeadStage.QUALIFIED
-        if current == LeadStage.DNP and sentiment == "positive" and score >= 0.6:
-            # Lead finally picked up — pull them out of the DNP loop.
-            return LeadStage.CONTACTED
-        return None
+    # 1. No-connect → LOST as "Not responding"
+    if not transcript_present:
+        return LeadStage.LOST, "Not responding"
 
-    # Admitverse branch (legacy, unchanged)
-    if current == LeadStage.CREATED:
-        return LeadStage.CONTACTED
-    if current == LeadStage.CONTACTED and sentiment == "positive" and score >= 0.6:
-        return LeadStage.CONNECTED
-    if current == LeadStage.CONNECTED and sentiment == "positive" and score >= 0.75:
-        return LeadStage.QUALIFIED
-    return None
+    # 2. Strong-positive path → promote (only stays alive on this path)
+    if sentiment == "positive" and score >= 0.6:
+        if is_admitverse:
+            if current == LeadStage.CREATED:
+                return LeadStage.CONTACTED, None
+            if current == LeadStage.CONTACTED and score >= 0.6:
+                return LeadStage.CONNECTED, None
+            if current == LeadStage.CONNECTED and score >= 0.75:
+                return LeadStage.QUALIFIED, None
+            return None, None
+        # FMC
+        if current == LeadStage.CREATED:
+            return LeadStage.CONTACTED, None
+        if current == LeadStage.CONTACTED and score >= 0.75:
+            return LeadStage.QUALIFIED, None
+        if current == LeadStage.DNP:
+            # Existing DNP lead suddenly picked up + positive → recover them
+            return LeadStage.CONTACTED, None
+        return None, None
+
+    # 3. Everything else (negative / neutral / weak-positive) → LOST
+    if sentiment == "negative":
+        return LeadStage.LOST, "Not Interested"
+    return LeadStage.LOST, "Not responding"
 
 
 async def auto_update_lead_status(
@@ -278,7 +297,7 @@ async def auto_update_lead_status(
     slug = slug_result.scalar_one_or_none()
 
     score = float(sentiment_score or 0.0)
-    target = _pick_auto_target(
+    target, lost_reason = _pick_auto_target(
         slug=slug,
         current=current,
         sentiment=sentiment,
@@ -300,14 +319,24 @@ async def auto_update_lead_status(
     lead.current_stage = target.value
     if target == LeadStage.CONNECTED and not lead.connected_time:
         lead.connected_time = now_utc()
+    if target == LeadStage.LOST:
+        # Match what StageMachine.transition does on LOST — set lost_time
+        # + lost_reason so reports / timeline reflect the outcome.
+        lead.lost_time = now_utc()
+        lead.lost_reason = lost_reason
+        # Clear due_date — terminal stage has no follow-up
+        lead.due_date = None
 
+    notes = f"Auto-transition by post-call pipeline (sentiment={sentiment}, score={score:.2f})"
+    if target == LeadStage.LOST and lost_reason:
+        notes += f" — lost_reason: {lost_reason}"
     db.add(LeadStageLog(
         company_id=company_id,
         lead_id=lead.id,
         from_stage=current.value,
         to_stage=target.value,
         changed_by=changed_by,
-        conversation_notes=f"Auto-transition by post-call pipeline (sentiment={sentiment}, score={score:.2f})",
+        conversation_notes=notes,
     ))
 
     # Stage moved forward → close stale callback tasks for this lead so
