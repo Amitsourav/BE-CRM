@@ -262,7 +262,28 @@ class LeadsByStageOut(BaseModel):
 
 
 class LeadAssign(BaseModel):
+    # Legacy: just Counsellor. Kept for back-compat with FE that still
+    # sends {agent_id: <uuid>}.
     agent_id: uuid.UUID
+
+
+class LeadReassign(BaseModel):
+    """Body for POST /leads/{id}/reassign — sets/clears either or both
+    of Counsellor and Pre-Counsellor on a single lead. Use null to
+    explicitly unassign. Fields omitted from the request stay unchanged.
+
+    Examples:
+      {"assigned_agent_id": "<uuid>"}          → set Counsellor only
+      {"pre_counsellor_id": null}              → clear Pre-Counsellor only
+      {"assigned_agent_id": "<a>", "pre_counsellor_id": "<b>"} → both
+    """
+    assigned_agent_id: uuid.UUID | None = Field(default=None)
+    pre_counsellor_id: uuid.UUID | None = Field(default=None)
+    # Optional remark to log on the lead's timeline. FE can prompt the
+    # admin "why reassign?" and pass it through.
+    reason: str | None = Field(default=None, max_length=500)
+
+    model_config = {"extra": "forbid"}
 
 
 class LeadBulkAssign(BaseModel):

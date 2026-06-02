@@ -18,6 +18,7 @@ from app.schemas.lead import (
     LeadDistributeRangeRequest, LeadDistributeRangeResponse,
     LeadImportantToggle, LeadRemarkCreate, LeadRemarkOut,
     LeadBankCreate, LeadBankUpdate, LeadBankOut,
+    LeadReassign,
 )
 from app.schemas.stage import StageLogOut
 from app.schemas.call import CallAttemptOut
@@ -371,6 +372,40 @@ async def assign_lead(
 ):
     service = LeadService(db, company_id)
     return await service.assign_lead(lead_id, body.agent_id)
+
+
+@router.post("/{lead_id}/reassign", response_model=LeadOut)
+async def reassign_lead(
+    lead_id: uuid.UUID,
+    body: LeadReassign,
+    admin: Profile = Depends(get_current_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reassign Counsellor and/or Pre-Counsellor on a single lead.
+
+    Send either or both of `assigned_agent_id` and `pre_counsellor_id`
+    in the body. Use `null` to explicitly unassign that slot. Omit the
+    field to leave it unchanged. Optional `reason` is logged on the
+    lead's timeline.
+
+    Examples:
+      { "assigned_agent_id": "<uuid>" }                              → set Counsellor
+      { "pre_counsellor_id": null }                                  → clear Pre-Counsellor
+      { "assigned_agent_id": "<a>", "pre_counsellor_id": "<b>" }     → both
+      { "assigned_agent_id": "<a>", "reason": "Hindi-speaking lead" } → with audit reason
+
+    Manager/Admin only. Writes a lead_remarks entry capturing
+    before→after for both fields so admins can audit reassignments.
+    """
+    service = LeadService(db, company_id)
+    updates = body.model_dump(exclude_unset=True, exclude={"reason"})
+    return await service.reassign_lead(
+        lead_id,
+        actor=admin,
+        updates=updates,
+        reason=body.reason,
+    )
 
 
 @router.patch("/{lead_id}/important", response_model=LeadOut)

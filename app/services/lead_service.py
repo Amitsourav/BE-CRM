@@ -1265,6 +1265,106 @@ class LeadService:
         await self.db.refresh(lead)
         return lead
 
+    async def reassign_lead(
+        self,
+        lead_id: uuid.UUID,
+        *,
+        actor: Profile,
+        updates: dict,  # subset of {"assigned_agent_id": uuid|None, "pre_counsellor_id": uuid|None}
+        reason: str | None = None,
+    ) -> Lead:
+        """Reassign Counsellor and/or Pre-Counsellor on a single lead.
+
+        `updates` keys MUST come from a model_dump(exclude_unset=True)
+        on LeadReassign — so a missing key means "don't touch this
+        field" and an explicit None means "clear this field".
+
+        Validates each new user belongs to this tenant and is active.
+        Logs a lead_remarks entry capturing the before/after for audit.
+        """
+        from app.models.lead_remark import LeadRemark
+
+        lead = (await self.db.execute(
+            select(Lead).where(
+                Lead.id == lead_id,
+                Lead.company_id == self.company_id,
+                Lead.is_deleted == False,  # noqa: E712
+            )
+        )).scalar_one_or_none()
+        if not lead:
+            raise NotFoundError("Lead not found")
+
+        # Validate any provided user IDs belong to this tenant
+        user_ids_to_check = {v for v in updates.values() if v is not None}
+        if user_ids_to_check:
+            rows = (await self.db.execute(
+                select(Profile.id, Profile.full_name, Profile.role).where(
+                    Profile.id.in_(user_ids_to_check),
+                    Profile.company_id == self.company_id,
+                    Profile.is_active == True,  # noqa: E712
+                )
+            )).all()
+            found = {r.id for r in rows}
+            missing = user_ids_to_check - found
+            if missing:
+                raise BadRequestError(
+                    f"User(s) not found or inactive in this tenant: {sorted(str(x) for x in missing)}"
+                )
+            name_map = {r.id: r.full_name for r in rows}
+        else:
+            name_map = {}
+
+        before_agent = lead.assigned_agent_id
+        before_pre = lead.pre_counsellor_id
+
+        # Apply only the keys the caller explicitly sent (exclude_unset)
+        if "assigned_agent_id" in updates:
+            lead.assigned_agent_id = updates["assigned_agent_id"]
+        if "pre_counsellor_id" in updates:
+            lead.pre_counsellor_id = updates["pre_counsellor_id"]
+
+        # Build a human-readable audit line for the remarks timeline
+        changes = []
+        if "assigned_agent_id" in updates and before_agent != lead.assigned_agent_id:
+            old = name_map.get(before_agent, "—") if before_agent else "—"
+            # before_agent might not be in name_map (it's not in the new-IDs lookup); fall back to a DB lookup
+            if before_agent and before_agent not in name_map:
+                row = (await self.db.execute(
+                    select(Profile.full_name).where(Profile.id == before_agent)
+                )).first()
+                old = row[0] if row else "—"
+            new = name_map.get(lead.assigned_agent_id, "—") if lead.assigned_agent_id else "—"
+            changes.append(f"Counsellor: {old} → {new}")
+        if "pre_counsellor_id" in updates and before_pre != lead.pre_counsellor_id:
+            old = "—"
+            if before_pre:
+                row = (await self.db.execute(
+                    select(Profile.full_name).where(Profile.id == before_pre)
+                )).first()
+                old = row[0] if row else "—"
+            new = name_map.get(lead.pre_counsellor_id, "—") if lead.pre_counsellor_id else "—"
+            changes.append(f"Pre-Counsellor: {old} → {new}")
+
+        if not changes:
+            # No actual change requested — short-circuit so we don't
+            # pollute the timeline with no-op remarks.
+            return lead
+
+        body = "Reassigned — " + "; ".join(changes)
+        if reason:
+            body += f". Reason: {reason}"
+        self.db.add(LeadRemark(
+            company_id=self.company_id,
+            lead_id=lead.id,
+            author_id=actor.id,
+            author_role=actor.role,
+            body=body,
+        ))
+
+        await self.db.commit()
+        await self.db.refresh(lead)
+        return lead
+
     async def set_important(self, lead_id: uuid.UUID, value: bool, user: Profile) -> Lead:
         """Toggle the is_important flag on a lead.
 
