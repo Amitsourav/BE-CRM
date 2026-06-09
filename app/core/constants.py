@@ -345,3 +345,60 @@ FMC_DOC_CHECKLIST: list[dict[str, str]] = [
 ]
 
 FMC_DOC_KEYS: frozenset[str] = frozenset(d["key"] for d in FMC_DOC_CHECKLIST)
+
+
+# ── Indian GST state codes ─────────────────────────────────────────────
+# 2-digit state codes as defined by GSTIN format (first 2 digits of every
+# GSTIN). Used by the invoice module to:
+#   - validate state field on invoice_settings
+#   - decide CGST+SGST (intra-state) vs IGST (inter-state) on each invoice
+#   - render Place of Supply on the printed PDF
+# Source: India GST Council list. Includes all 28 states + 8 UTs + special
+# cases ("97" Other Territory, "99" Centre Jurisdiction).
+INDIAN_STATE_CODES: dict[str, str] = {
+    "Jammu and Kashmir": "01",
+    "Himachal Pradesh": "02",
+    "Punjab": "03",
+    "Chandigarh": "04",
+    "Uttarakhand": "05",
+    "Haryana": "06",
+    "Delhi": "07",
+    "Rajasthan": "08",
+    "Uttar Pradesh": "09",
+    "Bihar": "10",
+    "Sikkim": "11",
+    "Arunachal Pradesh": "12",
+    "Nagaland": "13",
+    "Manipur": "14",
+    "Mizoram": "15",
+    "Tripura": "16",
+    "Meghalaya": "17",
+    "Assam": "18",
+    "West Bengal": "19",
+    "Jharkhand": "20",
+    "Odisha": "21",
+    "Chhattisgarh": "22",
+    "Madhya Pradesh": "23",
+    "Gujarat": "24",
+    "Daman and Diu": "25",
+    "Dadra and Nagar Haveli and Daman and Diu": "26",
+    "Maharashtra": "27",
+    "Andhra Pradesh (Old)": "28",
+    "Karnataka": "29",
+    "Goa": "30",
+    "Lakshadweep": "31",
+    "Kerala": "32",
+    "Tamil Nadu": "33",
+    "Puducherry": "34",
+    "Andaman and Nicobar Islands": "35",
+    "Telangana": "36",
+    "Andhra Pradesh": "37",
+    "Ladakh": "38",
+    "Other Territory": "97",
+    "Centre Jurisdiction": "99",
+}
+
+# Reverse lookup: code → name (most-common entry wins where duplicates exist).
+INDIAN_STATE_NAMES: dict[str, str] = {
+    code: name for name, code in INDIAN_STATE_CODES.items()
+}

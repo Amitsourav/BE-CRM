@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = ""
     supabase_jwt_secret: str = ""
     supabase_db_url: str = ""
+    # Private bucket for invoice PDFs and brand assets (logos / signatures).
+    # Create it manually in the Supabase dashboard (Storage → New bucket,
+    # Public=false). Path conventions:
+    #   invoices/{company_id}/{fy}/{invoice_number_safe}.pdf
+    #   assets/{company_id}/logo.<ext>
+    #   assets/{company_id}/signature.<ext>
+    supabase_storage_bucket: str = "invoices"
 
     # Meta Lead Ads
     meta_verify_token: str = ""

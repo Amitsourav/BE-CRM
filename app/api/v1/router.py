@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     auth, users, leads, lead_stages, call_attempts,
     tasks, notifications, csv_import, webhooks, reports,
-    companies, agents, voice, activity_logs, campaigns,
+    companies, agents, voice, activity_logs, campaigns, invoices,
 )
 
 api_router = APIRouter(prefix="/api/v1")
@@ -23,3 +23,4 @@ api_router.include_router(agents.router, prefix="/agents", tags=["AI Agents"])
 api_router.include_router(voice.router, prefix="/voice", tags=["Voice"])
 api_router.include_router(activity_logs.router)
 api_router.include_router(campaigns.router)
+api_router.include_router(invoices.router)

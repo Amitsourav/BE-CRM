@@ -14,6 +14,9 @@ from app.models.activity_log import ActivityLog
 from app.models.ai_agent import AIAgent
 from app.models.campaign import Campaign
 from app.models.campaign_lead import CampaignLead
+from app.models.invoice_settings import InvoiceSettings
+from app.models.invoice_counter import InvoiceCounter
+from app.models.invoice import Invoice
 
 __all__ = [
     "Base",
@@ -32,4 +35,7 @@ __all__ = [
     "AIAgent",
     "Campaign",
     "CampaignLead",
+    "InvoiceSettings",
+    "InvoiceCounter",
+    "Invoice",
 ]
