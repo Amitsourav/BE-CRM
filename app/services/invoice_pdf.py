@@ -42,9 +42,15 @@ _S_FOOTER = _style("footer", fontName="Helvetica-Oblique", fontSize=7, textColor
 
 
 def _fmt_money(d: Decimal) -> str:
-    """Indian number formatting with ₹ prefix: ₹ 1,23,456.78"""
-    s = f"{d:,.2f}"  # US-style 1,234.56
-    # Convert to Indian groupings: 1,23,456.78
+    """Indian number formatting with Rs. prefix: Rs. 1,23,456.78
+
+    ReportLab's built-in fonts (Helvetica/Times/Courier) don't include
+    the ₹ glyph (U+20B9), so it renders as a black square. Using "Rs."
+    is universal and unambiguous in Indian invoice context — the
+    "Amount in words" already says "Rupees ... Only" so the unit is
+    crystal clear. Avoids the ~2MB font-file bundle for one character.
+    """
+    s = f"{d:,.2f}"
     if "." in s:
         int_part, dec_part = s.split(".")
     else:
@@ -57,7 +63,6 @@ def _fmt_money(d: Decimal) -> str:
     if len(int_part) > 3:
         last3 = int_part[-3:]
         rest = int_part[:-3]
-        # group the rest in 2s from the right
         groups = []
         while len(rest) > 2:
             groups.insert(0, rest[-2:])
@@ -65,13 +70,24 @@ def _fmt_money(d: Decimal) -> str:
         if rest:
             groups.insert(0, rest)
         int_part = ",".join(groups) + "," + last3
-    return f"{sign}₹ {int_part}.{dec_part}"
+    return f"{sign}Rs. {int_part}.{dec_part}"
+
+
+def _xml_escape(text: str) -> str:
+    """Escape user-provided text before embedding in ReportLab's
+    mini-XML. Use ONLY on data values (customer name, address etc.) —
+    NOT on internally-constructed markup strings where the <b> and
+    <br/> tags are intentional formatting.
+    """
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _para(text: str, style: ParagraphStyle = _S_VALUE) -> Paragraph:
-    # Escape any < > & that could confuse ReportLab's mini-XML parser
-    safe = (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return Paragraph(safe, style)
+    """Render a paragraph. The caller is responsible for escaping any
+    user-provided values via _xml_escape() — internally-built markup
+    (<b>, <br/>) passes through so bold + line breaks actually render.
+    """
+    return Paragraph(text or "", style)
 
 
 def _validate_compliance(invoice: Invoice, settings: InvoiceSettings) -> list[str]:
@@ -117,7 +133,7 @@ def _header_table(settings: InvoiceSettings, invoice: Invoice, logo_bytes: Optio
     # Right cell: TAX INVOICE + number + date
     right_rows = [
         [_para("TAX INVOICE", _S_TITLE)],
-        [_para(f"<b>Invoice #</b> {invoice.invoice_number}", _S_RIGHT)],
+        [_para(f"<b>Invoice #</b> {_xml_escape(invoice.invoice_number)}", _S_RIGHT)],
         [_para(f"<b>Date</b> {invoice.invoice_date.isoformat()}", _S_RIGHT)],
     ]
     if invoice.due_date:
@@ -141,36 +157,39 @@ def _header_table(settings: InvoiceSettings, invoice: Invoice, logo_bytes: Optio
 
 
 def _from_billto_block(settings: InvoiceSettings, invoice: Invoice) -> Table:
+    e = _xml_escape  # local alias — user-provided values must be escaped
+
     def _addr(*lines: Optional[str]) -> str:
-        return "<br/>".join(l for l in lines if l)
+        return "<br/>".join(e(l) for l in lines if l)
 
     from_html = (
-        f"<b>{settings.legal_name}</b><br/>"
+        f"<b>{e(settings.legal_name)}</b><br/>"
         f"{_addr(settings.address_line1, settings.address_line2)}<br/>"
-        f"{settings.city} - {settings.pincode}<br/>"
-        f"{settings.state_name} (State Code: {settings.state_code})<br/>"
-        f"<b>GSTIN:</b> {settings.gstin}"
-        f"<br/><b>PAN:</b> {settings.pan}"
+        f"{e(settings.city)} - {e(settings.pincode)}<br/>"
+        f"{e(settings.state_name)} (State Code: {e(settings.state_code)})<br/>"
+        f"<b>GSTIN:</b> {e(settings.gstin)}"
+        f"<br/><b>PAN:</b> {e(settings.pan)}"
     )
     if settings.email:
-        from_html += f"<br/>Email: {settings.email}"
+        from_html += f"<br/>Email: {e(settings.email)}"
     if settings.phone:
-        from_html += f"<br/>Phone: {settings.phone}"
+        from_html += f"<br/>Phone: {e(settings.phone)}"
 
-    to_lines = [f"<b>{invoice.customer_name}</b>"]
+    to_lines = [f"<b>{e(invoice.customer_name)}</b>"]
     if invoice.customer_address:
-        to_lines.append(invoice.customer_address.replace("\n", "<br/>"))
+        # \n converted to <br/> AFTER escaping so the markup stays intact
+        to_lines.append(e(invoice.customer_address).replace("\n", "<br/>"))
     if invoice.customer_state_name:
         sc = invoice.customer_state_code or ""
-        to_lines.append(f"{invoice.customer_state_name}{' (State Code: ' + sc + ')' if sc else ''}")
+        to_lines.append(f"{e(invoice.customer_state_name)}{' (State Code: ' + e(sc) + ')' if sc else ''}")
     if invoice.customer_gstin:
-        to_lines.append(f"<b>GSTIN:</b> {invoice.customer_gstin}")
+        to_lines.append(f"<b>GSTIN:</b> {e(invoice.customer_gstin)}")
     else:
         to_lines.append("<i>Unregistered customer (B2C)</i>")
     if invoice.customer_email:
-        to_lines.append(f"Email: {invoice.customer_email}")
+        to_lines.append(f"Email: {e(invoice.customer_email)}")
     if invoice.customer_phone:
-        to_lines.append(f"Phone: {invoice.customer_phone}")
+        to_lines.append(f"Phone: {e(invoice.customer_phone)}")
     to_html = "<br/>".join(to_lines)
 
     inner = Table(
@@ -194,14 +213,14 @@ def _from_billto_block(settings: InvoiceSettings, invoice: Invoice) -> Table:
 
 
 def _line_items_table(invoice: Invoice) -> Table:
-    headers = ["Sr.", "Description", "HSN/SAC", "Qty", "Rate (₹)", "Amount (₹)"]
+    headers = ["Sr.", "Description", "HSN/SAC", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
     rows = [headers]
     for i, li in enumerate(invoice.line_items, 1):
         amount = Decimal(str(li.get("amount") or "0"))
         rate = Decimal(str(li.get("rate") or "0"))
         rows.append([
             str(i),
-            _para(str(li.get("description") or ""), _S_VALUE),
+            _para(_xml_escape(str(li.get("description") or "")), _S_VALUE),
             str(li.get("hsn_sac") or ""),
             str(li.get("qty") or ""),
             f"{rate:,.2f}",
@@ -264,17 +283,18 @@ def _tax_block(invoice: Invoice) -> Table:
 def _bank_block(settings: InvoiceSettings) -> Optional[Table]:
     if not (settings.bank_account_number or settings.bank_name):
         return None
+    e = _xml_escape
     parts = []
     if settings.bank_account_name:
-        parts.append(f"<b>Account Name:</b> {settings.bank_account_name}")
+        parts.append(f"<b>Account Name:</b> {e(settings.bank_account_name)}")
     if settings.bank_account_number:
-        parts.append(f"<b>A/c No:</b> {settings.bank_account_number}")
+        parts.append(f"<b>A/c No:</b> {e(settings.bank_account_number)}")
     if settings.bank_ifsc:
-        parts.append(f"<b>IFSC:</b> {settings.bank_ifsc}")
+        parts.append(f"<b>IFSC:</b> {e(settings.bank_ifsc)}")
     if settings.bank_name:
-        parts.append(f"<b>Bank:</b> {settings.bank_name}")
+        parts.append(f"<b>Bank:</b> {e(settings.bank_name)}")
     if settings.bank_branch:
-        parts.append(f"<b>Branch:</b> {settings.bank_branch}")
+        parts.append(f"<b>Branch:</b> {e(settings.bank_branch)}")
 
     body = "<br/>".join(parts)
     t = Table(
@@ -305,7 +325,7 @@ def _signature_block(settings: InvoiceSettings, sig_bytes: Optional[bytes]) -> T
     t = Table(
         [
             [sig],
-            [_para(f"For <b>{settings.legal_name}</b><br/>Authorized Signatory", _S_RIGHT)],
+            [_para(f"For <b>{_xml_escape(settings.legal_name)}</b><br/>Authorized Signatory", _S_RIGHT)],
         ],
         colWidths=[60 * mm],
         hAlign="RIGHT",
@@ -372,10 +392,10 @@ def render_invoice_pdf(
         story.append(Spacer(1, 4 * mm))
 
     if invoice.notes:
-        story.append(_para(f"<b>Notes:</b> {invoice.notes}", _S_VALUE))
+        story.append(_para(f"<b>Notes:</b> {_xml_escape(invoice.notes)}", _S_VALUE))
         story.append(Spacer(1, 2 * mm))
     if invoice.terms:
-        story.append(_para(f"<b>Terms:</b> {invoice.terms}", _S_VALUE))
+        story.append(_para(f"<b>Terms:</b> {_xml_escape(invoice.terms)}", _S_VALUE))
         story.append(Spacer(1, 6 * mm))
 
     story.append(KeepTogether(_signature_block(settings, signature_bytes)))

@@ -34,13 +34,22 @@ def _upload_sync(bucket: str, path: str, content: bytes, content_type: str) -> s
     """Single-shot upload with upsert. Returns the storage path on
     success, raises SupabaseStorageError on failure. Idempotent thanks
     to upsert=true — re-uploading the same path replaces.
+
+    cache-control: max-age=0 forces Supabase's CDN to serve fresh
+    content every time. Without this, regenerate-PDF would silently
+    return the previously-cached version for up to an hour even
+    though the new upload succeeded.
     """
     try:
         client = _client()
         client.storage.from_(bucket).upload(
             path=path,
             file=content,
-            file_options={"content-type": content_type, "upsert": "true"},
+            file_options={
+                "content-type": content_type,
+                "upsert": "true",
+                "cache-control": "max-age=0, no-cache, must-revalidate",
+            },
         )
         return path
     except Exception as e:
