@@ -97,16 +97,20 @@ class InvoiceSettingsOut(BaseModel):
 class InvoiceLineItemIn(BaseModel):
     """One line on the invoice. Service computes amount = qty * rate at
     write time; we never trust the client's amount.
+
+    HSN/SAC is OPTIONAL — GST law only mandates it above ₹5 cr
+    turnover. FMC at ~₹2 cr is below threshold; admin can leave the
+    field blank and the PDF skips the column value for that line.
     """
     description: str = Field(min_length=1, max_length=500)
-    hsn_sac: str = Field(min_length=1, max_length=10)
+    hsn_sac: Optional[str] = Field(default=None, max_length=10)
     qty: Decimal = Field(gt=0)
     rate: Decimal = Field(ge=0)
 
 
 class InvoiceLineItemOut(BaseModel):
     description: str
-    hsn_sac: str
+    hsn_sac: Optional[str] = None
     qty: Decimal
     rate: Decimal
     amount: Decimal

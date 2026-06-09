@@ -196,6 +196,23 @@ class InvoiceService:
         if subtotal <= 0:
             raise BadRequestError("Invoice subtotal must be greater than zero")
 
+        # Validate lead_id (if provided) belongs to this tenant.
+        # Without this, admin of company A could attach a company B lead
+        # to their invoice. Multi-tenant guard.
+        lead_id = payload.get("lead_id")
+        if lead_id is not None:
+            lead_row = (await self.db.execute(
+                select(Lead.id).where(
+                    Lead.id == lead_id,
+                    Lead.company_id == self.company_id,
+                    Lead.is_deleted == False,  # noqa: E712
+                )
+            )).first()
+            if not lead_row:
+                raise BadRequestError(
+                    "lead_id does not reference an active lead in this tenant"
+                )
+
         tax = compute_tax(
             subtotal=subtotal,
             fmc_state_code=settings.state_code,

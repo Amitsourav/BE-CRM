@@ -108,8 +108,9 @@ def _validate_compliance(invoice: Invoice, settings: InvoiceSettings) -> list[st
     if not invoice.line_items:
         errors.append("At least one line item is required")
     for i, li in enumerate(invoice.line_items, 1):
-        if not li.get("hsn_sac"):
-            errors.append(f"Line {i}: HSN/SAC code is required")
+        # HSN/SAC intentionally NOT required — GST law only mandates
+        # it above ₹5 cr turnover. FMC is below threshold, so leaving
+        # it blank is acceptable. Render shows an empty cell.
         if not li.get("description"):
             errors.append(f"Line {i}: description is required")
     return errors
