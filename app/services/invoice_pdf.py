@@ -119,10 +119,11 @@ def _validate_compliance(invoice: Invoice, settings: InvoiceSettings) -> list[st
 
 
 def _header_table(settings: InvoiceSettings, invoice: Invoice, logo_bytes: Optional[bytes]) -> Table:
-    # Left cell: logo (if available)
+    # Left cell: logo (if available). 60mm × 35mm gives the brand
+    # mark visible weight on the page without overwhelming the header.
     if logo_bytes:
         try:
-            img = Image(io.BytesIO(logo_bytes), width=40 * mm, height=20 * mm, kind="proportional")
+            img = Image(io.BytesIO(logo_bytes), width=60 * mm, height=35 * mm, kind="proportional")
             left = img
         except Exception:
             logger.warning("PDF render: failed to load logo image, skipping")
