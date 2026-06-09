@@ -215,28 +215,41 @@ def _from_billto_block(settings: InvoiceSettings, invoice: Invoice) -> Table:
 
 
 def _line_items_table(invoice: Invoice) -> Table:
-    headers = ["Sr.", "Description", "HSN/SAC", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
+    # Columns:
+    #   Sr | Description | Lead ID | HSN/SAC | Qty | Rate | Amount
+    # Lead ID shows the lead's serial number ("#5340") snapshotted at
+    # issue time. Empty when the line has no lead_id reference.
+    headers = ["Sr.", "Description", "Lead ID", "HSN/SAC", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
     rows = [headers]
     for i, li in enumerate(invoice.line_items, 1):
         amount = Decimal(str(li.get("amount") or "0"))
         rate = Decimal(str(li.get("rate") or "0"))
+        # Render lead reference as "#<serial>" if snapshotted, else "—"
+        serial = li.get("lead_serial_no")
+        lead_cell = f"#{serial}" if serial is not None else "—"
         rows.append([
             str(i),
             _para(_xml_escape(str(li.get("description") or "")), _S_VALUE),
-            str(li.get("hsn_sac") or ""),
+            lead_cell,
+            str(li.get("hsn_sac") or "—"),
             str(li.get("qty") or ""),
             f"{rate:,.2f}",
             f"{amount:,.2f}",
         ])
-    t = Table(rows, colWidths=[12 * mm, 80 * mm, 22 * mm, 16 * mm, 25 * mm, 25 * mm], repeatRows=1)
+    # Widths total 180mm (= A4 - 15mm margins each side)
+    t = Table(
+        rows,
+        colWidths=[10 * mm, 60 * mm, 22 * mm, 22 * mm, 14 * mm, 25 * mm, 27 * mm],
+        repeatRows=1,
+    )
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#27272a")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 8.5),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
-        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
-        ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
+        ("ALIGN", (2, 0), (-1, -1), "CENTER"),  # Lead ID, HSN/SAC, Qty centered
+        ("ALIGN", (5, 1), (-1, -1), "RIGHT"),   # Rate + Amount columns right-aligned
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e4e4e7")),
         ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#a1a1aa")),

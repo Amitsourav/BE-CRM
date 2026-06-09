@@ -113,6 +113,10 @@ def compute_line_amounts(line_items: list[dict]) -> tuple[list[dict], Decimal]:
 
     Sums amounts without further rounding so the subtotal precision
     matches the sum of the per-line amounts exactly (no drift).
+
+    Pass-through fields: hsn_sac, lead_id (both optional). The service
+    later enriches each line with lead_serial_no by looking up the
+    lead in one batched query.
     """
     out: list[dict] = []
     subtotal = Decimal("0.00")
@@ -120,13 +124,23 @@ def compute_line_amounts(line_items: list[dict]) -> tuple[list[dict], Decimal]:
         qty = Decimal(str(li["qty"]))
         rate = Decimal(str(li["rate"]))
         amount = _round2(qty * rate)
-        out.append({
+        item = {
             "description": str(li["description"]),
-            "hsn_sac": str(li["hsn_sac"]),
             "qty": str(qty),
             "rate": str(rate),
             "amount": str(amount),
-        })
+        }
+        hsn = li.get("hsn_sac")
+        if hsn:
+            item["hsn_sac"] = str(hsn)
+        else:
+            item["hsn_sac"] = None
+        lid = li.get("lead_id")
+        if lid:
+            item["lead_id"] = str(lid)
+        else:
+            item["lead_id"] = None
+        out.append(item)
         subtotal += amount
     return out, _round2(subtotal)
 
