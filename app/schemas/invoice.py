@@ -102,18 +102,19 @@ class InvoiceLineItemIn(BaseModel):
     turnover. FMC at ~₹2 cr is below threshold; admin can leave the
     field blank and the PDF skips the column value for that line.
 
-    lead_id is OPTIONAL — for FMC's commission lines that reference
-    a specific student / lead. Backend validates each non-null
-    lead_id belongs to this tenant. Distinct from invoice-level
-    lead_id (which records "this invoice was created from this lead");
-    per-row lead_id records "this specific commission line is for
-    this student".
+    lead_id is a FREE-TEXT reference (not a UUID) — FMC's commission
+    invoices use various lead identifiers from their old systems
+    (serial numbers, case IDs, application numbers, etc.). Backend
+    stores whatever admin types and the PDF renders it as-is.
+    Distinct from invoice-level lead_id on the Invoice model, which
+    IS a proper UUID FK to the leads table for "this invoice was
+    created from this lead" linking.
     """
     description: str = Field(min_length=1, max_length=500)
     hsn_sac: Optional[str] = Field(default=None, max_length=10)
     qty: Decimal = Field(gt=0)
     rate: Decimal = Field(ge=0)
-    lead_id: Optional[uuid.UUID] = Field(default=None)
+    lead_id: Optional[str] = Field(default=None, max_length=50)
 
 
 class InvoiceLineItemOut(BaseModel):
@@ -122,11 +123,10 @@ class InvoiceLineItemOut(BaseModel):
     qty: Decimal
     rate: Decimal
     amount: Decimal
-    lead_id: Optional[uuid.UUID] = None
-    # Snapshot of lead.serial_no at issue time so the PDF + detail
-    # page can render the human-readable lead number without an extra
-    # DB lookup. Frozen with the invoice — if the lead gets deleted
-    # or renumbered later, this stays as it was.
+    lead_id: Optional[str] = None
+    # Kept for back-compat with invoices issued under the prior
+    # UUID-strict schema. New invoices leave this null since the
+    # raw lead_id string is enough.
     lead_serial_no: Optional[int] = None
 
 

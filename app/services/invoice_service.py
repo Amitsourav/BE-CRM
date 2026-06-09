@@ -196,60 +196,27 @@ class InvoiceService:
         if subtotal <= 0:
             raise BadRequestError("Invoice subtotal must be greater than zero")
 
-        # ── Validate all referenced lead_ids in one batched query ──
-        # Two distinct kinds of lead reference:
-        #   • header_lead_id (payload["lead_id"]): "this invoice was
-        #     created from this lead" — set by the Bill-to picker
-        #   • per-row lead_id on each line item: "this specific
-        #     commission line is for this student"
-        # Both are optional, both validated against this tenant. We
-        # snapshot lead.serial_no onto each line for human-readable
-        # rendering on the PDF.
+        # Header-level lead_id (Invoice.lead_id) IS a UUID FK to
+        # the leads table. Validate it belongs to this tenant.
+        # Per-row line_items[].lead_id is just a free-text reference
+        # (FMC uses old case IDs / serial numbers) — stored as-is, no
+        # validation. PDF renders whatever admin typed.
         header_lead_id = payload.get("lead_id")
-        per_row_lead_ids: list[tuple[int, uuid.UUID]] = [
-            (i, li["lead_id"]) for i, li in enumerate(line_items)
-            if li.get("lead_id")
-        ]
-        all_lead_ids = set()
         if header_lead_id is not None:
-            all_lead_ids.add(uuid.UUID(str(header_lead_id)) if not isinstance(header_lead_id, uuid.UUID) else header_lead_id)
-        for _, lid in per_row_lead_ids:
-            all_lead_ids.add(uuid.UUID(str(lid)) if not isinstance(lid, uuid.UUID) else lid)
-
-        lead_serial_map: dict[uuid.UUID, int] = {}
-        if all_lead_ids:
-            rows = (await self.db.execute(
-                select(Lead.id, Lead.serial_no).where(
-                    Lead.id.in_(all_lead_ids),
+            lead_row = (await self.db.execute(
+                select(Lead.id).where(
+                    Lead.id == header_lead_id,
                     Lead.company_id == self.company_id,
                     Lead.is_deleted == False,  # noqa: E712
                 )
-            )).all()
-            found = {r.id for r in rows}
-            lead_serial_map = {r.id: r.serial_no for r in rows}
-            missing = all_lead_ids - found
-            if missing:
-                # Identify which slot the missing ID came from for a
-                # helpful error message
-                if header_lead_id is not None and uuid.UUID(str(header_lead_id)) in missing:
-                    raise BadRequestError(
-                        "lead_id does not reference an active lead in this tenant"
-                    )
-                for idx, lid in per_row_lead_ids:
-                    lid_uuid = uuid.UUID(str(lid)) if not isinstance(lid, uuid.UUID) else lid
-                    if lid_uuid in missing:
-                        raise BadRequestError(
-                            f"line_items[{idx}].lead_id does not reference an active lead in this tenant"
-                        )
+            )).first()
+            if not lead_row:
+                raise BadRequestError(
+                    "lead_id does not reference an active lead in this tenant"
+                )
 
-        # Snapshot serial_no into each line item that has a lead_id
-        for li in line_items:
-            lid = li.get("lead_id")
-            if lid:
-                lid_uuid = uuid.UUID(str(lid)) if not isinstance(lid, uuid.UUID) else lid
-                li["lead_serial_no"] = lead_serial_map.get(lid_uuid)
-            else:
-                li["lead_serial_no"] = None
+        # No per-row snapshot needed — line_items[].lead_id is stored
+        # as-is by compute_line_amounts.
 
         tax = compute_tax(
             subtotal=subtotal,
