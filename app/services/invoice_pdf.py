@@ -120,11 +120,14 @@ def _validate_compliance(invoice: Invoice, settings: InvoiceSettings) -> list[st
 
 
 def _header_table(settings: InvoiceSettings, invoice: Invoice, logo_bytes: Optional[bytes]) -> Table:
-    # Left cell: logo (if available). 60mm × 35mm gives the brand
-    # mark visible weight on the page without overwhelming the header.
+    # Left cell: logo (if available). FundMyCampus's logo is square
+    # (1600×1600), so `kind="proportional"` was constraining it to the
+    # smaller of width/height. Width=80mm × height=45mm → renders at
+    # ~45×45mm (height-constrained). Bigger than the original 35mm
+    # but trimmed from a 50mm bump that overflowed to page 2.
     if logo_bytes:
         try:
-            img = Image(io.BytesIO(logo_bytes), width=60 * mm, height=35 * mm, kind="proportional")
+            img = Image(io.BytesIO(logo_bytes), width=80 * mm, height=45 * mm, kind="proportional")
             left = img
         except Exception:
             logger.warning("PDF render: failed to load logo image, skipping")
@@ -396,36 +399,38 @@ def render_invoice_pdf(
         title=f"Invoice {invoice.invoice_number}",
     )
 
+    # Spacers tightened (6mm → 4mm in most places) so the bigger
+    # logo doesn't push the footer disclaimer onto a second page.
     story = []
     story.append(_header_table(settings, invoice, logo_bytes))
-    story.append(Spacer(1, 6 * mm))
-    story.append(_from_billto_block(settings, invoice))
-    story.append(Spacer(1, 6 * mm))
-    story.append(_line_items_table(invoice))
-    story.append(Spacer(1, 6 * mm))
-    story.append(_tax_block(invoice))
     story.append(Spacer(1, 4 * mm))
+    story.append(_from_billto_block(settings, invoice))
+    story.append(Spacer(1, 4 * mm))
+    story.append(_line_items_table(invoice))
+    story.append(Spacer(1, 4 * mm))
+    story.append(_tax_block(invoice))
+    story.append(Spacer(1, 3 * mm))
     # Amount in words — mandatory per GST
     story.append(_para(
         f"<b>Amount in words:</b> {amount_in_words(Decimal(str(invoice.grand_total)))}",
         _S_VALUE,
     ))
-    story.append(Spacer(1, 6 * mm))
+    story.append(Spacer(1, 4 * mm))
 
     bank = _bank_block(settings)
     if bank:
         story.append(bank)
-        story.append(Spacer(1, 4 * mm))
+        story.append(Spacer(1, 3 * mm))
 
     if invoice.notes:
         story.append(_para(f"<b>Notes:</b> {_xml_escape(invoice.notes)}", _S_VALUE))
         story.append(Spacer(1, 2 * mm))
     if invoice.terms:
         story.append(_para(f"<b>Terms:</b> {_xml_escape(invoice.terms)}", _S_VALUE))
-        story.append(Spacer(1, 6 * mm))
+        story.append(Spacer(1, 4 * mm))
 
     story.append(KeepTogether(_signature_block(settings, signature_bytes)))
-    story.append(Spacer(1, 6 * mm))
+    story.append(Spacer(1, 4 * mm))
     story.append(_para(
         "This is a computer-generated invoice and does not require a physical signature.",
         _S_FOOTER,
