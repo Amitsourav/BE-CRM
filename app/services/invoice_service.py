@@ -198,9 +198,6 @@ class InvoiceService:
 
         # Header-level lead_id (Invoice.lead_id) IS a UUID FK to
         # the leads table. Validate it belongs to this tenant.
-        # Per-row line_items[].lead_id is just a free-text reference
-        # (FMC uses old case IDs / serial numbers) — stored as-is, no
-        # validation. PDF renders whatever admin typed.
         header_lead_id = payload.get("lead_id")
         if header_lead_id is not None:
             lead_row = (await self.db.execute(
@@ -215,8 +212,91 @@ class InvoiceService:
                     "lead_id does not reference an active lead in this tenant"
                 )
 
-        # No per-row snapshot needed — line_items[].lead_id is stored
-        # as-is by compute_line_amounts.
+        # ── Hybrid per-row lead_id resolver ─────────────────────────
+        # Each non-null line_items[].lead_id may be:
+        #   • a UUID string         → try to resolve against this tenant
+        #   • a numeric string      → try lookup by lead.serial_no
+        #   • any other free text   → store as-is, no resolution
+        #
+        # On UUID format that doesn't resolve to a tenant lead, we 400
+        # with a row-aware error (security boundary — caller is using
+        # the strict identifier on purpose). On a numeric string that
+        # doesn't resolve, we fall through to free text (admin may be
+        # typing an old case ID that happens to look numeric).
+        candidate_uuids: dict[uuid.UUID, list[int]] = {}      # uuid → [line_idx,...]
+        candidate_serials: dict[int, list[int]] = {}          # serial_no → [line_idx,...]
+        invalid_uuids: list[tuple[int, str]] = []             # (line_idx, raw) for UUID-shaped non-tenant matches
+
+        for idx, li in enumerate(line_items):
+            raw = li.get("lead_id")
+            if not raw:
+                continue
+            raw_str = str(raw).strip()
+            # Try UUID first
+            try:
+                u = uuid.UUID(raw_str)
+                candidate_uuids.setdefault(u, []).append(idx)
+                continue
+            except (ValueError, AttributeError):
+                pass
+            # Then numeric serial
+            if raw_str.isdigit():
+                try:
+                    s = int(raw_str)
+                    candidate_serials.setdefault(s, []).append(idx)
+                except ValueError:
+                    pass
+            # Anything else → leave as free text
+
+        if candidate_uuids or candidate_serials:
+            from sqlalchemy import or_
+            conditions = []
+            if candidate_uuids:
+                conditions.append(Lead.id.in_(candidate_uuids.keys()))
+            if candidate_serials:
+                conditions.append(Lead.serial_no.in_(candidate_serials.keys()))
+            resolved = (await self.db.execute(
+                select(Lead.id, Lead.serial_no, Lead.full_name).where(
+                    Lead.company_id == self.company_id,
+                    Lead.is_deleted == False,  # noqa: E712
+                    or_(*conditions),
+                )
+            )).all()
+            by_uuid = {r.id: r for r in resolved}
+            by_serial = {r.serial_no: r for r in resolved if r.serial_no is not None}
+
+            # Apply resolutions
+            for u, idxs in candidate_uuids.items():
+                row = by_uuid.get(u)
+                if row is None:
+                    # UUID was strictly typed but doesn't belong to this
+                    # tenant. Reject — the FE picker is supposed to only
+                    # offer leads from this tenant.
+                    for i in idxs:
+                        invalid_uuids.append((i, str(u)))
+                    continue
+                for i in idxs:
+                    line_items[i]["lead_id"] = str(row.id)
+                    line_items[i]["lead_serial_no"] = row.serial_no
+                    line_items[i]["lead_name"] = row.full_name
+            for s, idxs in candidate_serials.items():
+                row = by_serial.get(s)
+                if row is None:
+                    # No tenant lead with this serial — leave the raw
+                    # numeric text in place (admin's free-form ID).
+                    continue
+                for i in idxs:
+                    line_items[i]["lead_id"] = str(row.id)
+                    line_items[i]["lead_serial_no"] = row.serial_no
+                    line_items[i]["lead_name"] = row.full_name
+
+            if invalid_uuids:
+                # Build a row-aware error so FE can pinpoint
+                first_idx, _ = invalid_uuids[0]
+                raise BadRequestError(
+                    f"line_items[{first_idx}].lead_id does not reference an "
+                    f"active lead in this tenant"
+                )
 
         tax = compute_tax(
             subtotal=subtotal,

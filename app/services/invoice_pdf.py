@@ -227,18 +227,17 @@ def _line_items_table(invoice: Invoice) -> Table:
     for i, li in enumerate(invoice.line_items, 1):
         amount = Decimal(str(li.get("amount") or "0"))
         rate = Decimal(str(li.get("rate") or "0"))
-        # Render lead reference. Priority:
-        #   1. raw lead_id if admin typed something (free-text reference)
-        #   2. lead_serial_no fallback for invoices issued under the
-        #      prior UUID-strict schema (snapshot was taken at create
-        #      time as "#5340")
-        #   3. em-dash when neither
-        raw_lid = li.get("lead_id")
+        # Render lead reference with hybrid priority:
+        #   1. lead_serial_no set → "#5340" (resolved lead — most useful)
+        #   2. raw lead_id digit string → "#213221" (free-form numeric)
+        #   3. raw lead_id non-numeric → "STD-001" as-is
+        #   4. em-dash for empty
         serial = li.get("lead_serial_no")
-        if raw_lid:
-            lead_cell = f"#{raw_lid}" if str(raw_lid).isdigit() else str(raw_lid)
-        elif serial is not None:
+        raw_lid = li.get("lead_id")
+        if serial is not None:
             lead_cell = f"#{serial}"
+        elif raw_lid:
+            lead_cell = f"#{raw_lid}" if str(raw_lid).isdigit() else str(raw_lid)
         else:
             lead_cell = "—"
         rows.append([

@@ -123,11 +123,17 @@ class InvoiceLineItemOut(BaseModel):
     qty: Decimal
     rate: Decimal
     amount: Decimal
+    # Hybrid lead reference — admin's raw input is preserved AND
+    # the service resolves it to canonical fields when possible:
+    #   • admin types a UUID → lead_id stores the UUID string,
+    #     lead_serial_no + lead_name snapshotted from the lead row
+    #   • admin types a number matching a tenant's lead.serial_no →
+    #     same as above (resolved via serial lookup)
+    #   • admin types free text (case ID, "STD-001", etc.) →
+    #     lead_id stores the raw text, lead_serial_no + lead_name null
     lead_id: Optional[str] = None
-    # Kept for back-compat with invoices issued under the prior
-    # UUID-strict schema. New invoices leave this null since the
-    # raw lead_id string is enough.
     lead_serial_no: Optional[int] = None
+    lead_name: Optional[str] = None
 
 
 class InvoiceCreate(BaseModel):
