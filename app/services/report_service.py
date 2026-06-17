@@ -14,7 +14,7 @@ from app.models.company import Company
 from app.models.lead_stage_log import LeadStageLog
 from app.core.constants import (
     LeadStage, TaskStatus, CallDisposition, UserRole,
-    ADMITVERSE_STAGES, RESTRICTED_VIEW_ROLES,
+    ADMITVERSE_STAGES, FMC_STAGES, RESTRICTED_VIEW_ROLES,
 )
 from app.core.exceptions import ForbiddenError, ForbiddenError as _Forbidden
 from app.utils.date_helpers import now_utc, now_ist, start_of_today, end_of_today, IST
@@ -33,9 +33,14 @@ _DEFAULT_CALL_TARGET = {
 # has its own happy state — FMC closes deals at WON, Admitverse closes at
 # ENROLLED. Without this map every Admitverse report would show 0% forever
 # because no Admitverse lead ever reaches `won`.
+# NOTE: the live FMC tenant's slug is "default" (name "FundMyCampus"), so
+# the fallback below — not the explicit keys — is what FMC actually hits.
+# Keep DISBURSED as the fallback: every non-Admitverse tenant is FMC-style
+# and closes at DISBURSED, matching get_terminal_stages_for_brand().
 _BRAND_WON_STAGE = {
     "fmc": LeadStage.DISBURSED,
     "fundmycampus": LeadStage.DISBURSED,
+    "default": LeadStage.DISBURSED,
     "admitverse": LeadStage.ENROLLED,
 }
 
@@ -57,7 +62,9 @@ class ReportService:
 
     async def _won_stage(self) -> LeadStage:
         slug = (await self._get_slug() or "").lower()
-        return _BRAND_WON_STAGE.get(slug, LeadStage.WON)
+        # Fallback DISBURSED (not the legacy WON): any non-Admitverse tenant
+        # — including slug "default" — is FMC-style and closes at DISBURSED.
+        return _BRAND_WON_STAGE.get(slug, LeadStage.DISBURSED)
 
     @staticmethod
     def _conversion_rate(leads_by_stage: dict, won_stage: LeadStage) -> float:
@@ -181,10 +188,10 @@ class ReportService:
         if slug == "admitverse":
             relevant = ADMITVERSE_STAGES
         else:
-            relevant = [
-                LeadStage.LEAD, LeadStage.CALLED, LeadStage.CONNECTED,
-                LeadStage.QUALIFIED_LEAD, LeadStage.WON, LeadStage.LOST,
-            ]
+            # FMC's May 2026 revamp replaced the legacy 6-stage funnel
+            # (lead/called/connected/qualified_lead/won) with FMC_STAGES.
+            # Use the live list so the funnel reflects the real pipeline.
+            relevant = FMC_STAGES
 
         stages = []
         for stage in relevant:
@@ -671,6 +678,18 @@ class ReportService:
         )
         stage_leads = {r[0] for r in (await self.db.execute(stage_leads_q)).all()}
 
+        # DNP stage(s) differ per brand: FMC uses the single `dnp` stage,
+        # Admitverse splits it into pre/post-qualified. Without this the AV
+        # "implied calls" proxy never counts any DNP follow-up work.
+        slug = (await self._get_slug() or "").lower()
+        if slug == "admitverse":
+            dnp_stages = [
+                LeadStage.DNP_PRE_QUALIFIED.value,
+                LeadStage.DNP_POST_QUALIFIED.value,
+            ]
+        else:
+            dnp_stages = [LeadStage.DNP.value]
+
         # 2. Distinct leads where this user completed a task on a DNP-stage
         # lead today.
         dnp_complete_q = select(Task.lead_id).distinct().select_from(Task).join(
@@ -681,7 +700,7 @@ class ReportService:
             Task.status == TaskStatus.COMPLETED.value,
             Task.completed_at >= start_utc,
             Task.completed_at < end_utc,
-            Lead.current_stage == LeadStage.DNP.value,
+            Lead.current_stage.in_(dnp_stages),
         )
         dnp_complete_leads = {r[0] for r in (await self.db.execute(dnp_complete_q)).all() if r[0]}
 
@@ -698,7 +717,7 @@ class ReportService:
             Task.updated_at.isnot(None),
             Task.updated_at >= start_utc,
             Task.updated_at < end_utc,
-            Lead.current_stage == LeadStage.DNP.value,
+            Lead.current_stage.in_(dnp_stages),
         )
         dnp_update_leads = {r[0] for r in (await self.db.execute(dnp_update_q)).all() if r[0]}
 

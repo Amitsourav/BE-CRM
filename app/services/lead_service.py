@@ -76,6 +76,17 @@ class LeadService:
     def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
         self.company_id = company_id
+        self._slug: str | None = None
+
+    async def _get_slug(self) -> str:
+        """Tenant brand slug (lowercased), cached per service instance.
+        Used to brand-gate FMC-only vs Admitverse-only features."""
+        if self._slug is None:
+            result = await self.db.execute(
+                select(Company.slug).where(Company.id == self.company_id)
+            )
+            self._slug = (result.scalar_one_or_none() or "").lower()
+        return self._slug
 
     async def _ensure_callback_task(
         self,
@@ -215,8 +226,8 @@ class LeadService:
                     f"({existing.full_name})."
                 )
 
-        slug_result = await self.db.execute(select(Company.slug).where(Company.id == self.company_id))
-        initial_stage = get_initial_stage_for_brand(slug_result.scalar_one_or_none())
+        slug = await self._get_slug()
+        initial_stage = get_initial_stage_for_brand(slug)
         data.setdefault("current_stage", initial_stage.value)
 
         # Mirror loan_amount → loan_amount_lakh (numeric, in lakhs) so the
@@ -225,6 +236,21 @@ class LeadService:
         if data.get("loan_amount") is not None:
             from app.utils.loan_parser import parse_loan_amount
             data["loan_amount_lakh"] = parse_loan_amount(data["loan_amount"])
+
+        # Admitverse: mirror budget → budget_amount + budget_currency
+        # (multi-currency) so the AV Kanban budget filter compares numbers.
+        if data.get("budget") is not None:
+            from app.utils.budget_parser import parse_budget
+            amount, currency = parse_budget(data["budget"])
+            data["budget_amount"] = amount
+            if currency:
+                data["budget_currency"] = currency
+
+        # AV's study-abroad checklist has 8 docs vs FMC's 6 — set the
+        # per-brand default on create (leaves FMC's server_default of 6).
+        if slug == "admitverse" and not data.get("docs_required"):
+            from app.core.constants import AV_DOC_CHECKLIST
+            data["docs_required"] = len(AV_DOC_CHECKLIST)
 
         # Reserve a per-tenant serial number so the lead shows up as
         # #N on the Kanban card and lead detail page. Won't overwrite
@@ -329,16 +355,18 @@ class LeadService:
                 body=f"DNP-{lead.dnp_count or 0} → DNP-{new_dnp}: {note}",
             ))
 
-        # Validate bank_name against the canonical FMC bank list. Same
-        # rationale as lost_reason — free text was producing case/spelling
+        # Validate bank_name against the canonical FMC bank list (FMC only).
+        # Same rationale as lost_reason — free text was producing case/spelling
         # variants that broke reporting (sbi / SBI / Unicred / UniCred).
         if "bank_name" in data and data["bank_name"]:
-            from app.core.constants import FMC_BANKS
-            if data["bank_name"] not in FMC_BANKS:
-                raise BadRequestError(
-                    f"bank_name must be one of the canonical FMC banks "
-                    f"(got '{data['bank_name']}'). See GET /leads/banks."
-                )
+            slug = await self._get_slug()
+            if slug != "admitverse":
+                from app.core.constants import FMC_BANKS
+                if data["bank_name"] not in FMC_BANKS:
+                    raise BadRequestError(
+                        f"bank_name must be one of the canonical FMC banks "
+                        f"(got '{data['bank_name']}'). See GET /leads/banks."
+                    )
 
         # Mirror loan_amount → loan_amount_lakh on update too, same reason
         # as create_lead. If loan_amount is being explicitly cleared
@@ -347,17 +375,25 @@ class LeadService:
             from app.utils.loan_parser import parse_loan_amount
             data["loan_amount_lakh"] = parse_loan_amount(data["loan_amount"])
 
-        # Filter submitted_docs to known checklist keys + dedupe. Without
-        # this, FE bugs or stale clients could push junk values into the
-        # array (e.g., trailing whitespace, duplicate keys, or a key
-        # we removed from the checklist later).
+        # Mirror budget → budget_amount + budget_currency on update (AV).
+        if "budget" in data:
+            from app.utils.budget_parser import parse_budget
+            amount, currency = parse_budget(data["budget"])
+            data["budget_amount"] = amount
+            data["budget_currency"] = currency or "INR"
+
+        # Filter submitted_docs to the brand's checklist keys + dedupe.
+        # Without this, FE bugs or stale clients could push junk values
+        # into the array (trailing whitespace, dupes, removed keys). AV
+        # uses the study-abroad keys; FMC uses the loan-doc keys.
         if "submitted_docs" in data and data["submitted_docs"] is not None:
-            from app.core.constants import FMC_DOC_KEYS
+            from app.core.constants import get_doc_keys_for_brand
+            doc_keys = get_doc_keys_for_brand(await self._get_slug())
             cleaned = []
             seen = set()
             for k in data["submitted_docs"]:
                 k = (k or "").strip().lower()
-                if k and k in FMC_DOC_KEYS and k not in seen:
+                if k and k in doc_keys and k not in seen:
                     cleaned.append(k)
                     seen.add(k)
             data["submitted_docs"] = cleaned
@@ -494,6 +530,12 @@ class LeadService:
         due_to=None,
         dnp_min: int | None = None,
         dnp_max: int | None = None,
+        application_status: str | None = None,
+        university: str | None = None,
+        budget_min: float | None = None,
+        budget_max: float | None = None,
+        budget_currency: str = "INR",
+        slug: str | None = None,
         important_only: bool = False,
         lead_segment: str | None = None,
     ):
@@ -512,14 +554,31 @@ class LeadService:
             ))
         if source_id is not None:
             query = query.where(Lead.lead_source_id == source_id)
-        if loan_min is not None:
-            query = query.where(Lead.loan_amount_lakh >= loan_min)
-        if loan_max is not None:
-            query = query.where(Lead.loan_amount_lakh <= loan_max)
-        if bank_name:
-            query = query.where(Lead.bank_name == bank_name)
-        if bank_status:
-            query = query.where(Lead.bank_status == bank_status)
+        is_av = (slug or "").lower() == "admitverse"
+        # FMC-only filters (loan / bank). Ignored on Admitverse — those
+        # columns are always NULL there, so applying them would wrongly
+        # empty the board.
+        if not is_av:
+            if loan_min is not None:
+                query = query.where(Lead.loan_amount_lakh >= loan_min)
+            if loan_max is not None:
+                query = query.where(Lead.loan_amount_lakh <= loan_max)
+            if bank_name:
+                query = query.where(Lead.bank_name == bank_name)
+            if bank_status:
+                query = query.where(Lead.bank_status == bank_status)
+        # Admitverse-only filters (application + budget).
+        else:
+            if application_status:
+                query = query.where(Lead.application_status == application_status)
+            if university:
+                query = query.where(Lead.primary_university.ilike(f"%{university.strip()}%"))
+            if budget_min is not None or budget_max is not None:
+                query = query.where(Lead.budget_currency == (budget_currency or "INR"))
+                if budget_min is not None:
+                    query = query.where(Lead.budget_amount >= budget_min)
+                if budget_max is not None:
+                    query = query.where(Lead.budget_amount <= budget_max)
         if target_country:
             # preferred_countries is text[] — `any` checks membership.
             query = query.where(Lead.preferred_countries.any(target_country))
@@ -542,10 +601,11 @@ class LeadService:
             query = query.where(Lead.due_date >= due_from)
         if due_to is not None:
             query = query.where(Lead.due_date <= due_to)
-        if dnp_min is not None:
-            query = query.where(Lead.dnp_count >= dnp_min)
-        if dnp_max is not None:
-            query = query.where(Lead.dnp_count <= dnp_max)
+        if not is_av:
+            if dnp_min is not None:
+                query = query.where(Lead.dnp_count >= dnp_min)
+            if dnp_max is not None:
+                query = query.where(Lead.dnp_count <= dnp_max)
         if important_only:
             query = query.where(Lead.is_important == True)  # noqa: E712
         # Admin-facing "segment" filter: slices the pipeline by who owns
@@ -604,12 +664,18 @@ class LeadService:
         due_to=None,
         dnp_min: int | None = None,
         dnp_max: int | None = None,
+        # Admitverse-only filters (ignored on FMC).
+        application_status: str | None = None,
+        university: str | None = None,
+        budget_min: float | None = None,
+        budget_max: float | None = None,
+        budget_currency: str = "INR",
         important_only: bool = False,
         # Admin-only segment slice: campaign | unassigned | counsellor | pre_counsellor.
         # FE only shows this dropdown to admin users; non-admins can't
         # see other people's leads anyway via the visibility gate.
         lead_segment: str | None = None,
-        # Sort: created_desc (default), loan_asc (Low→High), loan_desc (High→Low).
+        # Sort: created_desc (default), loan_asc/desc (FMC), budget_asc/desc (AV).
         # Affects only the per-column row order; counts are unchanged.
         sort_by: str = "created_desc",
     ) -> dict:
@@ -628,6 +694,7 @@ class LeadService:
         # arg. 15-second TTL — short enough that edits propagate quickly,
         # long enough that the second/third Pipeline click is instant.
         # tags is converted to a frozen tuple so it's hashable.
+        slug = await self._get_slug()
         cache_key = (
             self.company_id, user.id, user.role,
             agent_id, campaign_id, per_stage_limit,
@@ -635,7 +702,9 @@ class LeadService:
             bank_name, bank_status, target_country, target_intake,
             tuple(tags) if tags else None,
             created_from, created_to, due_from, due_to,
-            dnp_min, dnp_max, important_only,
+            dnp_min, dnp_max,
+            application_status, university, budget_min, budget_max, budget_currency,
+            important_only,
             lead_segment,
             sort_by,
         )
@@ -657,6 +726,10 @@ class LeadService:
             window_order = (nullslast(Lead.loan_amount_lakh.asc()), Lead.created_at.desc())
         elif sort_by == "loan_desc":
             window_order = (nullslast(Lead.loan_amount_lakh.desc()), Lead.created_at.desc())
+        elif sort_by == "budget_asc":
+            window_order = (nullslast(Lead.budget_amount.asc()), Lead.created_at.desc())
+        elif sort_by == "budget_desc":
+            window_order = (nullslast(Lead.budget_amount.desc()), Lead.created_at.desc())
         else:  # "created_desc" (default) — original behavior
             window_order = (Lead.created_at.desc(),)
 
@@ -692,6 +765,9 @@ class LeadService:
             created_from=created_from, created_to=created_to,
             due_from=due_from, due_to=due_to,
             dnp_min=dnp_min, dnp_max=dnp_max,
+            application_status=application_status, university=university,
+            budget_min=budget_min, budget_max=budget_max, budget_currency=budget_currency,
+            slug=slug,
             important_only=important_only,
             lead_segment=lead_segment,
         )
@@ -741,6 +817,9 @@ class LeadService:
             created_from=created_from, created_to=created_to,
             due_from=due_from, due_to=due_to,
             dnp_min=dnp_min, dnp_max=dnp_max,
+            application_status=application_status, university=university,
+            budget_min=budget_min, budget_max=budget_max, budget_currency=budget_currency,
+            slug=slug,
             important_only=important_only,
             lead_segment=lead_segment,
         )
@@ -975,6 +1054,36 @@ class LeadService:
                 for e in entries[:2]
             ]
 
+        # Admitverse per-university application rollups (analog of the bank
+        # rollups above). Only queried for AV — FMC leads never have
+        # application rows, so FMC pays zero extra round-trips.
+        app_count_map: dict[uuid.UUID, int] = {}
+        top_apps_map: dict[uuid.UUID, list[dict]] = {}
+        if (await self._get_slug()) == "admitverse":
+            from app.models.lead_application import LeadApplication
+            from app.core.constants import APPLICATION_STATUS_PRIORITY
+            all_apps = (await self.db.execute(
+                select(LeadApplication).where(
+                    LeadApplication.company_id == self.company_id,
+                    LeadApplication.lead_id.in_(lead_ids),
+                )
+            )).scalars().all()
+            apps_by_lead: dict[uuid.UUID, list] = {}
+            for a in all_apps:
+                apps_by_lead.setdefault(a.lead_id, []).append(a)
+            app_count_map = {lid: len(v) for lid, v in apps_by_lead.items()}
+            for lid, entries in apps_by_lead.items():
+                entries.sort(key=lambda e: (-APPLICATION_STATUS_PRIORITY.get(e.application_status, 0), e.created_at))
+                top_apps_map[lid] = [
+                    {
+                        "id": str(e.id),
+                        "university_name": e.university_name,
+                        "program": e.program,
+                        "application_status": e.application_status,
+                    }
+                    for e in entries[:2]
+                ]
+
         # AI-call watermark: lead has an active campaign row OR an ai/ai_campaign
         # call_attempt. Without the second arm, the watermark vanished as soon as
         # a campaign finished even though the lead clearly had been AI-contacted.
@@ -994,6 +1103,8 @@ class LeadService:
             lead.notes_count = notes_count_map.get(lead.id, 0)
             lead.bank_count = bank_count_map.get(lead.id, 0)
             lead.top_banks = top_banks_map.get(lead.id, [])
+            lead.application_count = app_count_map.get(lead.id, 0)
+            lead.top_applications = top_apps_map.get(lead.id, [])
             lead.latest_note = latest_note_map.get(lead.id)
             lead.has_active_ai_campaign = lead.id in active_campaign_set
             lead.source_name = source_name_map.get(lead.lead_source_id) if lead.lead_source_id else None
@@ -1058,6 +1169,11 @@ class LeadService:
         the service check)."""
         from app.models.lead_bank import LeadBank
         from app.core.constants import FMC_BANKS
+        if await self._get_slug() == "admitverse":
+            raise BadRequestError(
+                "Bank tracking is not available for this tenant. "
+                "Use university applications (/leads/{id}/applications) instead."
+            )
         if bank_name not in FMC_BANKS:
             raise BadRequestError(
                 f"bank_name must be one of the canonical FMC banks (got '{bank_name}'). See GET /leads/banks."
@@ -1107,6 +1223,11 @@ class LeadService:
         from app.models.lead_bank import LeadBank
         from app.utils.date_helpers import now_utc
 
+        if await self._get_slug() == "admitverse":
+            raise BadRequestError(
+                "Bank tracking is not available for this tenant. "
+                "Use university applications (/leads/{id}/applications) instead."
+            )
         lead = await self.get_lead(lead_id, user)
         entry = (await self.db.execute(
             select(LeadBank).where(
@@ -1161,6 +1282,11 @@ class LeadService:
 
     async def delete_bank_entry(self, lead_id: uuid.UUID, entry_id: uuid.UUID, user: Profile) -> None:
         from app.models.lead_bank import LeadBank
+        if await self._get_slug() == "admitverse":
+            raise BadRequestError(
+                "Bank tracking is not available for this tenant. "
+                "Use university applications (/leads/{id}/applications) instead."
+            )
         lead = await self.get_lead(lead_id, user)
         entry = (await self.db.execute(
             select(LeadBank).where(
@@ -1174,6 +1300,174 @@ class LeadService:
         await self.db.delete(entry)
         await self.db.flush()
         await self._resync_primary_bank(lead)
+        await self.db.commit()
+
+    # ── Admitverse per-university application tracking ─────────────────
+    # Analog of the FMC bank methods above. Brand-gated to Admitverse.
+    _APPLICATION_OFFER_FIELDS = (
+        "application_ref", "offer_date", "tuition_fee", "scholarship_amount",
+        "deposit_amount", "deposit_paid_date", "cas_number", "visa_status",
+    )
+
+    async def _require_admitverse(self) -> None:
+        if await self._get_slug() != "admitverse":
+            raise BadRequestError(
+                "University application tracking is only available for "
+                "Admitverse. FMC uses bank tracking (/leads/{id}/banks)."
+            )
+
+    async def _resync_primary_application(self, lead: Lead) -> None:
+        """Refresh lead.primary_university + lead.application_status to point
+        at the highest-priority application entry. NULL if no entries."""
+        from app.models.lead_application import LeadApplication
+        from app.core.constants import APPLICATION_STATUS_PRIORITY
+        rows = (await self.db.execute(
+            select(LeadApplication).where(LeadApplication.lead_id == lead.id)
+        )).scalars().all()
+        if not rows:
+            lead.primary_university = None
+            lead.application_status = None
+            return
+        best = max(
+            rows,
+            key=lambda r: (APPLICATION_STATUS_PRIORITY.get(r.application_status, 0), r.updated_at),
+        )
+        lead.primary_university = best.university_name
+        lead.application_status = best.application_status
+
+    async def list_applications(self, lead_id: uuid.UUID, user: Profile) -> list:
+        """All application entries for a lead, newest first."""
+        from app.models.lead_application import LeadApplication
+        await self.get_lead(lead_id, user)
+        rows = (await self.db.execute(
+            select(LeadApplication)
+            .where(LeadApplication.lead_id == lead_id, LeadApplication.company_id == self.company_id)
+            .order_by(LeadApplication.created_at.desc())
+        )).scalars().all()
+        return list(rows)
+
+    async def add_application(self, lead_id: uuid.UUID, payload: dict, user: Profile):
+        """Add a university-application entry. university_name is free text;
+        status must be a valid application_status; a lead can't have the
+        same (university, program) twice (DB unique backstops the check)."""
+        from app.models.lead_application import LeadApplication
+        from app.core.constants import APPLICATION_STATUS_VALUES
+        await self._require_admitverse()
+
+        university_name = (payload.get("university_name") or "").strip()
+        if not university_name:
+            raise BadRequestError("university_name is required.")
+        status = payload.get("application_status") or "applied"
+        if status not in APPLICATION_STATUS_VALUES:
+            raise BadRequestError(
+                f"application_status must be one of {list(APPLICATION_STATUS_VALUES)} (got '{status}')."
+            )
+
+        lead = await self.get_lead(lead_id, user)
+        program = payload.get("program")
+
+        existing = (await self.db.execute(
+            select(LeadApplication.id).where(
+                LeadApplication.lead_id == lead_id,
+                LeadApplication.university_name == university_name,
+                LeadApplication.program.is_(program) if program is None
+                else LeadApplication.program == program,
+            )
+        )).scalar_one_or_none()
+        if existing:
+            raise BadRequestError(
+                f"This lead already has an application for '{university_name}'"
+                f"{f' ({program})' if program else ''}. Use PATCH to update it."
+            )
+
+        entry = LeadApplication(
+            company_id=self.company_id,
+            lead_id=lead_id,
+            university_name=university_name,
+            program=program,
+            intake=payload.get("intake"),
+            country=payload.get("country"),
+            application_status=status,
+            notes=payload.get("notes"),
+        )
+        self.db.add(entry)
+        await self.db.flush()
+        await self._resync_primary_application(lead)
+        await self.db.commit()
+        await self.db.refresh(entry)
+        return entry
+
+    async def update_application_entry(self, lead_id: uuid.UUID, entry_id: uuid.UUID, payload: dict, user: Profile):
+        """Update an application entry. Offer-detail fields (offer_date,
+        tuition_fee, deposit, CAS, visa) are only writable once the
+        application reaches an offer-or-later status."""
+        from app.models.lead_application import LeadApplication
+        from app.core.constants import (
+            APPLICATION_STATUS_VALUES, APPLICATION_OFFER_STATUSES, VISA_STATUS_VALUES,
+        )
+        from app.utils.date_helpers import now_utc
+        await self._require_admitverse()
+
+        lead = await self.get_lead(lead_id, user)
+        entry = (await self.db.execute(
+            select(LeadApplication).where(
+                LeadApplication.id == entry_id,
+                LeadApplication.lead_id == lead_id,
+                LeadApplication.company_id == self.company_id,
+            )
+        )).scalar_one_or_none()
+        if not entry:
+            raise NotFoundError("Application entry not found")
+
+        # Apply status first so the offer-gate below sees the new value.
+        new_status = payload.get("application_status")
+        if new_status is not None:
+            if new_status not in APPLICATION_STATUS_VALUES:
+                raise BadRequestError(
+                    f"application_status must be one of {list(APPLICATION_STATUS_VALUES)} (got '{new_status}')."
+                )
+            entry.application_status = new_status
+        for plain in ("program", "intake", "country", "notes"):
+            if plain in payload and payload[plain] is not None:
+                setattr(entry, plain, payload[plain])
+
+        has_offer_update = any(payload.get(f) is not None for f in self._APPLICATION_OFFER_FIELDS)
+        if has_offer_update:
+            if entry.application_status not in APPLICATION_OFFER_STATUSES:
+                raise BadRequestError(
+                    "Offer/admission details can only be entered once the "
+                    "application reaches an offer status. Move "
+                    "application_status to 'offer_received' or later first."
+                )
+            if payload.get("visa_status") is not None and payload["visa_status"] not in VISA_STATUS_VALUES:
+                raise BadRequestError(f"visa_status must be one of {list(VISA_STATUS_VALUES)}.")
+            for f in self._APPLICATION_OFFER_FIELDS:
+                if f in payload and payload[f] is not None:
+                    setattr(entry, f, payload[f])
+
+        entry.updated_at = now_utc()
+        await self.db.flush()
+        await self._resync_primary_application(lead)
+        await self.db.commit()
+        await self.db.refresh(entry)
+        return entry
+
+    async def delete_application_entry(self, lead_id: uuid.UUID, entry_id: uuid.UUID, user: Profile) -> None:
+        from app.models.lead_application import LeadApplication
+        await self._require_admitverse()
+        lead = await self.get_lead(lead_id, user)
+        entry = (await self.db.execute(
+            select(LeadApplication).where(
+                LeadApplication.id == entry_id,
+                LeadApplication.lead_id == lead_id,
+                LeadApplication.company_id == self.company_id,
+            )
+        )).scalar_one_or_none()
+        if not entry:
+            raise NotFoundError("Application entry not found")
+        await self.db.delete(entry)
+        await self.db.flush()
+        await self._resync_primary_application(lead)
         await self.db.commit()
 
     async def add_remark(self, lead_id: uuid.UUID, body: str, user: Profile) -> dict:

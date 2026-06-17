@@ -347,6 +347,107 @@ FMC_DOC_CHECKLIST: list[dict[str, str]] = [
 FMC_DOC_KEYS: frozenset[str] = frozenset(d["key"] for d in FMC_DOC_CHECKLIST)
 
 
+# ── Admitverse document checklist ──────────────────────────────────────
+# The standard docs a study-abroad applicant submits. Same storage model
+# as FMC (submitted_docs holds the keys; docs_required mirrors the count),
+# just a study-abroad list instead of the loan-doc list.
+AV_DOC_CHECKLIST: list[dict[str, str]] = [
+    {"key": "passport", "label": "Passport"},
+    {"key": "academic", "label": "Academic Transcripts"},
+    {"key": "degree", "label": "Degree Certificate"},
+    {"key": "english_test", "label": "IELTS/TOEFL Score"},
+    {"key": "sop", "label": "Statement of Purpose"},
+    {"key": "lor", "label": "Letters of Recommendation"},
+    {"key": "cv", "label": "CV / Resume"},
+    {"key": "financial", "label": "Financial Documents"},
+]
+
+AV_DOC_KEYS: frozenset[str] = frozenset(d["key"] for d in AV_DOC_CHECKLIST)
+
+
+def get_doc_checklist_for_brand(slug: str | None) -> list[dict[str, str]]:
+    if (slug or "").lower() == "admitverse":
+        return AV_DOC_CHECKLIST
+    return FMC_DOC_CHECKLIST
+
+
+def get_doc_keys_for_brand(slug: str | None) -> frozenset[str]:
+    if (slug or "").lower() == "admitverse":
+        return AV_DOC_KEYS
+    return FMC_DOC_KEYS
+
+
+# ── Admitverse per-university application tracking ──────────────────────
+# A study-abroad lead applies to several universities at once; each
+# application moves through its own status ladder (the analog of FMC's
+# per-bank bank_status). Stored in the lead_applications table.
+APPLICATION_STATUS_VALUES: tuple[str, ...] = (
+    "applied",
+    "shortlisted",
+    "offer_received",
+    "conditional_offer",
+    "unconditional_offer",
+    "deposit_paid",
+    "cas_received",
+    "visa_applied",
+    "visa_approved",
+    "enrolled",
+    "rejected",
+    "withdrawn",
+)
+
+# Priority for picking the "primary" application shown on the Kanban tile
+# (higher = further along). rejected/withdrawn never win primary (0).
+APPLICATION_STATUS_PRIORITY: dict[str, int] = {
+    "enrolled": 10,
+    "visa_approved": 9,
+    "visa_applied": 8,
+    "cas_received": 7,
+    "deposit_paid": 6,
+    "unconditional_offer": 5,
+    "conditional_offer": 4,
+    "offer_received": 3,
+    "shortlisted": 2,
+    "applied": 1,
+    "rejected": 0,
+    "withdrawn": 0,
+}
+
+# Statuses at/after which offer-detail fields (offer_date, tuition_fee,
+# deposit, CAS, visa) are writable — before an offer there's nothing to
+# record. Analog of FMC's sanctioned-or-later gate.
+APPLICATION_OFFER_STATUSES: frozenset[str] = frozenset({
+    "offer_received", "conditional_offer", "unconditional_offer",
+    "deposit_paid", "cas_received", "visa_applied", "visa_approved",
+    "enrolled",
+})
+
+VISA_STATUS_VALUES: tuple[str, ...] = ("not_started", "applied", "approved", "rejected")
+
+# Suggestion-only list (NOT locked, unlike FMC_BANKS). university_name is
+# free text; this just powers an autocomplete dropdown for AV counsellors.
+AV_UNIVERSITIES: list[str] = [
+    "University of Oxford", "University of Cambridge", "Imperial College London",
+    "University College London", "University of Edinburgh", "University of Manchester",
+    "King's College London", "University of Warwick", "University of Birmingham",
+    "University of Leeds", "Coventry University", "University of Greenwich",
+    "Massachusetts Institute of Technology", "Stanford University",
+    "Harvard University", "Carnegie Mellon University", "Columbia University",
+    "Northeastern University", "Arizona State University", "Purdue University",
+    "University of Toronto", "University of British Columbia", "McGill University",
+    "University of Melbourne", "University of Sydney", "Monash University",
+    "Technical University of Munich", "Trinity College Dublin",
+]
+
+
+def get_universities_for_brand(slug: str | None) -> list[str]:
+    """Suggestion list for the university autocomplete. Admitverse only —
+    FMC has no university field (returns [])."""
+    if (slug or "").lower() == "admitverse":
+        return AV_UNIVERSITIES
+    return []
+
+
 # ── Indian GST state codes ─────────────────────────────────────────────
 # 2-digit state codes as defined by GSTIN format (first 2 digits of every
 # GSTIN). Used by the invoice module to:

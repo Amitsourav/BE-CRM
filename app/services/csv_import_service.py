@@ -191,6 +191,17 @@ class CSVImportService:
                     from app.utils.loan_parser import parse_loan_amount
                     lead_data["loan_amount_lakh"] = parse_loan_amount(raw)
 
+                # Admitverse budget: free text in any currency. Mirror to
+                # budget_amount + budget_currency so the AV Kanban budget
+                # filter works on imported rows. Unparseable values just
+                # leave the numeric mirror NULL (no row rejection).
+                if lead_data.get("budget"):
+                    from app.utils.budget_parser import parse_budget
+                    amount, currency = parse_budget(lead_data["budget"])
+                    if amount is not None:
+                        lead_data["budget_amount"] = amount
+                        lead_data["budget_currency"] = currency
+
                 parsed_rows.append((row_idx, lead_data))
             except Exception as e:
                 errors.append({"row": row_idx, "error": str(e)})

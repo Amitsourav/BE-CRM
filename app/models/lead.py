@@ -114,6 +114,26 @@ class Lead(Base, TimestampMixin):
     # this NULL — present here only so the shared model class doesn't
     # diverge across the two backends.
     budget: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    # Parsed numeric mirror of `budget` (in the currency's base unit) +
+    # detected currency. Auto-populated via app.utils.budget_parser so the
+    # AV Kanban budget-range filter can compare numbers within a currency.
+    # Analog of loan_amount_lakh, but multi-currency for study-abroad.
+    budget_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
+    budget_currency: Mapped[Optional[str]] = mapped_column(String(3), nullable=True, server_default=text("'INR'"))
+
+    # Admitverse per-university application mirror (analog of bank_name /
+    # bank_status). Auto-synced by the service to the highest-priority
+    # lead_applications entry, shown as the primary application on the tile.
+    primary_university: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    application_status: Mapped[Optional[str]] = mapped_column(
+        ENUM(
+            'applied', 'shortlisted', 'offer_received', 'conditional_offer',
+            'unconditional_offer', 'deposit_paid', 'cas_received',
+            'visa_applied', 'visa_approved', 'enrolled', 'rejected', 'withdrawn',
+            name='application_status', create_type=False,
+        ),
+        nullable=True,
+    )
 
     # Relationships
     company = relationship("Company", back_populates="leads")

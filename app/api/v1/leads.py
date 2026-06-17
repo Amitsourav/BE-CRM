@@ -18,6 +18,7 @@ from app.schemas.lead import (
     LeadDistributeRangeRequest, LeadDistributeRangeResponse,
     LeadImportantToggle, LeadRemarkCreate, LeadRemarkOut,
     LeadBankCreate, LeadBankUpdate, LeadBankOut,
+    LeadApplicationCreate, LeadApplicationUpdate, LeadApplicationOut,
     LeadReassign,
 )
 from app.schemas.stage import StageLogOut
@@ -27,6 +28,15 @@ from app.schemas.common import PaginatedResponse
 from app.core.constants import UserRole
 
 router = APIRouter(prefix="/leads", tags=["Leads"])
+
+
+async def _company_slug(db: AsyncSession, company_id: uuid.UUID) -> str:
+    """Resolve the tenant's brand slug (lowercased) for brand-gating."""
+    from app.models.company import Company
+    slug = (await db.execute(
+        select(Company.slug).where(Company.id == company_id)
+    )).scalar_one_or_none()
+    return (slug or "").lower()
 
 
 @router.get("", response_model=PaginatedResponse[LeadOut])
@@ -102,6 +112,14 @@ async def list_leads_by_stage(
     due_to: date | None = Query(None),
     dnp_min: int | None = Query(None, ge=0),
     dnp_max: int | None = Query(None, ge=0),
+    # Admitverse-only filters. Ignored on FMC. application_status/university
+    # filter the per-university application data; budget_* filter the parsed
+    # numeric budget within a currency.
+    application_status: str | None = Query(None, description="AV: filter by a university-application status"),
+    university: str | None = Query(None, description="AV: ILIKE match on primary_university"),
+    budget_min: float | None = Query(None, ge=0, description="AV: min budget (in budget_currency units)"),
+    budget_max: float | None = Query(None, ge=0, description="AV: max budget (in budget_currency units)"),
+    budget_currency: str = Query("INR", description="AV: currency the budget_min/max are expressed in"),
     important_only: bool = Query(False, description="Only starred leads"),
     lead_segment: str | None = Query(
         None,
@@ -110,8 +128,8 @@ async def list_leads_by_stage(
     ),
     sort_by: str = Query(
         "created_desc",
-        regex="^(created_desc|loan_asc|loan_desc)$",
-        description="Per-column row order: created_desc (newest first, default), loan_asc (Low→High), loan_desc (High→Low). Leads without a loan_amount_lakh value are placed at the end in loan_asc/desc.",
+        regex="^(created_desc|loan_asc|loan_desc|budget_asc|budget_desc)$",
+        description="Per-column row order: created_desc (default), loan_asc/desc (FMC), budget_asc/desc (AV). Leads without the sort value are placed at the end.",
     ),
 ):
     """Kanban board endpoint — returns all leads grouped by stage in one
@@ -129,6 +147,8 @@ async def list_leads_by_stage(
         created_from=created_from, created_to=created_to,
         due_from=due_from, due_to=due_to,
         dnp_min=dnp_min, dnp_max=dnp_max,
+        application_status=application_status, university=university,
+        budget_min=budget_min, budget_max=budget_max, budget_currency=budget_currency,
         important_only=important_only,
         lead_segment=lead_segment,
         sort_by=sort_by,
@@ -163,13 +183,32 @@ async def list_lost_reasons(
 
 
 @router.get("/banks", response_model=list[str])
-async def list_banks():
+async def list_banks(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
     """Canonical FMC bank dropdown for the Kanban-card bank_name field
     and the lead edit form. Locked list — backend rejects any bank_name
-    not in here on lead update.
+    not in here on lead update. Admitverse has no banks → returns [].
     """
     from app.core.constants import FMC_BANKS
+    if await _company_slug(db, company_id) == "admitverse":
+        return []
     return list(FMC_BANKS)
+
+
+@router.get("/universities", response_model=list[str])
+async def list_universities(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """University autocomplete suggestions for the Admitverse application
+    form. NOT a locked list (unlike /leads/banks) — university_name is
+    free text. FMC has no universities → returns [].
+    """
+    from app.core.constants import get_universities_for_brand
+    slug = await _company_slug(db, company_id)
+    return get_universities_for_brand(slug)
 
 
 @router.get("/search", response_model=PaginatedResponse[LeadOut])
@@ -284,6 +323,69 @@ async def delete_lead_bank(
     return {"message": "Bank entry deleted"}
 
 
+@router.get("/{lead_id}/applications", response_model=list[LeadApplicationOut])
+async def list_lead_applications(
+    lead_id: uuid.UUID,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """All university-application entries for a lead, newest first. Each
+    entry has its own status. lead.primary_university + application_status
+    reflect the highest-priority entry shown on the Kanban tile.
+    """
+    service = LeadService(db, company_id)
+    return await service.list_applications(lead_id, current_user)
+
+
+@router.post("/{lead_id}/applications", response_model=LeadApplicationOut, status_code=201)
+async def add_lead_application(
+    lead_id: uuid.UUID,
+    body: LeadApplicationCreate,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a university application to a lead (Admitverse only). Returns
+    400 if the lead already has an entry for that university+program.
+    """
+    service = LeadService(db, company_id)
+    return await service.add_application(lead_id, body.model_dump(exclude_unset=True), current_user)
+
+
+@router.patch("/{lead_id}/applications/{entry_id}", response_model=LeadApplicationOut)
+async def update_lead_application(
+    lead_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    body: LeadApplicationUpdate,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update application_status, notes, and/or the offer-detail fields on
+    a single application entry. Offer details are only writable once the
+    application reaches offer_received or later.
+    """
+    service = LeadService(db, company_id)
+    return await service.update_application_entry(
+        lead_id, entry_id, body.model_dump(exclude_unset=True), current_user
+    )
+
+
+@router.delete("/{lead_id}/applications/{entry_id}")
+async def delete_lead_application(
+    lead_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a university-application entry from a lead."""
+    service = LeadService(db, company_id)
+    await service.delete_application_entry(lead_id, entry_id, current_user)
+    return {"message": "Application entry deleted"}
+
+
 @router.post("/{lead_id}/remarks", response_model=LeadRemarkOut, status_code=201)
 async def add_lead_remark(
     lead_id: uuid.UUID,
@@ -352,14 +454,16 @@ async def get_lead_tasks(
 @router.get("/docs/checklist")
 async def get_docs_checklist(
     current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Return the standard FMC document checklist (key + label pairs).
-    FE renders the per-doc checkboxes on the Kanban tile from this list.
-    Hardcoded server-side so adding/removing docs doesn't need a FE
-    change — just a backend constant + migration if defaults shift.
+    """Return the standard document checklist (key + label pairs) for the
+    tenant's brand. FMC gets the loan-doc list; Admitverse gets the
+    study-abroad list. FE renders the per-doc checkboxes from this list.
     """
-    from app.core.constants import FMC_DOC_CHECKLIST
-    return {"items": FMC_DOC_CHECKLIST}
+    from app.core.constants import get_doc_checklist_for_brand
+    slug = await _company_slug(db, company_id)
+    return {"items": get_doc_checklist_for_brand(slug)}
 
 
 @router.post("/{lead_id}/assign", response_model=LeadOut)

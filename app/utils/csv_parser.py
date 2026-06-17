@@ -41,6 +41,13 @@ LEAD_FIELD_ALIASES: dict[str, list[str]] = {
         "loan amount", "loan amount (lakhs)", "amount", "amount (lakhs)",
         "amount (₹l)", "loan", "loan size",
     ],
+    # Admitverse-specific: free-text budget ("50 lakh", "£18,000",
+    # "$30,000"). csv_import_service mirrors it to budget_amount +
+    # budget_currency via app.utils.budget_parser.
+    "budget": [
+        "budget", "study budget", "education budget", "budget amount",
+        "annual budget", "fees budget",
+    ],
 }
 
 

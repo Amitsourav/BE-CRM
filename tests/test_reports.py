@@ -41,8 +41,11 @@ async def test_pipeline_returns_all_stages(admin_client, sample_lead):
     data = resp.json()
     assert "stages" in data
     stage_names = [s["stage"] for s in data["stages"]]
-    assert "lead" in stage_names
-    assert "won" in stage_names
+    # FMC's May 2026 revamp replaced the legacy lead/called/won funnel with
+    # the loan-processing pipeline (created → ... → disbursed). The pipeline
+    # report now reflects FMC_STAGES, not the old 6-stage list.
+    assert "created" in stage_names
+    assert "disbursed" in stage_names
     assert "lost" in stage_names
 
 

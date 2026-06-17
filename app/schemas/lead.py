@@ -157,6 +157,13 @@ class LeadOut(BaseModel):
     latest_note: dict | None = None
     # Admitverse tile field (free text budget). FMC leaves NULL.
     budget: str | None = None
+    budget_amount: Decimal | None = None
+    budget_currency: str | None = None
+    # Admitverse university-application rollups (analog of bank_count/top_banks).
+    primary_university: str | None = None
+    application_status: str | None = None
+    application_count: int = 0
+    top_applications: list[dict] = []
     # Activity rollups (computed in service, not on the model)
     assigned_agent_name: str | None = None
     assigned_agent_role: str | None = None
@@ -227,6 +234,13 @@ class LeadCardOut(BaseModel):
     target_intake: str | None = None
     preferred_countries: list[str] = []
     budget: str | None = None
+    budget_amount: Decimal | None = None
+    budget_currency: str | None = None
+    # Admitverse per-university application rollups (analog of bank_count/top_banks).
+    primary_university: str | None = None
+    application_status: str | None = None
+    application_count: int = 0
+    top_applications: list[dict] = []
 
     @field_validator("preferred_countries", mode="before")
     @classmethod
@@ -383,6 +397,57 @@ class LeadBankOut(BaseModel):
     first_tranche_amount: Decimal | None = None
     no_of_tranches: int | None = None
     pf_status: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class LeadApplicationCreate(BaseModel):
+    university_name: str = Field(min_length=1, max_length=200)
+    program: str | None = None
+    intake: str | None = None
+    country: str | None = None
+    application_status: str = "applied"
+    notes: str | None = None
+
+
+class LeadApplicationUpdate(BaseModel):
+    application_status: str | None = None
+    program: str | None = None
+    intake: str | None = None
+    country: str | None = None
+    notes: str | None = None
+    # Offer / admission details — backend rejects these unless the
+    # application is in an offer-or-later status. Entered from the
+    # "Application Details" card on the AV lead detail page.
+    application_ref: str | None = None
+    offer_date: date | None = None
+    tuition_fee: Decimal | None = None
+    scholarship_amount: Decimal | None = None
+    deposit_amount: Decimal | None = None
+    deposit_paid_date: date | None = None
+    cas_number: str | None = None
+    visa_status: str | None = None  # not_started | applied | approved | rejected
+
+
+class LeadApplicationOut(BaseModel):
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    university_name: str
+    program: str | None = None
+    intake: str | None = None
+    country: str | None = None
+    application_status: str
+    notes: str | None = None
+    application_ref: str | None = None
+    offer_date: date | None = None
+    tuition_fee: Decimal | None = None
+    scholarship_amount: Decimal | None = None
+    deposit_amount: Decimal | None = None
+    deposit_paid_date: date | None = None
+    cas_number: str | None = None
+    visa_status: str | None = None
     created_at: datetime
     updated_at: datetime
 
