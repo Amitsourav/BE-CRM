@@ -206,10 +206,13 @@ class StageMachine:
         if target == LeadStage.LOST:
             lead.lost_time = now_utc()
             lead.lost_reason = lost_reason
-        if target == LeadStage.DNP:
-            # FMC DNP attempt counter — increments each time a lead lands
-            # back in the DNP column. Lets the card render "DNP-3" so the
-            # telecaller knows how many times this lead has been chased.
+        if target in (LeadStage.DNP, LeadStage.DNP_PRE_QUALIFIED, LeadStage.DNP_POST_QUALIFIED):
+            # DNP attempt counter — increments each time a lead lands back in
+            # a DNP stage. Lets the card render "DNP-3" so the counsellor
+            # knows how many times this lead has been chased. FMC uses the
+            # single `dnp` stage; Admitverse uses dnp_pre/post_qualified —
+            # both feed the same counter. (FMC never hits the AV stages and
+            # vice-versa, so this stays correct per brand.)
             lead.dnp_count = (lead.dnp_count or 0) + 1
         if target == LeadStage.LEAD and from_stage == LeadStage.LOST:
             # Reopen — clear lost fields (FMC only)
