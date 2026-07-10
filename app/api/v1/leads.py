@@ -55,8 +55,8 @@ async def list_leads(
     date_to: date | None = Query(None),
     lead_segment: str | None = Query(
         None,
-        regex="^(campaign|unassigned|counsellor|pre_counsellor)$",
-        description="Admin-only slice: campaign | unassigned | counsellor | pre_counsellor.",
+        regex="^(campaign|normal|unassigned|counsellor|pre_counsellor)$",
+        description="Admin-only slice: campaign (AI-calling leads) | normal (never in a campaign) | unassigned | counsellor | pre_counsellor.",
     ),
 ):
     service = LeadService(db, company_id)
@@ -123,8 +123,8 @@ async def list_leads_by_stage(
     important_only: bool = Query(False, description="Only starred leads"),
     lead_segment: str | None = Query(
         None,
-        regex="^(campaign|unassigned|counsellor|pre_counsellor)$",
-        description="Admin-only slice: campaign | unassigned | counsellor | pre_counsellor. FE should hide this dropdown for non-admin roles since restricted-view roles already only see their own leads.",
+        regex="^(campaign|normal|unassigned|counsellor|pre_counsellor)$",
+        description="Admin-only slice: campaign (AI-calling leads) | normal (never in a campaign) | unassigned | counsellor | pre_counsellor. FE should hide this dropdown for non-admin roles since restricted-view roles already only see their own leads.",
     ),
     sort_by: str = Query(
         "created_desc",

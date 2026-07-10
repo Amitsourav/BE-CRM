@@ -500,6 +500,12 @@ class LeadService:
                 select(CampaignLead.lead_id)
                 .where(CampaignLead.company_id == self.company_id)
             ))
+        elif lead_segment == "normal":
+            # "Normal" (non-AI) leads — never enrolled in any campaign.
+            query = query.where(~Lead.id.in_(
+                select(CampaignLead.lead_id)
+                .where(CampaignLead.company_id == self.company_id)
+            ))
 
         page_data = await paginate(self.db, query, page, page_size)
         # Same enrichment the Kanban /by-stage endpoint applies. Without
@@ -634,6 +640,14 @@ class LeadService:
             # Lead has at least one campaign_leads row — i.e. it's
             # currently in or has been part of an AI / drip campaign.
             query = query.where(Lead.id.in_(
+                select(CampaignLead.lead_id)
+                .where(CampaignLead.company_id == self.company_id)
+            ))
+        elif lead_segment == "normal":
+            # "Normal" (non-AI) leads — never enrolled in any campaign.
+            # The inverse of "campaign"; lets the pipeline show only
+            # human-worked leads, hiding AI-calling ones.
+            query = query.where(~Lead.id.in_(
                 select(CampaignLead.lead_id)
                 .where(CampaignLead.company_id == self.company_id)
             ))
