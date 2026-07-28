@@ -171,6 +171,11 @@ class LeadSourceType(str, enum.Enum):
     META_ADS = "meta_ads"
     MANUAL = "manual"
     WHATSAPP = "whatsapp"
+    # Marketing-website lead forms (admitverse.com / fundmycampus.com).
+    # Added 2026-07-28 with the Website Leads inbox — one LeadSource per
+    # form, so the sources report breaks down conversion per form rather
+    # than lumping every site form into one bucket.
+    WEBSITE = "website"
 
 
 class CSVImportStatus(str, enum.Enum):

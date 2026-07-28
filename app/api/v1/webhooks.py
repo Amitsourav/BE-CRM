@@ -354,3 +354,11 @@ async def internal_meta_ingest(
     logger.info("Internal meta ingest: created lead %s (#%s) on tenant %s from form %s",
                 lead.id, lead.serial_no, company_id, body.form_id)
     return {"status": "ok", "lead_id": str(lead.id), "serial_no": lead.serial_no}
+
+
+# ── Website lead ingest ────────────────────────────────────────────────
+#
+# Lives in app/api/v1/website_leads.py, NOT here. That module omits
+# `from __future__ import annotations`, which this file has — the two
+# don't mix with slowapi's @limiter.limit decorator (FastAPI then can't
+# resolve the body model and treats it as a query param → 422).

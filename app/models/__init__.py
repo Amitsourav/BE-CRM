@@ -18,6 +18,7 @@ from app.models.campaign_lead import CampaignLead
 from app.models.invoice_settings import InvoiceSettings
 from app.models.invoice_counter import InvoiceCounter
 from app.models.invoice import Invoice
+from app.models.website_submission import WebsiteSubmission
 
 __all__ = [
     "Base",
@@ -40,4 +41,5 @@ __all__ = [
     "InvoiceSettings",
     "InvoiceCounter",
     "Invoice",
+    "WebsiteSubmission",
 ]

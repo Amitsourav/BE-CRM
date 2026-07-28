@@ -3,6 +3,7 @@ from app.api.v1 import (
     auth, users, leads, lead_stages, call_attempts,
     tasks, notifications, csv_import, webhooks, reports,
     companies, agents, voice, activity_logs, campaigns, invoices,
+    website_leads,
 )
 
 api_router = APIRouter(prefix="/api/v1")
@@ -24,3 +25,5 @@ api_router.include_router(voice.router, prefix="/voice", tags=["Voice"])
 api_router.include_router(activity_logs.router)
 api_router.include_router(campaigns.router)
 api_router.include_router(invoices.router)
+api_router.include_router(website_leads.router)
+api_router.include_router(website_leads.ingest_router)

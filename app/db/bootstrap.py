@@ -33,7 +33,7 @@ ENUM_TYPES: dict[str, list[str]] = {
     "user_role": ["admin", "manager", "pre_counsellor"],
     "task_type": ["follow_up", "call", "meeting", "document_collection", "application", "other"],
     "task_status": ["pending", "in_progress", "completed", "overdue"],
-    "lead_source_type": ["csv", "meta_ads", "manual", "whatsapp"],
+    "lead_source_type": ["csv", "meta_ads", "manual", "whatsapp", "website"],
     "notification_type": [
         "lead_assigned", "task_created", "task_overdue",
         "dnp_warning", "dnp_auto_lost", "stage_changed",
