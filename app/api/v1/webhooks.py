@@ -354,3 +354,94 @@ async def internal_meta_ingest(
     logger.info("Internal meta ingest: created lead %s (#%s) on tenant %s from form %s",
                 lead.id, lead.serial_no, company_id, body.form_id)
     return {"status": "ok", "lead_id": str(lead.id), "serial_no": lead.serial_no}
+
+
+# ── Website lead ingest (admitverse.com forms) ────────────────────
+
+class _WebsiteLeadIngest(BaseModel):
+    full_name: str
+    email: str | None = None
+    phone: str | None = None
+    source: str = "website"
+    page: str | None = None
+    tag: str | None = None
+    intake: str | None = None
+    referred_by: str | None = None
+    extra_fields: dict = {}
+
+
+@internal_router.post("/website/ingest")
+async def internal_website_ingest(
+    body: _WebsiteLeadIngest,
+    x_internal_secret: str | None = Header(None, alias="X-Internal-Secret"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Receive a lead from the AdmitVerse website (dMAT funnel, mock
+    signups, …). Only callable with the shared WEBSITE_LEAD_SECRET
+    header; falls back to INTERNAL_META_SECRET so one secret can
+    serve both internal ingest paths.
+    """
+    settings = get_settings()
+    expected = settings.website_lead_secret or settings.internal_meta_secret
+    if not expected or x_internal_secret != expected:
+        logger.warning("Website ingest: bad or missing secret")
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    from app.models.profile import Profile
+    from app.services.lead_service import LeadService
+    from app.utils.csv_parser import normalize_phone
+    from app.models.lead import Lead
+
+    # Single-tenant AV DB: resolve the company via its first admin,
+    # same fallback the Meta ingest uses.
+    admin = (await db.execute(
+        select(Profile).where(Profile.role == "admin").limit(1)
+    )).scalar_one_or_none()
+    if not admin:
+        raise HTTPException(status_code=400, detail="No company resolvable")
+    company_id = admin.company_id
+
+    svc = LeadService(db, company_id)
+    phone = normalize_phone(body.phone) if body.phone else None
+    email = body.email.strip().lower() if body.email else None
+
+    # Dedup within the tenant on email first, then phone — the website
+    # form retries on flaky connections and users double-submit.
+    if email:
+        dup = (await db.execute(
+            select(Lead.id).where(
+                Lead.company_id == company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                Lead.email == email,
+            )
+        )).first()
+        if dup:
+            return {"status": "duplicate", "email": email}
+    if phone:
+        dup = (await db.execute(
+            select(Lead.id).where(
+                Lead.company_id == company_id,
+                Lead.is_deleted == False,  # noqa: E712
+                Lead.phone == phone,
+            )
+        )).first()
+        if dup:
+            return {"status": "duplicate", "phone": phone}
+
+    data = {
+        "full_name": body.full_name,
+        "email": email,
+        "phone": phone,
+        "custom_fields": {
+            "website_source": body.source,
+            "website_page": body.page,
+            "website_tag": body.tag,
+            "dmat_intake": body.intake,
+            "referred_by": body.referred_by,
+            **(body.extra_fields or {}),
+        },
+    }
+    lead = await svc.create_lead(data, admin.id, creator_role=None)
+    logger.info("Website ingest: created lead %s (#%s) on tenant %s from %s",
+                lead.id, lead.serial_no, company_id, body.page or body.source)
+    return {"status": "ok", "lead_id": str(lead.id), "serial_no": lead.serial_no}
