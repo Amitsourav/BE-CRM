@@ -141,7 +141,7 @@ class InvoiceService:
         return s
 
     async def _reserve_invoice_number(
-        self, fy: str, prefix: str
+        self, fy: str, prefix: str, start_number: int = 1
     ) -> tuple[str, int]:
         """Atomic counter increment. Returns (formatted_number, sequence).
 
@@ -149,19 +149,27 @@ class InvoiceService:
         INSERT … ON CONFLICT … RETURNING gives us a row-level lock that
         serializes concurrent invoice creates. Two admins clicking
         Create at the same instant get distinct sequence numbers.
+
+        `start_number` sets where a FRESH (company, FY) sequence begins —
+        the very first invoice of a new FY is numbered `start_number`
+        instead of 1. It ONLY applies on the INSERT branch; once the
+        counter row exists the ON CONFLICT path just increments, so an
+        in-progress FY is unaffected. (Stored `next_number` == the number
+        that will be issued next: seed at `start_number + 1` so the first
+        RETURNING `next_number - 1` yields `start_number`.)
         """
         result = (await self.db.execute(
             sa_text(
                 """
                 INSERT INTO invoice_counters (company_id, financial_year, next_number)
-                VALUES (:cid, :fy, 2)
+                VALUES (:cid, :fy, :start + 1)
                 ON CONFLICT (company_id, financial_year) DO UPDATE
                   SET next_number = invoice_counters.next_number + 1,
                       updated_at = now()
                 RETURNING next_number - 1 AS issued_number
                 """
             ),
-            {"cid": str(self.company_id), "fy": fy},
+            {"cid": str(self.company_id), "fy": fy, "start": int(start_number)},
         )).first()
         seq = int(result.issued_number)
         return f"{prefix}/{fy}/{seq:03d}", seq
@@ -307,7 +315,9 @@ class InvoiceService:
         )
 
         # Phase 2 + 3 — number + insert in single transaction
-        number, seq = await self._reserve_invoice_number(fy, settings.invoice_prefix)
+        number, seq = await self._reserve_invoice_number(
+            fy, settings.invoice_prefix, settings.invoice_start_number,
+        )
         invoice = Invoice(
             company_id=self.company_id,
             invoice_number=number,

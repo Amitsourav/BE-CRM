@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
-from sqlalchemy import String, Text, DateTime, Numeric, ForeignKey, CheckConstraint, text
+from sqlalchemy import String, Text, DateTime, Numeric, Integer, ForeignKey, CheckConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID
 from app.models.base import Base
@@ -50,6 +50,12 @@ class InvoiceSettings(Base):
     logo_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     signature_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     invoice_prefix: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'FMC'"))
+    # Where a FRESH (company, financial-year) sequence begins. The first
+    # invoice of a new FY (or a brand-new tenant) is numbered this value
+    # instead of 1 — lets the business open at e.g. #20 so early invoices
+    # don't read as "001". Once a FY's counter exists this is ignored for
+    # that FY (the atomic counter only increments). Admin-configurable.
+    invoice_start_number: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("20"))
     default_tax_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, server_default=text("18.00"))
     default_terms: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))

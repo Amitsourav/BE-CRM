@@ -42,6 +42,10 @@ class InvoiceSettingsUpsert(BaseModel):
     bank_name: Optional[str] = Field(default=None, max_length=100)
     bank_branch: Optional[str] = Field(default=None, max_length=100)
     invoice_prefix: str = Field(default="FMC", min_length=1, max_length=20)
+    # Starting number for a fresh financial-year sequence (default 20).
+    # Only governs the FIRST invoice of a new FY / tenant; an in-progress
+    # FY keeps incrementing from where it already is.
+    invoice_start_number: int = Field(default=20, ge=1, le=1_000_000_000)
     default_tax_rate: Decimal = Field(default=Decimal("18.00"), ge=0, le=100)
     default_terms: Optional[str] = None
 
@@ -83,6 +87,7 @@ class InvoiceSettingsOut(BaseModel):
     logo_url: Optional[str] = None
     signature_url: Optional[str] = None
     invoice_prefix: str
+    invoice_start_number: int
     default_tax_rate: Decimal
     default_terms: Optional[str] = None
     created_at: datetime
