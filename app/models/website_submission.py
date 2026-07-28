@@ -73,7 +73,12 @@ class WebsiteSubmission(Base, TimestampMixin):
     # ── The person ────────────────────────────────────────────────────
     full_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     email: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
-    phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # 32, not 20: website phone fields are free text and normalize_phone
+    # passes anything that isn't a clean 10/12-digit Indian number through
+    # untouched ("98765 43210 call after 6pm"). Anything longer than this
+    # is parked in payload["phone_raw"] by the service rather than
+    # truncated — see WebsiteSubmissionService.ingest.
+    phone: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Everything the form sent, verbatim. Survives form changes and lets

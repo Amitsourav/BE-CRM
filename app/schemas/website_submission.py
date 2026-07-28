@@ -23,7 +23,12 @@ class WebsiteLeadIngest(BaseModel):
 
     full_name: Optional[str] = Field(default=None, max_length=200)
     email: Optional[str] = Field(default=None, max_length=200)
-    phone: Optional[str] = Field(default=None, max_length=30)
+    # Generous cap: free-text phone fields collect things like
+    # "98765 43210 (call after 6pm)". Anything that survives this but is
+    # too wide for the column gets parked in payload["phone_raw"] rather
+    # than rejected — losing a real enquiry over a messy phone field is
+    # worse than storing it for a human to read.
+    phone: Optional[str] = Field(default=None, max_length=120)
     message: Optional[str] = None
 
     source: Optional[str] = Field(default=None, max_length=80)

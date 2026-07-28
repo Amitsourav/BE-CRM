@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 VALID_STATUSES = ("new", "converted", "duplicate", "spam")
 
+# Must match WebsiteSubmission.phone column width.
+PHONE_MAX_LEN = 32
+
 
 async def resolve_ingest_company(db: AsyncSession, company_slug: Optional[str]) -> uuid.UUID:
     """Work out which tenant an unauthenticated website POST belongs to.
@@ -95,6 +98,20 @@ class WebsiteSubmissionService:
         phone = normalize_phone(data.phone) if (data.phone or "").strip() else None
         external_id = (data.external_id or "").strip() or None
 
+        # normalize_phone returns the input untouched when it isn't a clean
+        # 10/12-digit Indian number, and website phone fields are free text
+        # ("98765 43210 call after 6pm"). Anything too long for the column
+        # would 500 the request and lose the lead, so park the raw value in
+        # payload instead of truncating it into a wrong number.
+        extra = dict(data.extra_fields or {})
+        if phone and len(phone) > PHONE_MAX_LEN:
+            extra["phone_raw"] = phone
+            logger.info(
+                "Website ingest: unparseable phone (%d chars) parked in payload for form=%s",
+                len(phone), data.form_key,
+            )
+            phone = None
+
         if external_id:
             existing = (await self.db.execute(
                 select(WebsiteSubmission).where(
@@ -124,7 +141,7 @@ class WebsiteSubmissionService:
             email=email,
             phone=phone,
             message=(data.message or "").strip() or None,
-            payload=dict(data.extra_fields or {}),
+            payload=extra,
             external_id=external_id,
             status="new",
             lead_id=matched_lead_id,

@@ -265,3 +265,36 @@ async def test_panel_is_tenant_scoped(db_session, admin_user, ingest_payload):
     other = WebsiteSubmissionService(db_session, uuid.uuid4())
     with pytest.raises(NotFoundError):
         await other.get(submission.id)
+
+
+# ── Free-text phone fields (regression: 500 on long values) ────────────
+
+@pytest.mark.asyncio
+async def test_long_unparseable_phone_is_parked_not_crashed(db_session, admin_user):
+    """normalize_phone passes non-Indian-format input through untouched.
+    A website visitor typing "98765 43210 call after 6pm" must not 500 the
+    ingest — the raw value is parked in payload instead."""
+    from app.schemas.website_submission import WebsiteLeadIngest
+    from app.services.website_submission_service import WebsiteSubmissionService
+
+    messy = "98765 43210 call after 6pm please"
+    service = WebsiteSubmissionService(db_session, admin_user.company_id)
+    submission, _ = await service.ingest(WebsiteLeadIngest(
+        form_key="av_contact", email="messyphone@example.com", phone=messy,
+    ))
+
+    assert submission.phone is None
+    assert submission.payload["phone_raw"] == messy
+
+
+@pytest.mark.asyncio
+async def test_normal_phone_still_normalized(db_session, admin_user):
+    from app.schemas.website_submission import WebsiteLeadIngest
+    from app.services.website_submission_service import WebsiteSubmissionService
+
+    service = WebsiteSubmissionService(db_session, admin_user.company_id)
+    submission, _ = await service.ingest(WebsiteLeadIngest(
+        form_key="av_contact", email="ok@example.com", phone="98765 43210",
+    ))
+    assert submission.phone == "+919876543210"
+    assert "phone_raw" not in submission.payload
