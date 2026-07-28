@@ -37,10 +37,6 @@ class Settings(BaseSettings):
     # both ends to authorize the internal POST.
     av_backend_url: str = ""
     internal_meta_secret: str = ""
-    # Website lead forms (admitverse.com dMAT funnel etc.) POST to
-    # /internal/website/ingest with this shared secret. Falls back to
-    # internal_meta_secret when unset so one secret can serve both.
-    website_lead_secret: str = ""
 
     # Backend URL (for webhook callbacks)
     backend_url: str = "https://be-crm-production.up.railway.app"
