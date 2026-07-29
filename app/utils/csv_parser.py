@@ -97,11 +97,32 @@ def suggest_column_mapping(headers: list[str]) -> dict[str, str]:
 
 
 def normalize_phone(phone: str | None) -> str | None:
+    """Best-effort normalisation of an Indian mobile number to +91XXXXXXXXXX.
+
+    Anything that doesn't resolve to a 10-digit national number is returned
+    unchanged rather than mangled — callers treat that as "unparseable".
+
+    The prefix stripping matters for deduplication: the same person typing
+    "07004428198" on a website form and "7004428198" on a CSV import has to
+    produce the same stored value, or the duplicate checks miss them and the
+    CRM ends up with two of the same lead.
+    """
     if not phone:
         return None
     digits = "".join(c for c in phone if c.isdigit())
+
+    # International dialling prefix: 0091XXXXXXXXXX
+    if len(digits) == 14 and digits.startswith("0091"):
+        digits = digits[4:]
+    # Country code: 91XXXXXXXXXX
     if len(digits) == 12 and digits.startswith("91"):
         digits = digits[2:]
+    # Domestic trunk prefix: 0XXXXXXXXXX — extremely common in web forms
+    # and on printed material. Added 2026-07-29 after live website leads
+    # arrived as "07004428198" and dodged the duplicate check.
+    if len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+
     if len(digits) == 10:
         return f"+91{digits}"
     return phone.strip()

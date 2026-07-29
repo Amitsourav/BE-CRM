@@ -298,3 +298,34 @@ async def test_normal_phone_still_normalized(db_session, admin_user):
     ))
     assert submission.phone == "+919876543210"
     assert "phone_raw" not in submission.payload
+
+
+# ── Phone normalisation (dedupe depends on these agreeing) ─────────────
+
+def test_normalize_phone_variants_all_agree():
+    """Every way a real person writes one Indian mobile must normalise to
+    the same string, or the duplicate check silently fails and the CRM
+    grows two copies of the same lead."""
+    from app.utils.csv_parser import normalize_phone
+
+    expected = "+917004428198"
+    for written in [
+        "7004428198",          # bare
+        "07004428198",         # domestic trunk prefix — the website case
+        "917004428198",        # country code
+        "+917004428198",       # e164
+        "+91 70044 28198",     # spaced
+        "0091 7004428198",     # international dialling prefix
+        "070-044-28198",       # punctuated
+    ]:
+        assert normalize_phone(written) == expected, f"{written!r} did not normalise"
+
+
+def test_normalize_phone_leaves_unparseable_untouched():
+    """Junk must come back unchanged so callers can spot it, not be
+    silently truncated into a wrong-but-plausible number."""
+    from app.utils.csv_parser import normalize_phone
+
+    assert normalize_phone("98765 43210 call after 6pm") == "98765 43210 call after 6pm"
+    assert normalize_phone("") is None
+    assert normalize_phone(None) is None
