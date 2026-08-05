@@ -105,6 +105,14 @@ async def resolve_api_key(db: AsyncSession, raw: str) -> Profile:
     "revoked" from "expired" from "the service account was disabled".
     The specific reason is logged server-side.
     """
+    # Deployment-level lock. The Admitverse service runs this same code
+    # with API_KEYS_ENABLED=false, so a key is refused there before any
+    # database work — even if a row somehow existed in its database.
+    from app.config import get_settings
+    if not get_settings().api_keys_enabled:
+        logger.warning("API_KEY_AUTH_FAILED reason=disabled_on_this_deployment")
+        raise UnauthorizedError("Invalid API key")
+
     if not looks_like_api_key(raw):
         raise UnauthorizedError("Invalid API key")
 

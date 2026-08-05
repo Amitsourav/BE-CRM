@@ -303,3 +303,64 @@ async def test_duplicate_error_detail_string_is_unchanged(duplicate_client):
         "A lead with phone +919812345678 already exists (Rohit Verma)."
     )
     assert isinstance(body["detail"], str)
+
+
+# ── Deployment lock (API_KEYS_ENABLED) ─────────────────────────────────
+#
+# One codebase runs as both the FundMyCampus and Admitverse backends.
+# Keys are already isolated by storage (a key's hash lives in exactly one
+# Supabase project), but that is a side effect of the deployments having
+# separate databases. These pin it as an enforced rule.
+
+@pytest.fixture
+def keys_disabled(monkeypatch):
+    from app.config import get_settings
+    settings = get_settings()
+    monkeypatch.setattr(settings, "api_keys_enabled", False, raising=False)
+    yield settings
+
+
+async def test_key_refused_when_disabled_on_this_deployment(keys_disabled):
+    """A perfectly valid key must still be refused where the feature is off."""
+    raw, row, _ = _make_key()
+    with pytest.raises(UnauthorizedError):
+        await resolve_api_key(_FakeSession(row), raw)
+
+
+async def test_disabled_check_runs_before_any_db_work(keys_disabled):
+    """Refusal must not depend on the database — the AV deployment's own
+    api_keys table exists (AUTO_MIGRATE created it) and must not be
+    consulted, let alone honoured."""
+    class _Exploding:
+        async def execute(self, stmt):
+            raise AssertionError("database must not be touched when disabled")
+
+    raw, _, _ = _make_key()
+    with pytest.raises(UnauthorizedError):
+        await resolve_api_key(_Exploding(), raw)
+
+
+async def test_disabled_refusal_is_indistinguishable_from_a_bad_key(keys_disabled):
+    raw, row, _ = _make_key()
+    with pytest.raises(UnauthorizedError) as exc:
+        await resolve_api_key(_FakeSession(row), raw)
+    assert str(exc.value.detail) == "Invalid API key"
+
+
+def test_management_surface_404s_when_disabled(keys_disabled):
+    from app.api.v1.api_keys import require_api_keys_enabled
+    from app.core.exceptions import NotFoundError
+    with pytest.raises(NotFoundError):
+        require_api_keys_enabled()
+
+
+def test_management_surface_open_when_enabled():
+    from app.api.v1.api_keys import require_api_keys_enabled
+    require_api_keys_enabled()  # must not raise
+
+
+async def test_key_still_works_when_enabled():
+    """Guard against the flag defaulting the wrong way and silently
+    killing the live FMC integration."""
+    raw, row, profile = _make_key()
+    assert await resolve_api_key(_FakeSession(row), raw) is profile

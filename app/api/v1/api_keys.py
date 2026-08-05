@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.api_key import generate_api_key
 from app.core.exceptions import BadRequestError, NotFoundError
 from app.core.tenant import get_current_company_id
@@ -20,9 +21,25 @@ from app.utils.date_helpers import now_utc
 logger = logging.getLogger(__name__)
 audit_logger = logging.getLogger("audit")
 
-# Admin-only, and human-admin-only: see get_current_admin_human. Keys
-# cannot administer keys.
-router = APIRouter(prefix="/api-keys", tags=["API Keys"])
+def require_api_keys_enabled() -> None:
+    """404 the whole surface on a deployment where keys are switched off.
+
+    404 rather than 403: on the Admitverse backend this feature does not
+    exist, and saying so is more honest than implying the caller merely
+    lacks permission. Applied at the router so no individual endpoint can
+    forget it — same reasoning as the DELETE guard living in middleware.
+    """
+    if not get_settings().api_keys_enabled:
+        raise NotFoundError("API key management is not enabled on this deployment")
+
+
+# Admin-only, human-admin-only (see get_current_admin_human — keys cannot
+# administer keys), and only on a deployment with API keys switched on.
+router = APIRouter(
+    prefix="/api-keys",
+    tags=["API Keys"],
+    dependencies=[Depends(require_api_keys_enabled)],
+)
 
 
 def _to_out(row: ApiKey, profile: Profile | None) -> dict:

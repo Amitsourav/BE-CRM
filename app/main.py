@@ -106,6 +106,13 @@ async def _run_pending_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s Backend (%s)", APP_NAME, settings.app_env)
+    # Stated loudly because it is a security boundary between the two
+    # brand deployments, and a silently-wrong value would be invisible.
+    logger.info(
+        "API_KEYS_ENABLED=%s — machine API-key credentials are %s on this deployment",
+        settings.api_keys_enabled,
+        "ACCEPTED" if settings.api_keys_enabled else "REFUSED",
+    )
     await _run_pending_migrations()
     start_scheduler()
     yield

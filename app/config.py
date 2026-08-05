@@ -75,6 +75,25 @@ class Settings(BaseSettings):
     # Voice engine — HMAC secret for WebSocket stream tokens
     voice_stream_secret: str = ""
 
+    # ── API-key credentials (machine clients) ──────────────────────────
+    # Per-DEPLOYMENT switch, not per-company. One codebase runs as both
+    # the FundMyCampus and Admitverse backends; machine integrations are
+    # an FMC concern, so the Admitverse service sets API_KEYS_ENABLED=false
+    # and can then neither mint nor accept a key, regardless of what its
+    # database contains.
+    #
+    # Note this is a second, independent lock. Keys are ALREADY isolated
+    # by storage — a key's SHA-256 lives in exactly one Supabase project,
+    # so an FMC key presented to the AV backend finds no row and 401s.
+    # This flag exists so the isolation is a stated rule rather than a
+    # side effect of the deployments happening to have separate databases.
+    #
+    # Defaults True so the live FMC integration cannot break on a deploy
+    # where the variable hasn't been set yet. Once API_KEYS_ENABLED=true
+    # is explicitly present on the FMC service, flip this default to False
+    # so any future tenant fails closed.
+    api_keys_enabled: bool = True
+
     # Telephony — Exotel
     exotel_api_key: str = ""
     exotel_api_token: str = ""
