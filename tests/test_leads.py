@@ -361,3 +361,46 @@ async def test_update_lead_can_clear_phone(admin_client):
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["phone"] is None
+
+
+async def test_create_lead_rejects_duplicate_email_case_insensitively(admin_client):
+    """The unique index is on lower(email), so an exact-match service check
+    let differing case through and the collision surfaced from the index as
+    a 500. Must be the same readable 400 an exact-case duplicate gets —
+    a 500 is indistinguishable from an outage to a retrying client."""
+    local = uuid.uuid4().hex[:8]
+    existing = await _mk_lead(admin_client, email=f"{local}@example.com")
+
+    resp = await admin_client.post("/api/v1/leads", json={
+        "full_name": "Case Variant",
+        "email": f"{local.upper()}@EXAMPLE.COM",
+    })
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["existing_lead_id"] == existing["id"]
+    assert body["duplicate_field"] == "email"
+
+
+async def test_create_lead_rejects_exact_duplicate_email(admin_client):
+    """Guard the path that already worked, so the lower() change can't
+    silently break exact-match detection."""
+    email = f"{uuid.uuid4().hex[:8]}@example.com"
+    existing = await _mk_lead(admin_client, email=email)
+
+    resp = await admin_client.post("/api/v1/leads", json={
+        "full_name": "Exact Dup", "email": email,
+    })
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["existing_lead_id"] == existing["id"]
+
+
+async def test_create_lead_allows_distinct_emails(admin_client):
+    """The lower() comparison must not over-match genuinely different
+    addresses that share a prefix."""
+    local = uuid.uuid4().hex[:8]
+    await _mk_lead(admin_client, email=f"{local}@example.com")
+
+    resp = await admin_client.post("/api/v1/leads", json={
+        "full_name": "Different Person", "email": f"{local}x@example.com",
+    })
+    assert resp.status_code == 201, resp.text

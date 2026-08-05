@@ -222,10 +222,18 @@ class LeadService:
                     existing_name=existing.full_name,
                 )
         if data.get("email"):
+            # Compared case-insensitively to match the actual constraint,
+            # `uniq_leads_email_active ON leads (company_id, lower(email))`.
+            # An exact-match check let "Foo@x.com" past the service gate when
+            # "foo@x.com" already existed, so the collision surfaced from the
+            # index as an uncaught IntegrityError → 500 (internals leaked by
+            # the generic handler) instead of this readable 400. A 500 is
+            # also indistinguishable from an outage to a retrying client,
+            # which turns one bad email into a retry loop.
             existing = (await self.db.execute(
                 select(Lead.id, Lead.full_name).where(
                     Lead.company_id == self.company_id,
-                    Lead.email == data["email"],
+                    func.lower(Lead.email) == data["email"].lower(),
                     Lead.is_deleted == False,  # noqa: E712
                 )
             )).first()
