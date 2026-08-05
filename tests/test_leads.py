@@ -263,3 +263,101 @@ async def test_create_lead_source_agent_forbidden(agent_client):
         "source_type": "manual",
     })
     assert resp.status_code == 403
+
+
+# ── PHONE / EMAIL IDENTITY ON UPDATE ───────────────────────────────────
+#
+# The whole lead-identity model is one lead per phone per tenant. Create
+# enforced it; PUT /leads/{id} did not, so the lead-edit form could
+# silently produce two live leads for one person. These pin the fix.
+#
+# Uses only admin_client (no agent_* fixtures — those are broken by the
+# stale UserRole.TELECALLER reference in conftest).
+
+def _phone() -> str:
+    return f"+91{uuid.uuid4().int % 10**10:010d}"
+
+
+async def _mk_lead(client, **kw) -> dict:
+    body = {"full_name": "Identity Test", **kw}
+    resp = await client.post("/api/v1/leads", json=body)
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+async def test_update_lead_normalises_phone(admin_client):
+    """A trunk-prefixed edit must land in the same +91 form create uses,
+    or it dodges the unique index entirely."""
+    lead = await _mk_lead(admin_client, phone=_phone())
+    national = f"0{uuid.uuid4().int % 10**10:010d}"
+
+    resp = await admin_client.put(
+        f"/api/v1/leads/{lead['id']}", json={"phone": national}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["phone"] == f"+91{national[1:]}"
+
+
+async def test_update_lead_rejects_duplicate_phone_after_normalisation(admin_client):
+    """The exact bug: editing lead B to the 0-prefixed form of lead A's
+    number used to create a second live lead for one person."""
+    digits = f"{uuid.uuid4().int % 10**10:010d}"
+    existing = await _mk_lead(admin_client, phone=f"+91{digits}")
+    other = await _mk_lead(admin_client, phone=_phone())
+
+    resp = await admin_client.put(
+        f"/api/v1/leads/{other['id']}", json={"phone": f"0{digits}"}
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["existing_lead_id"] == existing["id"]
+    assert body["duplicate_field"] == "phone"
+
+
+async def test_update_lead_rejects_exact_duplicate_phone(admin_client):
+    """Previously an uncaught IntegrityError → 500. Must be a clean 400."""
+    phone = _phone()
+    existing = await _mk_lead(admin_client, phone=phone)
+    other = await _mk_lead(admin_client, phone=_phone())
+
+    resp = await admin_client.put(
+        f"/api/v1/leads/{other['id']}", json={"phone": phone}
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["existing_lead_id"] == existing["id"]
+
+
+async def test_update_lead_may_resave_its_own_phone(admin_client):
+    """Self-collision guard — re-saving an unchanged phone must not 400."""
+    phone = _phone()
+    lead = await _mk_lead(admin_client, phone=phone)
+
+    resp = await admin_client.put(
+        f"/api/v1/leads/{lead['id']}", json={"phone": phone, "city": "Pune"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["city"] == "Pune"
+
+
+async def test_update_lead_rejects_duplicate_email_case_insensitively(admin_client):
+    """The unique index is on lower(email); the check must match it."""
+    local = uuid.uuid4().hex[:8]
+    existing = await _mk_lead(admin_client, email=f"{local}@example.com")
+    other = await _mk_lead(admin_client, email=f"other-{local}@example.com")
+
+    resp = await admin_client.put(
+        f"/api/v1/leads/{other['id']}", json={"email": f"{local.upper()}@EXAMPLE.COM"}
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["existing_lead_id"] == existing["id"]
+    assert resp.json()["duplicate_field"] == "email"
+
+
+async def test_update_lead_can_clear_phone(admin_client):
+    """Clearing can't collide — must not be caught by the new gate."""
+    lead = await _mk_lead(admin_client, phone=_phone())
+    resp = await admin_client.put(
+        f"/api/v1/leads/{lead['id']}", json={"phone": None}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["phone"] is None

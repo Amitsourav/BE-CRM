@@ -60,7 +60,9 @@ from app.models.task import Task
 from app.models.call_attempt import CallAttempt
 from app.models.campaign_lead import CampaignLead
 from app.models.company import Company
-from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
+from app.core.exceptions import (
+    NotFoundError, ForbiddenError, BadRequestError, DuplicateLeadError,
+)
 from app.core.constants import (
     UserRole, LeadStage, RESTRICTED_VIEW_ROLES,
     TaskType, TaskStatus,
@@ -199,6 +201,11 @@ class LeadService:
         # (e.g. "amit"/7004428198 vs "Amit"/7004428198 living side-by-side
         # in different stages). Per-tenant scoped (company_id) and skips
         # soft-deleted rows.
+        # The 400 carries the existing lead's id (see DuplicateLeadError).
+        # Without it an API client that loses a create response has no way
+        # back to the row it just hit: the only alternative is /leads/search,
+        # which is a substring ILIKE and can match several leads — or none,
+        # when the caller's role can't see the one that collided.
         if data.get("phone"):
             existing = (await self.db.execute(
                 select(Lead.id, Lead.full_name).where(
@@ -208,9 +215,11 @@ class LeadService:
                 )
             )).first()
             if existing:
-                raise BadRequestError(
-                    f"A lead with phone {data['phone']} already exists "
-                    f"({existing.full_name})."
+                raise DuplicateLeadError(
+                    field="phone",
+                    value=data["phone"],
+                    existing_id=existing.id,
+                    existing_name=existing.full_name,
                 )
         if data.get("email"):
             existing = (await self.db.execute(
@@ -221,9 +230,11 @@ class LeadService:
                 )
             )).first()
             if existing:
-                raise BadRequestError(
-                    f"A lead with email {data['email']} already exists "
-                    f"({existing.full_name})."
+                raise DuplicateLeadError(
+                    field="email",
+                    value=data["email"],
+                    existing_id=existing.id,
+                    existing_name=existing.full_name,
                 )
 
         slug = await self._get_slug()
@@ -399,6 +410,51 @@ class LeadService:
             data["submitted_docs"] = cleaned
             # Auto-sync the counter so existing widgets keep working.
             data["docs_submitted"] = len(cleaned)
+
+        # Phone/email edits go through the same normalisation and duplicate
+        # gate as create. Until this existed, PUT /leads/{id} bypassed both,
+        # and the lead-edit form could break the one-lead-per-phone rule the
+        # rest of the system assumes:
+        #
+        #   • "07004428198" was stored verbatim. It never collided with the
+        #     existing "+917004428198" (different strings, so the partial
+        #     unique index saw no conflict) and quietly became a SECOND live
+        #     lead for the same person — the dedup silently defeated, no error.
+        #   • An exact-match edit did hit the index, but as an uncaught
+        #     IntegrityError → 500 with the internals leaked by the generic
+        #     handler, rather than a readable 400.
+        #
+        # Email is compared case-insensitively to match the actual index
+        # (`lower(email)`); create still compares exactly, so a create with
+        # differing case can still 500 — flagged separately, not changed here.
+        if "phone" in data and data["phone"]:
+            from app.utils.csv_parser import normalize_phone
+            data["phone"] = normalize_phone(data["phone"])
+
+        for _field in ("phone", "email"):
+            if _field not in data or not data[_field]:
+                continue  # clearing a value can't collide with anything
+            if _field == "phone":
+                predicate = Lead.phone == data["phone"]
+            else:
+                predicate = func.lower(Lead.email) == data["email"].lower()
+            clash = (await self.db.execute(
+                select(Lead.id, Lead.full_name).where(
+                    Lead.company_id == self.company_id,
+                    predicate,
+                    # Excluding self: re-saving a lead without touching its
+                    # phone must not 400 against its own row.
+                    Lead.id != lead.id,
+                    Lead.is_deleted == False,  # noqa: E712
+                )
+            )).first()
+            if clash:
+                raise DuplicateLeadError(
+                    field=_field,
+                    value=data[_field],
+                    existing_id=clash.id,
+                    existing_name=clash.full_name,
+                )
 
         for key, value in data.items():
             setattr(lead, key, value)

@@ -8,8 +8,12 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.config import get_settings
 from app.api.v1.router import api_router
-from app.core.exception_handlers import validation_exception_handler, generic_exception_handler
-from app.core.middleware import TimingMiddleware
+from app.core.exception_handlers import (
+    validation_exception_handler, generic_exception_handler,
+    duplicate_lead_exception_handler,
+)
+from app.core.exceptions import DuplicateLeadError
+from app.core.middleware import ApiKeyDeleteGuardMiddleware, TimingMiddleware
 from app.core.rate_limit import limiter
 from app.workers.scheduler import start_scheduler, stop_scheduler
 
@@ -140,8 +144,21 @@ app.add_middleware(
 # Performance timing
 app.add_middleware(TimingMiddleware)
 
+# API keys may read and write, never delete. Registered last, which in
+# Starlette makes it the OUTERMOST middleware — so a blocked DELETE is
+# rejected before routing, before auth, and before any DB work. It also
+# means such a response skips TimingMiddleware and CORSMiddleware (both
+# registered earlier, hence inner): no X-Response-Time and no CORS
+# headers on the 403. Acceptable — API keys are server-to-server, and
+# browsers never send X-API-Key.
+app.add_middleware(ApiKeyDeleteGuardMiddleware)
+
 # Exception handlers
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
+# Registered for the concrete subclass, so it wins over Starlette's
+# generic HTTPException handler while every other BadRequestError keeps
+# the plain {"detail": ...} shape.
+app.add_exception_handler(DuplicateLeadError, duplicate_lead_exception_handler)
 app.add_exception_handler(Exception, generic_exception_handler)
 
 # Routes

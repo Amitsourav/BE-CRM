@@ -19,6 +19,7 @@ from app.models.invoice_settings import InvoiceSettings
 from app.models.invoice_counter import InvoiceCounter
 from app.models.invoice import Invoice
 from app.models.website_submission import WebsiteSubmission
+from app.models.api_key import ApiKey
 
 __all__ = [
     "Base",
@@ -42,4 +43,5 @@ __all__ = [
     "InvoiceCounter",
     "Invoice",
     "WebsiteSubmission",
+    "ApiKey",
 ]

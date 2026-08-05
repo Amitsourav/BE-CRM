@@ -22,11 +22,15 @@ def _get_jwks(supabase_url: str) -> dict:
     return _jwks_cache
 
 
-def verify_jwt(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-    settings: Settings = Depends(get_settings),
-) -> dict:
-    token = credentials.credentials
+def decode_jwt(token: str, settings: Settings) -> dict:
+    """Verify a Supabase JWT and return its claims.
+
+    Split out of `verify_jwt` so callers that obtain the token by some
+    other route — notably `get_current_user`, which accepts either a
+    bearer token or an API key and therefore can't use a hard-failing
+    HTTPBearer dependency — reuse exactly this verification path rather
+    than reimplementing it.
+    """
     try:
         # Get unverified header to determine algorithm
         header = jwt.get_unverified_header(token)
@@ -64,3 +68,11 @@ def verify_jwt(
         return payload
     except JWTError as e:
         raise UnauthorizedError(f"Invalid token: {e}")
+
+
+def verify_jwt(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """FastAPI dependency: require a valid bearer token, return its claims."""
+    return decode_jwt(credentials.credentials, settings)
