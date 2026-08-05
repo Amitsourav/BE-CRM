@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 import logging
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.company import Company
 from app.models.csv_import import CSVImport
@@ -215,14 +215,48 @@ class CSVImportService:
         existing_emails: set[str] = set()
 
         if all_phones:
-            result = await self.db.execute(
-                select(Lead.phone).where(
-                    Lead.phone.in_(all_phones),
-                    Lead.company_id == self.company_id,
-                    Lead.is_deleted == False,  # noqa: E712
-                )
+            # Compared on the 10 national digits rather than the stored
+            # string. `Lead.phone.in_(all_phones)` matched normalised
+            # incoming values against the raw column, so an import of
+            # "+917004428198" did not see an existing "7004428198" and
+            # created a duplicate. Same root cause as the manual-create
+            # path — see phone_dedupe_key.
+            from sqlalchemy import func
+            from app.utils.csv_parser import phone_dedupe_key
+
+            key_to_phone: dict[str, str] = {}
+            exact_only: set[str] = set()
+            for p in all_phones:
+                k = phone_dedupe_key(p)
+                if k:
+                    key_to_phone[k] = p
+                else:
+                    exact_only.add(p)
+
+            stored_key = func.right(
+                func.regexp_replace(Lead.phone, r"[^0-9]", "", "g"), 10
             )
-            existing_phones = {r[0] for r in result.fetchall() if r[0]}
+            clauses = []
+            if key_to_phone:
+                clauses.append(stored_key.in_(list(key_to_phone)))
+            if exact_only:
+                clauses.append(Lead.phone.in_(list(exact_only)))
+
+            if clauses:
+                result = await self.db.execute(
+                    select(Lead.phone, stored_key).where(
+                        or_(*clauses),
+                        Lead.company_id == self.company_id,
+                        Lead.is_deleted == False,  # noqa: E712
+                    )
+                )
+                for stored_phone, key in result.fetchall():
+                    # Report the incoming spelling back, since the caller
+                    # tests membership using the value it parsed.
+                    if key and key in key_to_phone:
+                        existing_phones.add(key_to_phone[key])
+                    elif stored_phone in exact_only:
+                        existing_phones.add(stored_phone)
 
         if all_emails:
             result = await self.db.execute(

@@ -207,10 +207,16 @@ class LeadService:
         # which is a substring ILIKE and can match several leads — or none,
         # when the caller's role can't see the one that collided.
         if data.get("phone"):
+            # Matched on the 10 national digits, not the stored string —
+            # see phone_match_clause. Comparing the normalised incoming
+            # value against the raw column missed every row saved in a
+            # non-canonical format, so "+917004428198" sailed past an
+            # existing "7004428198" and created a second lead.
+            from app.utils.csv_parser import phone_match_clause
             existing = (await self.db.execute(
                 select(Lead.id, Lead.full_name).where(
                     Lead.company_id == self.company_id,
-                    Lead.phone == data["phone"],
+                    phone_match_clause(Lead.phone, data["phone"]),
                     Lead.is_deleted == False,  # noqa: E712
                 )
             )).first()
@@ -443,7 +449,8 @@ class LeadService:
             if _field not in data or not data[_field]:
                 continue  # clearing a value can't collide with anything
             if _field == "phone":
-                predicate = Lead.phone == data["phone"]
+                from app.utils.csv_parser import phone_match_clause
+                predicate = phone_match_clause(Lead.phone, data["phone"])
             else:
                 predicate = func.lower(Lead.email) == data["email"].lower()
             clash = (await self.db.execute(

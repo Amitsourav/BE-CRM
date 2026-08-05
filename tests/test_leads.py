@@ -404,3 +404,86 @@ async def test_create_lead_allows_distinct_emails(admin_client):
         "full_name": "Different Person", "email": f"{local}x@example.com",
     })
     assert resp.status_code == 201, resp.text
+
+
+# ── Format-insensitive phone dedup ─────────────────────────────────────
+#
+# The duplicate check compared a NORMALISED incoming phone against the
+# RAW stored column, so any row saved in a non-canonical format was
+# invisible to it: creating "+917004428198" when "7004428198" was already
+# on file produced a second lead for one person. Live data had 5 such
+# pairs. These pin the format-insensitive match.
+
+async def _seed_raw_phone(db_session, company_id, raw_phone: str, name="Legacy Row"):
+    """Insert a lead with a deliberately un-normalised phone, bypassing
+    the service so it lands exactly as legacy/CSV rows did."""
+    from app.models.lead import Lead
+    lead = Lead(
+        company_id=company_id, full_name=name, phone=raw_phone,
+        current_stage="created",
+    )
+    db_session.add(lead)
+    await db_session.flush()
+    return lead
+
+
+async def test_create_detects_duplicate_of_bare_10_digit_row(admin_client, db_session, admin_user):
+    """The exact reported bug: existing row stored bare, new lead sent
+    with +91."""
+    digits = f"{uuid.uuid4().int % 10**10:010d}"
+    legacy = await _seed_raw_phone(db_session, admin_user.company_id, digits)
+
+    resp = await admin_client.post("/api/v1/leads", json={
+        "full_name": "Same Person", "phone": f"+91{digits}",
+    })
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["existing_lead_id"] == str(legacy.id)
+
+
+async def test_create_detects_duplicate_of_spaced_row(admin_client, db_session, admin_user):
+    """Live data contained '80556 29775' — spaces must not defeat it."""
+    digits = f"{uuid.uuid4().int % 10**10:010d}"
+    legacy = await _seed_raw_phone(db_session, admin_user.company_id, f"{digits[:5]} {digits[5:]}")
+
+    resp = await admin_client.post("/api/v1/leads", json={
+        "full_name": "Same Person", "phone": f"+91{digits}",
+    })
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["existing_lead_id"] == str(legacy.id)
+
+
+async def test_create_detects_duplicate_of_zero_prefixed_row(admin_client, db_session, admin_user):
+    digits = f"{uuid.uuid4().int % 10**10:010d}"
+    legacy = await _seed_raw_phone(db_session, admin_user.company_id, f"0{digits}")
+
+    resp = await admin_client.post("/api/v1/leads", json={
+        "full_name": "Same Person", "phone": f"+91{digits}",
+    })
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["existing_lead_id"] == str(legacy.id)
+
+
+async def test_update_detects_duplicate_of_bare_10_digit_row(admin_client, db_session, admin_user):
+    """Same hole existed on the edit path."""
+    digits = f"{uuid.uuid4().int % 10**10:010d}"
+    legacy = await _seed_raw_phone(db_session, admin_user.company_id, digits)
+    other = await _mk_lead(admin_client, phone=_phone())
+
+    resp = await admin_client.put(
+        f"/api/v1/leads/{other['id']}", json={"phone": f"+91{digits}"}
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["existing_lead_id"] == str(legacy.id)
+
+
+async def test_distinct_numbers_still_create(admin_client):
+    """The 10-digit comparison must not collapse genuinely different
+    numbers — a false duplicate blocks a real lead."""
+    a = f"{uuid.uuid4().int % 10**10:010d}"
+    b = f"{(int(a) + 1) % 10**10:010d}"
+    await _mk_lead(admin_client, phone=f"+91{a}")
+
+    resp = await admin_client.post("/api/v1/leads", json={
+        "full_name": "Different Person", "phone": f"+91{b}",
+    })
+    assert resp.status_code == 201, resp.text

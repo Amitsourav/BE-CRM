@@ -126,3 +126,45 @@ def normalize_phone(phone: str | None) -> str | None:
     if len(digits) == 10:
         return f"+91{digits}"
     return phone.strip()
+
+
+def phone_dedupe_key(phone: str | None) -> str | None:
+    """The 10 national digits of an Indian number, or None if not one.
+
+    Duplicate checks compared a *normalised* incoming phone against the
+    *raw stored* column, so any row saved before normalisation existed —
+    or by a path that skipped it — was invisible to the check. Creating
+    "+917004428198" when "7004428198" was already on file therefore
+    produced a second lead for one person, and the unique index (also on
+    the raw column) didn't catch it either.
+
+    Reducing both sides to these 10 digits makes the comparison immune to
+    formatting. Returns None for anything that isn't a recognisable
+    Indian mobile — callers fall back to exact matching there, because
+    two different international numbers can share their last 10 digits
+    and a false duplicate would block a legitimate lead.
+    """
+    normalised = normalize_phone(phone)
+    if not normalised:
+        return None
+    digits = "".join(c for c in normalised if c.isdigit())
+    if normalised.startswith("+91") and len(digits) == 12:
+        return digits[-10:]
+    return None
+
+
+def phone_match_clause(column, phone: str | None):
+    """SQLAlchemy predicate matching `column` against `phone`, tolerating
+    rows stored in a non-canonical format.
+
+    Takes the column rather than importing the model, so this module
+    stays free of model imports. Backed by `ix_leads_phone_dedupe_key`
+    (migration h8c9d0e1f2a3) — the expression here must stay character-
+    identical to the one in that index or Postgres won't use it.
+    """
+    from sqlalchemy import func
+
+    key = phone_dedupe_key(phone)
+    if key is None:
+        return column == phone
+    return func.right(func.regexp_replace(column, r"[^0-9]", "", "g"), 10) == key
