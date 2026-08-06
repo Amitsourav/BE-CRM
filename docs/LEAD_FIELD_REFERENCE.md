@@ -74,7 +74,7 @@ Everything from §1 **except `lead_source_id`**, plus:
 | `pre_counsellor_id` | UUID \| null | Pre-Counsellor (second assignment slot) |
 | `due_date` | datetime \| null | ISO 8601. Setting it auto-creates a follow-up Task |
 | `is_important` | boolean | Star flag; does not affect stage |
-| `loan_amount` | string(50) | FMC. Free text — `"35 lakh"`, `"1.5cr"`. Parsed into `loan_amount_lakh` |
+| `loan_amount` | string(50) | FMC. **Send a bare number meaning lakhs — `"7.5"`, `"25"`, `"300"`.** See the warning below. Parsed into `loan_amount_lakh` |
 | `bank_name` | string(100) | FMC. **Locked list** — see §3 |
 | `bank_status` | string | FMC. Enum — see §3 |
 | `docs_required` | integer | Defaults 6 on FMC, 8 on Admitverse |
@@ -260,6 +260,30 @@ Truncate client-side: `loan_amount` 50 · `budget` 50 · `bank_name` 100 ·
 
 **Remark body** is properly validated: 1–5000 chars, clean 422.
 
+### ⚠️ `loan_amount` — the backend accepts free text, the FMC form does not
+
+The API will happily store `"7.5 Lakh"`, `"25 L"` or `"1.5cr"`; the parser
+handles all of them and fills `loan_amount_lakh` correctly.
+
+**But the FMC lead-edit form renders this as "Loan Amount (in Lakhs)"
+behind a numeric-only input** — it accepts a value only when the whole
+string matches `^\d*\.?\d*$` (`lead-form.tsx`). A stored value containing
+letters then cannot be edited *at all*: every keystroke, backspace
+included, produces a string that fails the test and is silently
+discarded, so the field appears frozen. Only select-all-then-delete
+escapes it.
+
+So on FundMyCampus, always send a **bare number meaning lakhs**:
+
+| Meaning | Send | Do **not** send |
+|---|---|---|
+| 7.5 lakh | `"7.5"` | `"7.5 Lakh"` |
+| 25 lakh | `"25"` | `"25 L"` |
+| 1.5 crore | `"150"` | `"1.5cr"` |
+
+Admitverse's `budget` field has no such constraint — free text like
+`"£18,000"` is fine there, because the AV form is a plain text input.
+
 ---
 
 ## 5. System-managed — never write these
@@ -339,7 +363,7 @@ needed.
 ```bash
 # later, patch individual fields
 curl -X PUT  …/api/v1/leads/{id} -H "X-API-Key: …" \
-     -d '{"college_name": "Northeastern", "loan_amount": "35 lakh"}'
+     -d '{"college_name": "Northeastern", "loan_amount": "35"}'
 
 # and append a note
 curl -X POST …/api/v1/leads/{id}/remarks -H "X-API-Key: …" \

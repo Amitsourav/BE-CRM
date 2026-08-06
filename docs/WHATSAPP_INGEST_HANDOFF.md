@@ -205,10 +205,18 @@ Despite the verb it is a **partial** update — only keys present in the body
 are written.
 
 ```json
-{"college_name": "Northeastern University", "loan_amount": "35 lakh"}
+{"college_name": "Northeastern University", "loan_amount": "35"}
 ```
 
-Two traps:
+⚠️ **`loan_amount` on FMC must be a bare number meaning lakhs** — `"35"`,
+not `"35 lakh"`. The backend accepts either and parses both correctly, but
+the FMC lead-edit form puts this field behind a numeric-only input, and a
+stored value containing letters becomes **completely uneditable** in the
+UI — every keystroke including backspace is silently rejected and the
+field appears frozen. This already happened twice in live data
+("7.5 Lakh", "50 Lakh") and had to be corrected by hand.
+
+Three traps:
 
 - **`custom_fields` and `tags` are replace-not-merge.** Sending
   `{"custom_fields": {"a": 1}}` erases every other key, including the
