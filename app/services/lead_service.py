@@ -1239,6 +1239,7 @@ class LeadService:
     async def list_banks(self, lead_id: uuid.UUID, user: Profile) -> list:
         """Return all bank entries for a lead, ordered by created_at desc."""
         from app.models.lead_bank import LeadBank
+        await self._require_fmc_banks()
         await self.get_lead(lead_id, user)
         rows = (await self.db.execute(
             select(LeadBank)
@@ -1912,6 +1913,21 @@ class LeadService:
     # only ever touch the share-provenance columns and the conversation —
     # bank_status is the bank's decision and is never written here.
 
+    async def _require_fmc_banks(self) -> None:
+        """Bank shares are a FundMyCampus concept — refuse on Admitverse.
+
+        One codebase serves both brands, so every bank-share endpoint has
+        to say so itself. Applied to the READS as well as the writes: the
+        grid's columns are FMC_BANKS, and an Admitverse user hitting it
+        would get a board of Indian lender columns that mean nothing for
+        study abroad. AV's equivalent is university applications.
+        """
+        if await self._get_slug() == "admitverse":
+            raise BadRequestError(
+                "Bank tracking is not available for this tenant. "
+                "Use university applications (/leads/{id}/applications) instead."
+            )
+
     async def _get_lead_bank(self, lead_id: uuid.UUID, bank_name: str):
         from app.models.lead_bank import LeadBank
         return (await self.db.execute(
@@ -1936,11 +1952,7 @@ class LeadService:
         from app.models.lead_bank import LeadBank
         from app.core.constants import FMC_BANKS
 
-        if await self._get_slug() == "admitverse":
-            raise BadRequestError(
-                "Bank tracking is not available for this tenant. "
-                "Use university applications (/leads/{id}/applications) instead."
-            )
+        await self._require_fmc_banks()
 
         bank_name = payload["bank_name"]
         if bank_name not in FMC_BANKS:
@@ -2021,6 +2033,7 @@ class LeadService:
         """
         from app.models.lead_bank_message import LeadBankMessage
 
+        await self._require_fmc_banks()
         await self.get_lead(lead_id, user)
         entry = await self._get_lead_bank(lead_id, bank_name)
         if entry is None:
@@ -2106,6 +2119,7 @@ class LeadService:
     async def list_bank_shares(self, lead_id: uuid.UUID, user: Profile) -> list[dict]:
         """Every bank this lead has been shared with, with rollups."""
         from app.models.lead_bank import LeadBank
+        await self._require_fmc_banks()
         await self.get_lead(lead_id, user)
         rows = (await self.db.execute(
             select(LeadBank)
@@ -2136,6 +2150,7 @@ class LeadService:
     ) -> dict:
         """One share plus its full conversation — the hover payload."""
         from app.models.lead_bank_message import LeadBankMessage
+        await self._require_fmc_banks()
         await self.get_lead(lead_id, user)
         entry = await self._get_lead_bank(lead_id, bank_name)
         if entry is None:
@@ -2164,6 +2179,8 @@ class LeadService:
         """
         from app.models.lead_bank import LeadBank
         from app.core.constants import FMC_BANKS
+
+        await self._require_fmc_banks()
 
         base = select(Lead).where(
             Lead.company_id == self.company_id,

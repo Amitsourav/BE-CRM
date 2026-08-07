@@ -281,3 +281,43 @@ async def test_no_delete_route_exists_for_shares_or_messages():
         path = getattr(r, "path", "")
         if "bank-share" in path:
             assert "DELETE" not in (getattr(r, "methods", None) or set())
+
+
+# ── FundMyCampus only ──────────────────────────────────────────────────
+#
+# One codebase serves both brands from two deployments, so "this is an FMC
+# feature" has to be enforced in the code, not assumed. Admitverse's
+# equivalent is university applications.
+
+async def test_every_bank_share_method_is_brand_gated(db_session, admin_user, monkeypatch):
+    """All five — reads included. The grid's columns are FMC_BANKS, so an
+    Admitverse user hitting it would get a board of Indian lender columns
+    that mean nothing for study abroad."""
+    from app.services.lead_service import LeadService
+    from app.core.exceptions import BadRequestError
+
+    svc = LeadService(db_session, admin_user.company_id)
+
+    async def _av(self=None):
+        return "admitverse"
+    monkeypatch.setattr(LeadService, "_get_slug", _av)
+
+    lead_id = uuid.uuid4()
+    calls = [
+        ("record_bank_share", svc.record_bank_share(lead_id, {"bank_name": BANK}, admin_user)),
+        ("add_bank_message", svc.add_bank_message(lead_id, BANK, {"body": "x"}, admin_user)),
+        ("list_bank_shares", svc.list_bank_shares(lead_id, admin_user)),
+        ("get_bank_share_detail", svc.get_bank_share_detail(lead_id, BANK, admin_user)),
+        ("bank_share_grid", svc.bank_share_grid(admin_user)),
+    ]
+    for name, coro in calls:
+        with pytest.raises(BadRequestError) as exc:
+            await coro
+        assert "not available for this tenant" in str(exc.value.detail), name
+
+
+async def test_grid_serves_fmc_columns_on_fmc(admin_client):
+    """Guard the other direction — the gate must not fire on FMC."""
+    grid = (await admin_client.get("/api/v1/leads/bank-share-grid",
+                                   params={"page_size": 1})).json()
+    assert len(grid["banks"]) == 18
