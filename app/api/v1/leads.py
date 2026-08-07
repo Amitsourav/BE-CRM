@@ -254,7 +254,7 @@ async def bank_share_grid(
     render and to show a useful tooltip immediately. The FULL conversation
     for a cell is fetched on hover from
     `GET /leads/{id}/bank-shares/{bank}` rather than inlined, since
-    embedding every message for 25 leads x 18 banks would dwarf the rest
+    embedding every message for 25 leads x 19 banks would dwarf the rest
     of the payload.
 
     Three queries regardless of page size.

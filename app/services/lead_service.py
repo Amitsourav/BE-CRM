@@ -2174,7 +2174,7 @@ class LeadService:
         """Leads with all their bank shares, in one round trip.
 
         Three queries total regardless of page size — leads, their shares,
-        message rollups — because a request per cell (18 banks x page) is
+        message rollups — because a request per cell (19 banks x page) is
         unusable against a database with this latency.
         """
         from app.models.lead_bank import LeadBank

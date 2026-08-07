@@ -369,7 +369,10 @@ POST /leads/{lead_id}/bank-shares
 }
 ```
 
-- `bank_name` **must** be one of the canonical 18 — `GET /leads/banks`.
+- `bank_name` **must** be one of the canonical list — **fetch it from
+  `GET /leads/banks`, don't hard-code it.** It grows as new lender
+  relationships start (Poonawalla was added 2026-08-07, taking it to 19).
+  Spelling is exact and case-sensitive: `"Poonawalla"` has TWO Ls.
 - `shared_by` is a `profile_id` from `GET /users`, and **is validated**;
   an unknown id returns 400 rather than 500ing at the FK.
 - `shared_at` defaults to now if omitted.
@@ -422,7 +425,7 @@ Each cell carries `shared_at`, `shared_by_name`, `source`, `bank_status`,
 — enough to render and show a useful tooltip with no extra request. The
 **full** conversation is loaded on hover from
 `GET /leads/{id}/bank-shares/{bank}`; inlining every message for 25 leads
-× 18 banks would dwarf the payload.
+× 19 banks would dwarf the payload.
 
 Filters: `page`, `page_size` (max 100), `q` (name/phone/email),
 `current_stage`, `agent_id`, `bank_name` (only leads shared with it),

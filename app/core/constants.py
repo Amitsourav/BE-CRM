@@ -57,6 +57,14 @@ FMC_BANKS: tuple[str, ...] = (
     "Auxilo",
     "Incred",
     "Edgro",
+    # Added 2026-08-07 for the "Poonawalla 🤝 Admit Verse" WhatsApp group.
+    # TWO Ls — the entity is Poonawalla Fincorp Limited, and the CRM's own
+    # data already carries that full legal name against a logged-in
+    # application ("Logged in Application ID EL-A-153689797-01 Poonawalla
+    # Fincorp Limited"). Free-text notes spell it both ways (13 rows
+    # "Poonawala", 6 "Poonawalla"), which is exactly the drift this locked
+    # list exists to stop — see the sbi/SBI and Unicred/UniCred note above.
+    "Poonawalla",
 )
 
 

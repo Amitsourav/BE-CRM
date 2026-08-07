@@ -12,6 +12,8 @@ import uuid
 
 import pytest
 
+from app.core.constants import FMC_BANKS
+
 
 BANK = "PNB"
 OTHER_BANK = "SBI"
@@ -219,7 +221,9 @@ async def test_grid_returns_bank_columns_and_cells(admin_client):
 
     grid = (await admin_client.get(
         "/api/v1/leads/bank-share-grid", params={"q": lead["phone"]})).json()
-    assert len(grid["banks"]) == 18
+    # Against FMC_BANKS, not a magic number — adding a lender to the
+    # canonical list must not break this test.
+    assert grid["banks"] == list(FMC_BANKS)
     assert grid["banks"][0] == "Axis"
 
     row = next(r for r in grid["items"] if r["lead_id"] == lead["id"])
@@ -320,4 +324,32 @@ async def test_grid_serves_fmc_columns_on_fmc(admin_client):
     """Guard the other direction — the gate must not fire on FMC."""
     grid = (await admin_client.get("/api/v1/leads/bank-share-grid",
                                    params={"page_size": 1})).json()
-    assert len(grid["banks"]) == 18
+    assert grid["banks"] == list(FMC_BANKS)
+
+
+async def test_poonawalla_is_accepted(admin_client):
+    """Added 2026-08-07 for the "Poonawalla 🤝 Admit Verse" group. TWO Ls
+    — the entity is Poonawalla Fincorp Limited."""
+    lead = await _lead(admin_client)
+    r = await admin_client.post(
+        f"/api/v1/leads/{lead['id']}/bank-shares", json={"bank_name": "Poonawalla"})
+    assert r.status_code == 201, r.text
+    assert r.json()["bank_name"] == "Poonawalla"
+
+
+async def test_the_one_l_spelling_is_rejected(admin_client):
+    """The team's old spreadsheet used 'Poonawala'. The locked list exists
+    precisely so one entity can't accumulate two spellings."""
+    lead = await _lead(admin_client)
+    r = await admin_client.post(
+        f"/api/v1/leads/{lead['id']}/bank-shares", json={"bank_name": "Poonawala"})
+    assert r.status_code == 400
+    assert "canonical" in r.json()["detail"]
+
+
+async def test_banks_dropdown_exposes_poonawalla(admin_client):
+    """GET /leads/banks is what the bot and the UI should read the list
+    from, rather than hard-coding it."""
+    banks = (await admin_client.get("/api/v1/leads/banks")).json()
+    assert "Poonawalla" in banks
+    assert banks == list(FMC_BANKS)
