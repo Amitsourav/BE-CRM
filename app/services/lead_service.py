@@ -1904,3 +1904,355 @@ class LeadService:
             .order_by(LeadStageLog.created_at.desc())
         )
         return result.scalars().all()
+
+    # ─── Bank shares (WhatsApp phase 2) ─────────────────────────────────
+    #
+    # "This lead was shared with this bank" lives on lead_banks, the table
+    # that already models exactly one row per (lead, bank). These methods
+    # only ever touch the share-provenance columns and the conversation —
+    # bank_status is the bank's decision and is never written here.
+
+    async def _get_lead_bank(self, lead_id: uuid.UUID, bank_name: str):
+        from app.models.lead_bank import LeadBank
+        return (await self.db.execute(
+            select(LeadBank).where(
+                LeadBank.lead_id == lead_id,
+                LeadBank.company_id == self.company_id,
+                LeadBank.bank_name == bank_name,
+            )
+        )).scalar_one_or_none()
+
+    async def record_bank_share(
+        self, lead_id: uuid.UUID, payload: dict, user: Profile,
+    ) -> tuple[object, bool]:
+        """Record that a lead's file went to a bank. Returns (row, created).
+
+        Idempotent on (lead, bank), as the caller re-sends whenever the
+        lead is shared into the group again. A repeat keeps the ORIGINAL
+        shared_at — the question the grid answers is "when did this file
+        first reach this bank" — and the repeat is expected to be logged
+        as a message instead.
+        """
+        from app.models.lead_bank import LeadBank
+        from app.core.constants import FMC_BANKS
+
+        if await self._get_slug() == "admitverse":
+            raise BadRequestError(
+                "Bank tracking is not available for this tenant. "
+                "Use university applications (/leads/{id}/applications) instead."
+            )
+
+        bank_name = payload["bank_name"]
+        if bank_name not in FMC_BANKS:
+            raise BadRequestError(
+                f"bank_name must be one of the canonical FMC banks "
+                f"(got '{bank_name}'). See GET /leads/banks."
+            )
+
+        lead = await self.get_lead(lead_id, user)
+
+        shared_by = payload.get("shared_by")
+        if shared_by is not None:
+            # Validated rather than trusted: an id from another tenant
+            # would otherwise fail at the FK as a 500.
+            ok = (await self.db.execute(
+                select(Profile.id).where(
+                    Profile.id == shared_by,
+                    Profile.company_id == self.company_id,
+                )
+            )).scalar_one_or_none()
+            if ok is None:
+                raise BadRequestError(
+                    f"shared_by {shared_by} is not a user in this company. "
+                    f"See GET /users."
+                )
+
+        existing = await self._get_lead_bank(lead_id, bank_name)
+        if existing is not None:
+            # Fill in provenance only where it is genuinely missing (a row
+            # created through the UI, or backfilled). Never overwrite.
+            touched = False
+            if existing.shared_at is None and payload.get("shared_at"):
+                existing.shared_at = payload["shared_at"]
+                touched = True
+            if existing.shared_by is None and shared_by:
+                existing.shared_by = shared_by
+                touched = True
+            if existing.source is None and payload.get("source"):
+                existing.source = payload["source"]
+                touched = True
+            if existing.wa_group_id is None and payload.get("wa_group_id"):
+                existing.wa_group_id = payload["wa_group_id"]
+                touched = True
+            if touched:
+                await self.db.commit()
+                await self.db.refresh(existing)
+            return existing, False
+
+        entry = LeadBank(
+            company_id=self.company_id,
+            lead_id=lead_id,
+            bank_name=bank_name,
+            # Schema default. Sharing a file IS applying to that bank, and
+            # 'applied' is the lowest rung — this never advances a status
+            # that already exists, because that path returns above.
+            bank_status="applied",
+            shared_at=payload.get("shared_at") or now_utc(),
+            shared_by=shared_by,
+            source=payload.get("source") or "whatsapp",
+            wa_group_id=payload.get("wa_group_id"),
+        )
+        self.db.add(entry)
+        await self.db.flush()
+        # Keep the Kanban tile's primary bank consistent with the table,
+        # exactly as the manual add_bank path does.
+        await self._resync_primary_bank(lead)
+        await self.db.commit()
+        await self.db.refresh(entry)
+        return entry, True
+
+    async def add_bank_message(
+        self, lead_id: uuid.UUID, bank_name: str, payload: dict, user: Profile,
+    ) -> tuple[object, bool]:
+        """Append a message to a (lead, bank) conversation.
+
+        Returns (row, created). Idempotent on wa_message_id so WhatsApp
+        redelivery is a no-op rather than a duplicate line in the thread.
+        """
+        from app.models.lead_bank_message import LeadBankMessage
+
+        await self.get_lead(lead_id, user)
+        entry = await self._get_lead_bank(lead_id, bank_name)
+        if entry is None:
+            raise NotFoundError(
+                f"This lead has not been shared with '{bank_name}'. "
+                f"POST /leads/{{id}}/bank-shares first."
+            )
+
+        wa_id = payload.get("wa_message_id")
+        if wa_id:
+            dupe = (await self.db.execute(
+                select(LeadBankMessage).where(
+                    LeadBankMessage.wa_message_id == wa_id
+                )
+            )).scalar_one_or_none()
+            if dupe is not None:
+                return dupe, False
+
+        msg = LeadBankMessage(
+            company_id=self.company_id,
+            lead_bank_id=entry.id,
+            body=payload["body"],
+            sender_phone=payload.get("sender_phone"),
+            sender_name=payload.get("sender_name"),
+            is_our_team=bool(payload.get("is_our_team")),
+            wa_message_id=wa_id,
+        )
+        if payload.get("created_at"):
+            msg.created_at = payload["created_at"]
+        self.db.add(msg)
+        try:
+            await self.db.commit()
+        except Exception:
+            # Lost the race on the partial unique index — treat the
+            # winner's row as the result, same as the pre-check would.
+            await self.db.rollback()
+            if wa_id:
+                dupe = (await self.db.execute(
+                    select(LeadBankMessage).where(
+                        LeadBankMessage.wa_message_id == wa_id
+                    )
+                )).scalar_one_or_none()
+                if dupe is not None:
+                    return dupe, False
+            raise
+        await self.db.refresh(msg)
+        return msg, True
+
+    async def _share_rollup(self, lead_bank_ids: list[uuid.UUID]) -> dict:
+        """message_count / last_message_at / preview per lead_bank id,
+        in one query rather than one per cell."""
+        from app.models.lead_bank_message import LeadBankMessage
+        if not lead_bank_ids:
+            return {}
+        rows = (await self.db.execute(
+            select(
+                LeadBankMessage.lead_bank_id,
+                func.count().label("n"),
+                func.max(LeadBankMessage.created_at).label("last_at"),
+            )
+            .where(LeadBankMessage.lead_bank_id.in_(lead_bank_ids))
+            .group_by(LeadBankMessage.lead_bank_id)
+        )).all()
+        roll = {r[0]: {"message_count": r[1], "last_message_at": r[2]} for r in rows}
+
+        # Newest body per pair, for the grid's inline preview.
+        if roll:
+            latest = (await self.db.execute(
+                select(LeadBankMessage.lead_bank_id, LeadBankMessage.body,
+                       LeadBankMessage.created_at)
+                .where(LeadBankMessage.lead_bank_id.in_(list(roll)))
+                .order_by(LeadBankMessage.lead_bank_id,
+                          LeadBankMessage.created_at.desc())
+            )).all()
+            seen = set()
+            for lb_id, body, _ in latest:
+                if lb_id in seen:
+                    continue
+                seen.add(lb_id)
+                roll[lb_id]["last_message_preview"] = (body or "")[:120]
+        return roll
+
+    async def list_bank_shares(self, lead_id: uuid.UUID, user: Profile) -> list[dict]:
+        """Every bank this lead has been shared with, with rollups."""
+        from app.models.lead_bank import LeadBank
+        await self.get_lead(lead_id, user)
+        rows = (await self.db.execute(
+            select(LeadBank)
+            .where(LeadBank.lead_id == lead_id, LeadBank.company_id == self.company_id)
+            .order_by(LeadBank.shared_at.desc().nullslast())
+        )).scalars().all()
+        roll = await self._share_rollup([r.id for r in rows])
+        return [self._share_to_dict(r, roll.get(r.id, {})) for r in rows]
+
+    def _share_to_dict(self, row, rollup: dict) -> dict:
+        return {
+            "id": row.id,
+            "lead_id": row.lead_id,
+            "bank_name": row.bank_name,
+            "bank_status": row.bank_status,
+            "shared_at": row.shared_at,
+            "shared_by": row.shared_by,
+            "shared_by_name": row.sharer.full_name if row.sharer else None,
+            "source": row.source,
+            "wa_group_id": row.wa_group_id,
+            "message_count": rollup.get("message_count", 0),
+            "last_message_at": rollup.get("last_message_at"),
+            "created_at": row.created_at,
+        }
+
+    async def get_bank_share_detail(
+        self, lead_id: uuid.UUID, bank_name: str, user: Profile,
+    ) -> dict:
+        """One share plus its full conversation — the hover payload."""
+        from app.models.lead_bank_message import LeadBankMessage
+        await self.get_lead(lead_id, user)
+        entry = await self._get_lead_bank(lead_id, bank_name)
+        if entry is None:
+            raise NotFoundError(f"This lead has not been shared with '{bank_name}'.")
+        msgs = (await self.db.execute(
+            select(LeadBankMessage)
+            .where(LeadBankMessage.lead_bank_id == entry.id)
+            .order_by(LeadBankMessage.created_at)
+        )).scalars().all()
+        roll = await self._share_rollup([entry.id])
+        out = self._share_to_dict(entry, roll.get(entry.id, {}))
+        out["messages"] = msgs
+        return out
+
+    async def bank_share_grid(
+        self, user: Profile, page: int = 1, page_size: int = 25,
+        stage: str | None = None, agent_id: uuid.UUID | None = None,
+        bank_name: str | None = None, shared_only: bool = False,
+        q: str | None = None,
+    ) -> dict:
+        """Leads with all their bank shares, in one round trip.
+
+        Three queries total regardless of page size — leads, their shares,
+        message rollups — because a request per cell (18 banks x page) is
+        unusable against a database with this latency.
+        """
+        from app.models.lead_bank import LeadBank
+        from app.core.constants import FMC_BANKS
+
+        base = select(Lead).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+        )
+        if user.role in RESTRICTED_VIEW_ROLES:
+            base = base.where(or_(
+                Lead.assigned_agent_id == user.id,
+                Lead.pre_counsellor_id == user.id,
+            ))
+        elif agent_id:
+            base = base.where(or_(
+                Lead.assigned_agent_id == agent_id,
+                Lead.pre_counsellor_id == agent_id,
+            ))
+        if stage:
+            base = base.where(Lead.current_stage == stage)
+        if q:
+            base = base.where(or_(
+                Lead.full_name.ilike(f"%{q}%"),
+                Lead.phone.ilike(f"%{q}%"),
+                Lead.email.ilike(f"%{q}%"),
+            ))
+        # "Only leads that have gone to a bank" — and optionally to one
+        # specific bank, which is how you answer "everything sitting with
+        # PNB right now".
+        if shared_only or bank_name:
+            sub = select(LeadBank.lead_id).where(LeadBank.company_id == self.company_id)
+            if bank_name:
+                sub = sub.where(LeadBank.bank_name == bank_name)
+            base = base.where(Lead.id.in_(sub))
+
+        base = base.order_by(Lead.created_at.desc())
+        paged = await paginate(self.db, base, page, page_size)
+        leads = paged["items"]
+
+        lead_ids = [l.id for l in leads]
+        shares = []
+        if lead_ids:
+            shares = (await self.db.execute(
+                select(LeadBank)
+                .where(LeadBank.lead_id.in_(lead_ids),
+                       LeadBank.company_id == self.company_id)
+            )).scalars().all()
+        roll = await self._share_rollup([s.id for s in shares])
+
+        by_lead: dict = {}
+        for s in shares:
+            r = roll.get(s.id, {})
+            by_lead.setdefault(s.lead_id, {})[s.bank_name] = {
+                "shared_at": s.shared_at,
+                "shared_by_name": s.sharer.full_name if s.sharer else None,
+                "source": s.source,
+                "bank_status": s.bank_status,
+                "message_count": r.get("message_count", 0),
+                "last_message_at": r.get("last_message_at"),
+                "last_message_preview": r.get("last_message_preview"),
+            }
+
+        agent_names = await self._agent_name_map(
+            [l.assigned_agent_id for l in leads if l.assigned_agent_id]
+        )
+
+        return {
+            "banks": list(FMC_BANKS),
+            "items": [
+                {
+                    "lead_id": l.id,
+                    "serial_no": l.serial_no,
+                    "full_name": l.full_name,
+                    "phone": l.phone,
+                    "counsellor_name": agent_names.get(l.assigned_agent_id),
+                    "current_stage": l.current_stage,
+                    "loan_amount": l.loan_amount,
+                    "shares": by_lead.get(l.id, {}),
+                }
+                for l in leads
+            ],
+            "total": paged["total"],
+            "page": paged["page"],
+            "page_size": paged["page_size"],
+            "total_pages": paged["total_pages"],
+        }
+
+    async def _agent_name_map(self, ids: list) -> dict:
+        ids = [i for i in ids if i]
+        if not ids:
+            return {}
+        rows = (await self.db.execute(
+            select(Profile.id, Profile.full_name).where(Profile.id.in_(ids))
+        )).all()
+        return {r[0]: r[1] for r in rows}

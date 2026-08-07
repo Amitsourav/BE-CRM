@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
@@ -20,6 +20,8 @@ from app.schemas.lead import (
     LeadBankCreate, LeadBankUpdate, LeadBankOut,
     LeadApplicationCreate, LeadApplicationUpdate, LeadApplicationOut,
     LeadReassign,
+    BankShareCreate, BankShareOut, BankShareDetailOut,
+    BankMessageCreate, BankMessageOut, BankShareGridOut,
 )
 from app.schemas.stage import StageLogOut
 from app.schemas.call import CallAttemptOut
@@ -224,6 +226,47 @@ async def search_leads(
     return await service.search_leads(q, current_user, page, page_size)
 
 
+# Declared BEFORE /{lead_id}: FastAPI matches in declaration order, and
+# a literal path registered after the UUID route would be captured by it
+# ('bank-share-grid' parsed as a lead_id -> 422). Same reason /by-stage
+# and /search sit up here.
+@router.get("/bank-share-grid", response_model=BankShareGridOut, tags=["Bank Shares"])
+async def bank_share_grid(
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    q: str | None = Query(None, description="Search name/phone/email"),
+    stage: str | None = Query(None, alias="current_stage"),
+    agent_id: uuid.UUID | None = Query(None),
+    bank_name: str | None = Query(None, description="Only leads shared with this bank"),
+    shared_only: bool = Query(False, description="Only leads shared with at least one bank"),
+):
+    """The grid: one row per lead, one column per bank, in one call.
+
+    `banks` is the column order. Each row's `shares` maps bank_name → cell
+    for the banks that lead has gone to; banks absent from the map are
+    blank cells.
+
+    Each cell carries `shared_at`, `shared_by_name`, `message_count`,
+    `last_message_at` and a short `last_message_preview` — enough to
+    render and to show a useful tooltip immediately. The FULL conversation
+    for a cell is fetched on hover from
+    `GET /leads/{id}/bank-shares/{bank}` rather than inlined, since
+    embedding every message for 25 leads x 18 banks would dwarf the rest
+    of the payload.
+
+    Three queries regardless of page size.
+    """
+    service = LeadService(db, company_id)
+    return await service.bank_share_grid(
+        user=current_user, page=page, page_size=page_size,
+        stage=stage, agent_id=agent_id, bank_name=bank_name,
+        shared_only=shared_only, q=q,
+    )
+
+
 @router.get("/{lead_id}", response_model=LeadOut)
 async def get_lead(
     lead_id: uuid.UUID,
@@ -384,6 +427,109 @@ async def delete_lead_application(
     service = LeadService(db, company_id)
     await service.delete_application_entry(lead_id, entry_id, current_user)
     return {"message": "Application entry deleted"}
+
+
+# ── Bank shares (WhatsApp phase 2) ─────────────────────────────────────
+#
+# "This lead's file was shared with this bank." Stored on lead_banks —
+# the table that already models one row per (lead, bank) — so there is a
+# single place recording which bank a lead is with. These routes never
+# write bank_status; that is the bank's decision, handled by the existing
+# /banks endpoints.
+
+
+@router.post("/{lead_id}/bank-shares", response_model=BankShareOut, tags=["Bank Shares"])
+async def record_bank_share(
+    lead_id: uuid.UUID,
+    body: BankShareCreate,
+    response: Response,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record that this lead's file was shared with a bank.
+
+    **Idempotent on (lead, bank).** Sharing the same lead into the same
+    group again returns the existing row untouched — the original
+    `shared_at` is kept, because the grid answers "when did this file
+    first reach this bank". Log the repeat as a message instead.
+
+    `201` when a new share was recorded, `200` when one already existed.
+    Both are success; the bot does not need to branch.
+
+    Never writes `bank_status`. A brand-new row takes the schema default
+    `applied`, which is the lowest rung and is what sharing a file means;
+    an existing row's status is left exactly as the bank set it.
+    """
+    service = LeadService(db, company_id)
+    row, created = await service.record_bank_share(
+        lead_id, body.model_dump(exclude_unset=True), current_user
+    )
+    response.status_code = 201 if created else 200
+    rollup = await service._share_rollup([row.id])
+    return service._share_to_dict(row, rollup.get(row.id, {}))
+
+
+@router.get("/{lead_id}/bank-shares", response_model=list[BankShareOut], tags=["Bank Shares"])
+async def list_bank_shares(
+    lead_id: uuid.UUID,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every bank this lead has been shared with, most recent first."""
+    service = LeadService(db, company_id)
+    return await service.list_bank_shares(lead_id, current_user)
+
+
+@router.get(
+    "/{lead_id}/bank-shares/{bank_name}",
+    response_model=BankShareDetailOut, tags=["Bank Shares"],
+)
+async def get_bank_share(
+    lead_id: uuid.UUID,
+    bank_name: str,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """One share plus its full conversation — what a grid cell's hover loads."""
+    service = LeadService(db, company_id)
+    return await service.get_bank_share_detail(lead_id, bank_name, current_user)
+
+
+@router.post(
+    "/{lead_id}/bank-shares/{bank_name}/messages",
+    response_model=BankMessageOut, tags=["Bank Shares"],
+)
+async def add_bank_share_message(
+    lead_id: uuid.UUID,
+    bank_name: str,
+    body: BankMessageCreate,
+    response: Response,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Append a message to this lead's conversation in that bank's group.
+
+    **Idempotent on `wa_message_id`** — a redelivered WhatsApp message
+    returns the row already stored instead of duplicating the thread.
+    `201` when stored, `200` when it was already there.
+
+    Both sides of the conversation belong here; set `is_our_team` to
+    distinguish our staff from the bank's. Kept separate from
+    `/leads/{id}/remarks`, which is the lead's general internal timeline.
+
+    404s if the lead has not been shared with this bank yet — record the
+    share first.
+    """
+    service = LeadService(db, company_id)
+    msg, created = await service.add_bank_message(
+        lead_id, bank_name, body.model_dump(exclude_unset=True), current_user
+    )
+    response.status_code = 201 if created else 200
+    return msg
 
 
 @router.post("/{lead_id}/remarks", response_model=LeadRemarkOut, status_code=201)

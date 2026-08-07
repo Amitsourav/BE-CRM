@@ -53,7 +53,36 @@ class LeadBank(Base):
         nullable=True,
     )
 
+    # ── Share provenance (Aug 2026) ────────────────────────────────────
+    # WHEN and BY WHOM this lead's file was put in front of this bank —
+    # as distinct from bank_status, which is the bank's decision about it.
+    # Recorded by the WhatsApp bot when a lead is shared into a lender's
+    # group, and available to the manual UI flow too.
+    #
+    # All nullable: the 436 rows that predate this were created through
+    # the UI with no provenance captured. The migration backfills
+    # shared_at from created_at and source='manual' for those, which is
+    # an inference — a lead_banks row has always been created at the
+    # point someone put the lead to that bank.
+    shared_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    shared_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    # 'whatsapp' | 'manual'. Free string rather than an enum so a future
+    # channel (email, portal) doesn't need a migration to be recorded.
+    source: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    # Which lender's WhatsApp group the share happened in. Kept for
+    # tracing a row back to the conversation it came from.
+    wa_group_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
     lead = relationship("Lead", foreign_keys=[lead_id])
+    sharer = relationship("Profile", foreign_keys=[shared_by], lazy="joined")
+    messages = relationship(
+        "LeadBankMessage",
+        back_populates="lead_bank",
+        cascade="all, delete-orphan",
+        order_by="LeadBankMessage.created_at",
+    )

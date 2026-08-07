@@ -330,3 +330,105 @@ Read it before designing the text→field mapping. Notes that catch people out:
   text with **no validation** — write what the message says.
 
 API-key minting, rotation and failure modes: **`docs/API_KEYS.md`**.
+
+---
+
+## 13. Phase two — bank shares
+
+When your team shares a lead into a lender's WhatsApp group, that *is*
+the submission to that bank. These endpoints record it, keep the
+conversation that follows, and feed the grid.
+
+### Where it lives — read this first
+
+It is **`lead_banks`**, the table the CRM already uses for a lead's
+relationship with a bank — extended, not duplicated. That table was
+already exactly one row per (lead, bank), enforced by
+`uniq_lead_banks_lead_bank`. Four columns were added to it:
+`shared_at`, `shared_by`, `source`, `wa_group_id`.
+
+So a lead's PNB row is the *same row* whether a counsellor created it in
+the UI or your bot recorded the share. There is one place recording which
+bank a lead is with.
+
+**`bank_status` is not yours.** It is the bank's decision (`applied` →
+`sanctioned` → `disbursed` …) and these endpoints never write it. A
+brand-new row takes the default `applied`; an existing row's status is
+left exactly as the team set it.
+
+### Record a share
+
+```http
+POST /leads/{lead_id}/bank-shares
+{
+  "bank_name": "PNB",
+  "shared_by": "ca52fa93-e695-48d4-8803-d7715d53e6a3",
+  "shared_at": "2026-08-07T09:15:00Z",
+  "wa_group_id": "grp-pnb-001",
+  "source": "whatsapp"
+}
+```
+
+- `bank_name` **must** be one of the canonical 18 — `GET /leads/banks`.
+- `shared_by` is a `profile_id` from `GET /users`, and **is validated**;
+  an unknown id returns 400 rather than 500ing at the FK.
+- `shared_at` defaults to now if omitted.
+
+**Idempotent on (lead, bank).** `201` when the share is new, `200` when
+it already existed. Both are success — don't branch. A repeat keeps the
+**original** `shared_at`, because the grid answers *"when did this file
+first reach this bank"*. Log the re-share as a message instead.
+
+### Append a message
+
+```http
+POST /leads/{lead_id}/bank-shares/{bank_name}/messages
+{
+  "body": "Docs received, login by Friday",
+  "sender_phone": "+919812345678",
+  "sender_name": "Ankit",
+  "is_our_team": true,
+  "wa_message_id": "wamid.HBgMOTE5..."
+}
+```
+
+- **Idempotent on `wa_message_id`** — redelivery returns the stored row
+  (`200`) instead of duplicating the thread. `201` when newly stored.
+  Send it on every message; it is the only thing making this safe to retry.
+- `is_our_team` is **yours to decide** — you know the team's numbers. The
+  bank's staff will never have CRM profiles, which is why `sender_phone`
+  is a plain string and not a foreign key.
+- `404` if the lead hasn't been shared with that bank yet. Record the
+  share first.
+
+These messages are deliberately **not** `lead_remarks`. Remarks are the
+lead's general internal timeline; this is the conversation about that
+lead in that specific bank's group.
+
+### Read
+
+```http
+GET /leads/{lead_id}/bank-shares              # every bank this lead went to
+GET /leads/{lead_id}/bank-shares/{bank_name}  # one share + full conversation
+GET /leads/bank-share-grid                    # the grid
+```
+
+The grid returns `banks` (column order) and one row per lead whose
+`shares` maps bank_name → cell. **Banks absent from the map are blank
+cells** — that is how the UI decides what to colour.
+
+Each cell carries `shared_at`, `shared_by_name`, `source`, `bank_status`,
+`message_count`, `last_message_at` and a 120-char `last_message_preview`
+— enough to render and show a useful tooltip with no extra request. The
+**full** conversation is loaded on hover from
+`GET /leads/{id}/bank-shares/{bank}`; inlining every message for 25 leads
+× 18 banks would dwarf the payload.
+
+Filters: `page`, `page_size` (max 100), `q` (name/phone/email),
+`current_stage`, `agent_id`, `bank_name` (only leads shared with it),
+`shared_only`. Three queries regardless of page size.
+
+### Still no deletes
+
+There is no delete route for shares or messages, and your key would be
+refused one anyway.

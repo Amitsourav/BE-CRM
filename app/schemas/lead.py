@@ -487,3 +487,107 @@ class LeadSourceOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ── Bank shares (WhatsApp phase 2) ─────────────────────────────────────
+# "This lead's file was put in front of this bank, on this date, by this
+# person." Stored on lead_banks — see app/models/lead_bank.py for why
+# this extends that table rather than sitting beside it.
+
+class BankShareCreate(BaseModel):
+    bank_name: str = Field(min_length=1, max_length=100)
+    # Defaults to now() server-side when the bot doesn't supply the
+    # original WhatsApp timestamp.
+    shared_at: datetime | None = None
+    shared_by: uuid.UUID | None = None
+    source: str = Field(default="whatsapp", max_length=30)
+    wa_group_id: str | None = Field(default=None, max_length=120)
+
+    model_config = {"extra": "forbid"}
+
+
+class BankMessageCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=10000)
+    sender_phone: str | None = Field(default=None, max_length=32)
+    sender_name: str | None = Field(default=None, max_length=120)
+    is_our_team: bool = False
+    # WhatsApp's id. The uniqueness that makes redelivery a no-op.
+    wa_message_id: str | None = Field(default=None, max_length=160)
+    created_at: datetime | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class BankMessageOut(BaseModel):
+    id: uuid.UUID
+    lead_bank_id: uuid.UUID
+    body: str
+    sender_phone: str | None = None
+    sender_name: str | None = None
+    is_our_team: bool = False
+    wa_message_id: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BankShareOut(BaseModel):
+    """One (lead, bank) pair with its share provenance."""
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    bank_name: str
+    # Included for context only — this API never writes it.
+    bank_status: str
+    shared_at: datetime | None = None
+    shared_by: uuid.UUID | None = None
+    shared_by_name: str | None = None
+    source: str | None = None
+    wa_group_id: str | None = None
+    message_count: int = 0
+    last_message_at: datetime | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BankShareDetailOut(BankShareOut):
+    """A share plus its full conversation — the hover payload."""
+    messages: list[BankMessageOut] = []
+
+
+class BankShareCell(BaseModel):
+    """One coloured cell in the grid. Deliberately light: the grid ships
+    one of these per shared (lead, bank), and the full conversation is
+    fetched on hover instead of being inlined for every cell on the page.
+    """
+    shared_at: datetime | None = None
+    shared_by_name: str | None = None
+    source: str | None = None
+    bank_status: str
+    message_count: int = 0
+    last_message_at: datetime | None = None
+    # First ~120 chars of the newest message, so the grid can show a
+    # preview without a round trip.
+    last_message_preview: str | None = None
+
+
+class BankShareGridRow(BaseModel):
+    lead_id: uuid.UUID
+    serial_no: int | None = None
+    full_name: str
+    phone: str | None = None
+    counsellor_name: str | None = None
+    current_stage: str
+    loan_amount: str | None = None
+    # bank_name -> cell. Banks absent from this dict are blank cells.
+    shares: dict[str, BankShareCell] = {}
+
+
+class BankShareGridOut(BaseModel):
+    # Column order for the grid, straight from the canonical FMC list.
+    banks: list[str]
+    items: list[BankShareGridRow]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int

@@ -6,6 +6,7 @@ from app.models.lead import Lead
 from app.models.lead_stage_log import LeadStageLog
 from app.models.lead_remark import LeadRemark
 from app.models.lead_bank import LeadBank
+from app.models.lead_bank_message import LeadBankMessage
 from app.models.lead_application import LeadApplication
 from app.models.call_attempt import CallAttempt
 from app.models.task import Task
@@ -30,6 +31,7 @@ __all__ = [
     "LeadStageLog",
     "LeadRemark",
     "LeadBank",
+    "LeadBankMessage",
     "LeadApplication",
     "CallAttempt",
     "Task",
