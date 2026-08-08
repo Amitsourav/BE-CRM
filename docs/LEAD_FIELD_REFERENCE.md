@@ -166,14 +166,17 @@ Visa Reject
 Match is exact and case-sensitive, including the trailing period on
 `Country not approved/ Courses not approved.`
 
-### `bank_name` — FMC locked list (19)
+### `bank_name` — FMC controlled list (20 today)
 
-Live copy: `GET /leads/banks`. Anything else → 400. Admitverse returns `[]`.
+**Fetch it live from `GET /leads/banks` — do not hard-code it.** The list
+is now database-backed and admins add lenders through the API without a
+deploy, so any local copy will drift. Anything not on it → 400.
+Admitverse returns `[]`.
 
 ```
 Axis · PNB · SBI · Yes Bank · ICICI · IDFC · BOI · Kuhoo · Avanse
 Credila · Propelld · Tata Capital · Zolve · Nomad · UniCred · Auxilo
-Incred · Edgro · Poonawalla
+Incred · Edgro · Poonawalla · GyanDhan
 ```
 
 ### `bank_status` — FMC (7)

@@ -34,7 +34,7 @@ GET /api/v1/leads/bank-share-grid?page=1&page_size=25
 
 ```jsonc
 {
-  "banks": ["Axis", "PNB", "SBI", "Yes Bank", "ICICI", /* …19 total */],
+  "banks": ["Axis", "PNB", "SBI", "Yes Bank", "ICICI", /* …20 today */],
   "items": [
     {
       "lead_id": "0d9e…",
@@ -62,9 +62,11 @@ GET /api/v1/leads/bank-share-grid?page=1&page_size=25
 ```
 
 **`banks` is the column order — render columns from it, not a hard-coded
-list.** It comes from the backend's canonical list — 19 today, and it grows
-as new lender relationships start — and would silently drift if you
-duplicated it. Poonawalla was added on 2026-08-07; more will follow.
+list.** It comes from the backend's canonical list, which is **database-backed**
+— admins add lenders through the API with no deploy, so the count changes
+without warning (18 → 19 → 20 in two days). Any local copy will drift and
+a real lending relationship will silently have no column. Never hard-code
+it, and don't cache it for long.
 
 **A bank missing from a row's `shares` is a blank cell.** That is the
 whole rule for colouring. Don't infer anything from `bank_status`.
@@ -102,7 +104,7 @@ GET /api/v1/leads/{lead_id}/bank-shares/{bank_name}
 }
 ```
 
-Full conversations are **not** inlined in the grid — 25 leads × 19 banks
+Full conversations are **not** inlined in the grid — 25 leads × 20 banks
 of message history would dwarf the rest of the payload. Fetch on hover,
 cache per cell for the session, and don't refetch on every mouse-over.
 
@@ -118,7 +120,7 @@ staff; fall back to `sender_phone`.
   skeleton, not a spinner-blocking-everything, and keep `page_size` at
   25–50. The endpoint is three queries regardless of page size, so a
   bigger page is not proportionally slower — but the payload grows.
-- **Horizontal scroll.** 5 fixed columns + 19 bank columns will not fit.
+- **Horizontal scroll.** 5 fixed columns + 20-and-growing bank columns will not fit.
   Freeze the left columns and scroll the bank block.
 - **`loan_amount` is a string** meaning lakhs (`"17.5"`). Some legacy rows
   still contain text like `"19 L"` — render defensively.

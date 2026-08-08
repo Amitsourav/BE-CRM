@@ -353,3 +353,105 @@ async def test_banks_dropdown_exposes_poonawalla(admin_client):
     banks = (await admin_client.get("/api/v1/leads/banks")).json()
     assert "Poonawalla" in banks
     assert banks == list(FMC_BANKS)
+
+
+# ── The lender list is now data, not code ──────────────────────────────
+#
+# It was a Python tuple, so every new lending relationship needed a deploy
+# and was invisible in the CRM until then. Adding is now an admin API
+# call — but still a CONTROLLED vocabulary, because free text produced
+# sbi/SBI and Poonawala/Poonawalla in the same database.
+
+async def test_gyandhan_is_accepted(admin_client):
+    """Added 2026-08-08. Official spelling: capital G, capital D."""
+    lead = await _lead(admin_client)
+    r = await admin_client.post(
+        f"/api/v1/leads/{lead['id']}/bank-shares", json={"bank_name": "GyanDhan"})
+    assert r.status_code == 201, r.text
+    assert r.json()["bank_name"] == "GyanDhan"
+
+
+@pytest.mark.parametrize("variant", ["gyandhan", "Gyandhan", "GYANDHAN", "gyan dhan"])
+async def test_gyandhan_variants_rejected(admin_client, variant):
+    """All three of these appear in live notes. Only the canonical
+    spelling is storable."""
+    lead = await _lead(admin_client)
+    r = await admin_client.post(
+        f"/api/v1/leads/{lead['id']}/bank-shares", json={"bank_name": variant})
+    assert r.status_code == 400, f"{variant!r} should be rejected"
+
+
+async def test_dropdown_reads_from_the_table(admin_client):
+    banks = (await admin_client.get("/api/v1/leads/banks")).json()
+    assert "GyanDhan" in banks and "Poonawalla" in banks
+    assert banks[0] == "Axis"      # seeded order preserved
+
+
+async def test_admin_can_add_a_lender_without_a_deploy(admin_client):
+    name = f"TestLender{uuid.uuid4().hex[:6]}"
+    r = await admin_client.post("/api/v1/leads/banks", json={"name": name})
+    assert r.status_code == 201, r.text
+
+    # Immediately usable — the cache must be invalidated on write, not
+    # left to expire.
+    banks = (await admin_client.get("/api/v1/leads/banks")).json()
+    assert name in banks
+
+    lead = await _lead(admin_client)
+    share = await admin_client.post(
+        f"/api/v1/leads/{lead['id']}/bank-shares", json={"bank_name": name})
+    assert share.status_code == 201, share.text
+
+
+async def test_new_lender_appears_as_a_grid_column(admin_client):
+    """The stated failure: a missing lender has no column, so the
+    relationship is invisible."""
+    name = f"GridLender{uuid.uuid4().hex[:6]}"
+    await admin_client.post("/api/v1/leads/banks", json={"name": name})
+    grid = (await admin_client.get(
+        "/api/v1/leads/bank-share-grid", params={"page_size": 1})).json()
+    assert name in grid["banks"]
+
+
+async def test_duplicate_name_rejected_case_insensitively(admin_client):
+    """Otherwise the endpoint reintroduces the exact drift the locked
+    list was created to stop."""
+    r = await admin_client.post("/api/v1/leads/banks", json={"name": "gyandhan"})
+    assert r.status_code == 400
+    assert "already on the list" in r.json()["detail"]
+
+
+async def test_deactivating_keeps_the_grid_column(admin_client):
+    """A lender you stop working with still had real files go to it —
+    dropping the column would lose that history."""
+    name = f"OldLender{uuid.uuid4().hex[:6]}"
+    created = (await admin_client.post("/api/v1/leads/banks", json={"name": name})).json()
+
+    patched = await admin_client.patch(
+        f"/api/v1/leads/banks/{created['id']}", json={"is_active": False})
+    assert patched.status_code == 200, patched.text
+
+    # Gone from the dropdown …
+    assert name not in (await admin_client.get("/api/v1/leads/banks")).json()
+    # … but still a grid column.
+    grid = (await admin_client.get(
+        "/api/v1/leads/bank-share-grid", params={"page_size": 1})).json()
+    assert name in grid["banks"]
+
+
+async def test_deactivated_lender_rejects_new_shares(admin_client):
+    name = f"DeadLender{uuid.uuid4().hex[:6]}"
+    created = (await admin_client.post("/api/v1/leads/banks", json={"name": name})).json()
+    await admin_client.patch(f"/api/v1/leads/banks/{created['id']}", json={"is_active": False})
+    lead = await _lead(admin_client)
+    r = await admin_client.post(
+        f"/api/v1/leads/{lead['id']}/bank-shares", json={"bank_name": name})
+    assert r.status_code == 400
+
+
+async def test_manage_view_reports_usage(admin_client):
+    """An admin needs to know what a rename or deactivation would affect."""
+    rows = (await admin_client.get("/api/v1/leads/banks/manage")).json()
+    by_name = {b["name"]: b for b in rows}
+    assert "GyanDhan" in by_name
+    assert all("usage_count" in b and "id" in b for b in rows)

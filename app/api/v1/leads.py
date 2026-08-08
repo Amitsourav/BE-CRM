@@ -20,6 +20,7 @@ from app.schemas.lead import (
     LeadBankCreate, LeadBankUpdate, LeadBankOut,
     LeadApplicationCreate, LeadApplicationUpdate, LeadApplicationOut,
     LeadReassign,
+    BankCreate, BankUpdate, BankOut,
     BankShareCreate, BankShareOut, BankShareDetailOut,
     BankMessageCreate, BankMessageOut, BankShareGridOut,
 )
@@ -28,6 +29,11 @@ from app.schemas.call import CallAttemptOut
 from app.schemas.task import TaskOut
 from app.schemas.common import PaginatedResponse
 from app.core.constants import UserRole
+from app.core.exceptions import BadRequestError, NotFoundError
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/leads", tags=["Leads"])
 
@@ -193,10 +199,164 @@ async def list_banks(
     and the lead edit form. Locked list — backend rejects any bank_name
     not in here on lead update. Admitverse has no banks → returns [].
     """
-    from app.core.constants import FMC_BANKS
+    from app.services.bank_registry import get_bank_names
     if await _company_slug(db, company_id) == "admitverse":
         return []
-    return list(FMC_BANKS)
+    return list(await get_bank_names(db))
+
+
+@router.get("/banks/manage", response_model=list[BankOut], tags=["Bank List"])
+async def list_banks_for_management(
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    include_inactive: bool = Query(True),
+):
+    """The lender list with ids and usage counts, for administering it.
+
+    `GET /leads/banks` stays the plain list of selectable names that the
+    dropdown and integrations read.
+    """
+    from sqlalchemy import func as sa_func
+    from app.models.bank import Bank
+    from app.models.lead_bank import LeadBank
+
+    query = select(Bank).order_by(Bank.sort_order, Bank.name)
+    if not include_inactive:
+        query = query.where(Bank.is_active == True)  # noqa: E712
+    rows = (await db.execute(query)).scalars().all()
+
+    counts = dict((await db.execute(
+        select(LeadBank.bank_name, sa_func.count())
+        .where(LeadBank.company_id == company_id)
+        .group_by(LeadBank.bank_name)
+    )).all())
+    return [
+        {
+            "id": b.id, "name": b.name, "is_active": b.is_active,
+            "sort_order": b.sort_order, "usage_count": counts.get(b.name, 0),
+            "created_at": b.created_at, "updated_at": b.updated_at,
+        }
+        for b in rows
+    ]
+
+
+@router.post("/banks", response_model=BankOut, status_code=201, tags=["Bank List"])
+async def add_bank_to_list(
+    body: BankCreate,
+    admin: Profile = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a lender to the canonical list. Admin only.
+
+    Takes effect within 60 seconds everywhere — the dropdown, bank_name
+    validation on leads and shares, and the grid's columns all read this
+    list. No deploy needed.
+
+    Still a controlled vocabulary. A name that already exists in ANY
+    casing is rejected: "gyandhan" cannot be added alongside "GyanDhan",
+    which is the drift this list exists to prevent. Type the lender's own
+    branded spelling.
+    """
+    from sqlalchemy import func as sa_func
+    from app.models.bank import Bank
+    from app.services.bank_registry import invalidate_bank_cache
+
+    name = body.name.strip()
+    if not name:
+        raise BadRequestError("name cannot be blank")
+
+    clash = (await db.execute(
+        select(Bank).where(sa_func.lower(Bank.name) == name.lower())
+    )).scalar_one_or_none()
+    if clash is not None:
+        raise BadRequestError(
+            f"'{clash.name}' is already on the list"
+            + ("" if clash.is_active else " (deactivated — PATCH it to re-activate)")
+        )
+
+    if body.sort_order is None:
+        nxt = (await db.execute(select(sa_func.max(Bank.sort_order)))).scalar() or 0
+        sort_order = nxt + 1
+    else:
+        sort_order = body.sort_order
+
+    bank = Bank(name=name, sort_order=sort_order, created_by=admin.id)
+    db.add(bank)
+    await db.commit()
+    await db.refresh(bank)
+    invalidate_bank_cache()
+    logger.info("BANK_ADDED name=%s by=%s", bank.name, admin.email)
+    return {
+        "id": bank.id, "name": bank.name, "is_active": bank.is_active,
+        "sort_order": bank.sort_order, "usage_count": 0,
+        "created_at": bank.created_at, "updated_at": bank.updated_at,
+    }
+
+
+@router.patch("/banks/{bank_id}", response_model=BankOut, tags=["Bank List"])
+async def update_bank_in_list(
+    bank_id: uuid.UUID,
+    body: BankUpdate,
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename, reorder, or activate/deactivate a lender. Admin only.
+
+    **Deactivating** removes it from the dropdown and stops new shares
+    being recorded against it. It does NOT remove its grid column or
+    touch existing rows — a lender you have stopped working with still
+    had real files go to it, and hiding that would lose history.
+
+    **Renaming does not rewrite existing `lead_banks` rows.** They store
+    the name as text, so a rename splits the lender in two: old rows keep
+    the old string, new ones get the new. Only rename to fix a spelling
+    before a lender is used; `usage_count` on
+    `GET /leads/banks/manage` tells you what is at stake.
+    """
+    from sqlalchemy import func as sa_func
+    from app.models.bank import Bank
+    from app.models.lead_bank import LeadBank
+    from app.services.bank_registry import invalidate_bank_cache
+
+    bank = (await db.execute(select(Bank).where(Bank.id == bank_id))).scalar_one_or_none()
+    if bank is None:
+        raise NotFoundError("Bank not found")
+
+    data = body.model_dump(exclude_unset=True)
+    if "name" in data and data["name"]:
+        new_name = data["name"].strip()
+        clash = (await db.execute(
+            select(Bank).where(
+                sa_func.lower(Bank.name) == new_name.lower(), Bank.id != bank.id,
+            )
+        )).scalar_one_or_none()
+        if clash is not None:
+            raise BadRequestError(f"'{clash.name}' is already on the list")
+        bank.name = new_name
+    if "is_active" in data:
+        bank.is_active = data["is_active"]
+    if "sort_order" in data and data["sort_order"] is not None:
+        bank.sort_order = data["sort_order"]
+
+    await db.commit()
+    await db.refresh(bank)
+    invalidate_bank_cache()
+    logger.info(
+        "BANK_UPDATED id=%s name=%s active=%s by=%s",
+        bank.id, bank.name, bank.is_active, admin.email,
+    )
+    usage = (await db.execute(
+        select(sa_func.count()).select_from(LeadBank).where(
+            LeadBank.bank_name == bank.name, LeadBank.company_id == company_id,
+        )
+    )).scalar() or 0
+    return {
+        "id": bank.id, "name": bank.name, "is_active": bank.is_active,
+        "sort_order": bank.sort_order, "usage_count": usage,
+        "created_at": bank.created_at, "updated_at": bank.updated_at,
+    }
 
 
 @router.get("/universities", response_model=list[str])

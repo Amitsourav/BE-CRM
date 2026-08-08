@@ -371,8 +371,10 @@ POST /leads/{lead_id}/bank-shares
 
 - `bank_name` **must** be one of the canonical list — **fetch it from
   `GET /leads/banks`, don't hard-code it.** It grows as new lender
-  relationships start (Poonawalla was added 2026-08-07, taking it to 19).
-  Spelling is exact and case-sensitive: `"Poonawalla"` has TWO Ls.
+  relationships start — it is database-backed and admins add lenders
+  through the API without a deploy, so a cached copy WILL go stale.
+  Cache with a short TTL at most. Spelling is exact and case-sensitive:
+  `"Poonawalla"` has TWO Ls; `"GyanDhan"` has a capital G and D.
 - `shared_by` is a `profile_id` from `GET /users`, and **is validated**;
   an unknown id returns 400 rather than 500ing at the FK.
 - `shared_at` defaults to now if omitted.

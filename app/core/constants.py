@@ -65,7 +65,19 @@ FMC_BANKS: tuple[str, ...] = (
     # "Poonawala", 6 "Poonawalla"), which is exactly the drift this locked
     # list exists to stop — see the sbi/SBI and Unicred/UniCred note above.
     "Poonawalla",
+    # Added 2026-08-08 for the GyanDhan WhatsApp group. Official brand
+    # spelling: capital G, capital D. The CRM's own notes already carry
+    # three variants ("gyandhan", "Gyandhan", "gyan dhan") and none of
+    # them match — more of the drift this list exists to stop.
+    "GyanDhan",
 )
+
+# ⚠️  This tuple is no longer the source of truth. It seeds the `banks`
+# table (migration j0e1f2a3b4c5) and is the fallback when that table is
+# empty. Adding a lender at runtime is an admin API call, not a code
+# change — see app/services/bank_registry.py and
+# POST /api/v1/leads/banks. Editing this constant only affects databases
+# that have not been seeded yet.
 
 
 LOST_REASONS: tuple[str, ...] = (

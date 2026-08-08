@@ -5,6 +5,7 @@ from app.models.lead_source import LeadSource
 from app.models.lead import Lead
 from app.models.lead_stage_log import LeadStageLog
 from app.models.lead_remark import LeadRemark
+from app.models.bank import Bank
 from app.models.lead_bank import LeadBank
 from app.models.lead_bank_message import LeadBankMessage
 from app.models.lead_application import LeadApplication
@@ -30,6 +31,7 @@ __all__ = [
     "Lead",
     "LeadStageLog",
     "LeadRemark",
+    "Bank",
     "LeadBank",
     "LeadBankMessage",
     "LeadApplication",

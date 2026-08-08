@@ -591,3 +591,36 @@ class BankShareGridOut(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+# ── Canonical lender list (admin-managed) ──────────────────────────────
+
+class BankCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    # Where it sits in the dropdown / grid columns. Omitted = appended.
+    sort_order: int | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class BankUpdate(BaseModel):
+    # Renaming does NOT rewrite existing lead_banks rows — see the route.
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    is_active: bool | None = None
+    sort_order: int | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class BankOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    is_active: bool
+    sort_order: int
+    # How many (lead, bank) rows point at this lender — so an admin can
+    # see what deactivating or renaming would affect.
+    usage_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

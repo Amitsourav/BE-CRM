@@ -386,8 +386,8 @@ class LeadService:
         if "bank_name" in data and data["bank_name"]:
             slug = await self._get_slug()
             if slug != "admitverse":
-                from app.core.constants import FMC_BANKS
-                if data["bank_name"] not in FMC_BANKS:
+                from app.services.bank_registry import get_bank_names
+                if data["bank_name"] not in await get_bank_names(self.db):
                     raise BadRequestError(
                         f"bank_name must be one of the canonical FMC banks "
                         f"(got '{data['bank_name']}'). See GET /leads/banks."
@@ -1254,13 +1254,13 @@ class LeadService:
         can't have the same bank twice (DB unique constraint backstops
         the service check)."""
         from app.models.lead_bank import LeadBank
-        from app.core.constants import FMC_BANKS
+        from app.services.bank_registry import get_bank_names
         if await self._get_slug() == "admitverse":
             raise BadRequestError(
                 "Bank tracking is not available for this tenant. "
                 "Use university applications (/leads/{id}/applications) instead."
             )
-        if bank_name not in FMC_BANKS:
+        if bank_name not in await get_bank_names(self.db):
             raise BadRequestError(
                 f"bank_name must be one of the canonical FMC banks (got '{bank_name}'). See GET /leads/banks."
             )
@@ -1918,7 +1918,7 @@ class LeadService:
 
         One codebase serves both brands, so every bank-share endpoint has
         to say so itself. Applied to the READS as well as the writes: the
-        grid's columns are FMC_BANKS, and an Admitverse user hitting it
+        grid's columns are the FMC lender list, and an AV user hitting it
         would get a board of Indian lender columns that mean nothing for
         study abroad. AV's equivalent is university applications.
         """
@@ -1950,12 +1950,12 @@ class LeadService:
         as a message instead.
         """
         from app.models.lead_bank import LeadBank
-        from app.core.constants import FMC_BANKS
+        from app.services.bank_registry import get_bank_names
 
         await self._require_fmc_banks()
 
         bank_name = payload["bank_name"]
-        if bank_name not in FMC_BANKS:
+        if bank_name not in await get_bank_names(self.db):
             raise BadRequestError(
                 f"bank_name must be one of the canonical FMC banks "
                 f"(got '{bank_name}'). See GET /leads/banks."
@@ -2178,7 +2178,7 @@ class LeadService:
         unusable against a database with this latency.
         """
         from app.models.lead_bank import LeadBank
-        from app.core.constants import FMC_BANKS
+        from app.services.bank_registry import get_all_bank_names
 
         await self._require_fmc_banks()
 
@@ -2245,7 +2245,10 @@ class LeadService:
         )
 
         return {
-            "banks": list(FMC_BANKS),
+            # ALL banks, not just active ones: a lender you have stopped
+            # working with still had real files go to it, and dropping its
+            # column would make that history invisible.
+            "banks": list(await get_all_bank_names(self.db)),
             "items": [
                 {
                     "lead_id": l.id,
