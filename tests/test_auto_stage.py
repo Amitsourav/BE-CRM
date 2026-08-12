@@ -201,3 +201,52 @@ async def test_no_op_when_target_equals_current_stage():
 async def test_auto_advance_stage_set_is_early_stages_only():
     assert _AV_AUTO_ADVANCE_STAGES == {
         "created", "contacted", "connected", "dnp_pre_qualified"}
+
+
+# ── FMC (regression) ───────────────────────────────────────────────────
+#
+# _fmc_auto_advance used Task(...) without importing it. Every FMC lead
+# the AI tried to QUALIFY raised NameError, which aborted the whole
+# post-call stage update — so the lead didn't move at all. DNP and LOST
+# were unaffected because they create no task, which is exactly why it
+# went unnoticed: the only broken outcome was the valuable one.
+
+from app.api.v1.voice import _fmc_auto_advance
+
+
+async def run_fmc(stage="created", *, connected=True, sentiment="neutral",
+                  interest="low", summary="", attempts=0):
+    lead, db = _Lead(stage, attempts), _DB()
+    await _fmc_auto_advance(db, _Call(), lead, sentiment, interest,
+                            summary, lead.assigned_agent_id, connected)
+    return lead, db
+
+
+async def test_fmc_qualify_does_not_raise():
+    """The regression itself — this used to be NameError: name 'Task'."""
+    lead, db = await run_fmc(sentiment="positive")
+    assert lead.current_stage == "qualified"
+
+
+async def test_fmc_qualify_creates_the_follow_up_task():
+    _, db = await run_fmc(sentiment="positive")
+    assert any(type(o).__name__ == "Task" for o in db.added)
+
+
+@pytest.mark.parametrize("stage,kw,expected", [
+    ("created", {"connected": False}, "dnp"),
+    ("created", {"sentiment": "negative"}, "lost"),
+    ("created", {"sentiment": "positive"}, "qualified"),
+    ("created", {"summary": "looking for education loan of 30 lakh"}, "qualified"),
+    ("created", {"sentiment": "positive", "summary": "planning next year"}, "opportunity"),
+])
+async def test_fmc_decision_matrix(stage, kw, expected):
+    lead, _ = await run_fmc(stage, **kw)
+    assert lead.current_stage == expected
+
+
+@pytest.mark.parametrize("stage", ["processing", "logged_in", "sanctioned", "disbursed"])
+async def test_fmc_never_touches_loan_processing(stage):
+    lead, db = await run_fmc(stage, sentiment="positive")
+    assert lead.current_stage == stage
+    assert db.added == []

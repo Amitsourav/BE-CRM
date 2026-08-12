@@ -1746,19 +1746,6 @@ async def _analyze_call(transcript: str, system_prompt: Optional[str] = None) ->
 # Admitverse uses linear stepping: CREATED → CONTACTED → CONNECTED →
 # QUALIFIED, never moves backward, walks one step per call.
 #
-# FMC has its own logic in _fmc_auto_advance — DNP and 12-attempt-LOST
-# don't fit a linear path. The "fmc" entry here is unused by the
-# Plivo path post-2026-05 but kept for the call_attempts.py / Bolna
-# webhook code that may still reference it.
-_STAGE_PATHS = {
-    "fmc": ["created", "contacted", "qualified"],
-    "admitverse": ["created", "contacted", "connected", "qualified"],
-}
-_STAGE_ORDERS = {
-    brand: {stage: idx for idx, stage in enumerate(path)}
-    for brand, path in _STAGE_PATHS.items()
-}
-
 # FMC auto-advance config — externalized so the DNP-LOST threshold is
 # easy to find and tune.
 _FMC_AUTO_ADVANCE_STAGES = frozenset({"created", "contacted", "dnp"})
@@ -1812,6 +1799,12 @@ async def _fmc_auto_advance(
     """
     from app.utils.date_helpers import now_utc, add_business_days
     from app.models.notification import Notification
+    # Task was used below without being imported — a NameError that fired
+    # on every FMC lead the AI tried to qualify, aborting the whole
+    # post-call stage update so the lead never moved at all. DNP and LOST
+    # were unaffected (they create no task), which is why it stayed
+    # hidden: the only outcome that broke was the valuable one.
+    from app.models.task import Task
 
     old_stage = lead.current_stage
     if old_stage not in _FMC_AUTO_ADVANCE_STAGES:
@@ -2202,177 +2195,14 @@ async def _auto_update_lead_stage(
         )
         return
 
-    # Admitverse gets the same decision-matrix treatment as FMC. The
-    # linear path-walk below is kept only for any caller that still
-    # passes an unrecognised brand.
+    # Admitverse gets the same decision-matrix treatment as FMC.
+    # `brand` is resolved above as exactly one of "fmc" | "admitverse",
+    # so these two calls are the whole of this function — there is no
+    # third path. The old linear stage-walk that used to live here was
+    # removed with this change; it had no route to DNP or LOST and is
+    # what left 36 interested leads stranded at "connected".
     await _av_auto_advance(
         db, call, lead, sentiment, interest_level,
         call_summary, call_agent_id, call_connected,
     )
     return
-
-    stage_path = _STAGE_PATHS[brand]
-    stage_order = _STAGE_ORDERS[brand]
-    contacted_stage, connected_stage, qualified_stage = stage_path[1], stage_path[2], stage_path[3]
-
-    # Evidence threshold for "qualified_lead":
-    # the LLM hallucinates "high interest" on transcripts where the user
-    # only said "Can you speak?" — because the agent's intro line mentions
-    # education loans. We block that by requiring real engagement: a
-    # substantial transcript AND multiple user turns. Without these
-    # gates, every connected call with the agent's standard opening got
-    # qualified, regardless of what the user actually said.
-    transcript = call.transcript or ""
-    transcript_len = len(transcript)
-    user_turns = transcript.count("User:")
-    qualified_eligible = (
-        sentiment == "positive"
-        and interest_level == "high"
-        and transcript_len >= 500
-        and user_turns >= 3
-    )
-
-    # Determine target stage
-    if not call_connected:
-        # No answer — at minimum mark as contacted (we tried)
-        target = contacted_stage
-    elif qualified_eligible:
-        target = qualified_stage
-    elif sentiment == "positive" or call_connected:
-        target = connected_stage
-    else:
-        target = contacted_stage
-
-    # Never move backward
-    if stage_order.get(target, 0) <= stage_order.get(old_stage, 0):
-        return
-
-    start_idx = stage_path.index(old_stage) if old_stage in stage_path else -1
-    end_idx = stage_path.index(target) if target in stage_path else -1
-    if start_idx < 0 or end_idx < 0 or end_idx <= start_idx:
-        return
-
-    changed_by = call_agent_id or lead.assigned_agent_id or lead.created_by
-    if not changed_by:
-        # Lead has no owner on file (CSV import without created_by, agent
-        # deactivated since assignment, etc). Fall back to any active
-        # admin / manager in the company so the auto-stage update isn't
-        # silently dropped — previously 17% of leads sat in 'lead' forever
-        # because of this skip.
-        from app.models.profile import Profile
-        from app.core.constants import UserRole
-        fb_result = await db.execute(
-            select(Profile)
-            .where(
-                Profile.company_id == lead.company_id,
-                Profile.role.in_([UserRole.ADMIN, UserRole.MANAGER]),
-                Profile.is_active == True,  # noqa: E712
-            )
-            .limit(1)
-        )
-        fb = fb_result.scalar_one_or_none()
-        if fb:
-            changed_by = fb.id
-        else:
-            logger.warning(
-                "LEAD_AUTO_UPDATE skipped — no owner and no admin/manager "
-                "fallback for lead %s in company %s",
-                lead.id, lead.company_id,
-            )
-            return
-
-    company_id = lead.company_id
-    final_stage = old_stage
-
-    for i in range(start_idx + 1, end_idx + 1):
-        from_stage = stage_path[i - 1]
-        to_stage = stage_path[i]
-
-        lead.current_stage = to_stage
-        final_stage = to_stage
-
-        # Set timestamps
-        if to_stage == connected_stage:
-            lead.connected_time = now_utc()
-        if to_stage == qualified_stage:
-            lead.due_date = add_business_days(now_utc(), 1)
-
-        # Stage log for each step
-        db.add(LeadStageLog(
-            lead_id=lead.id,
-            company_id=company_id,
-            from_stage=from_stage,
-            to_stage=to_stage,
-            changed_by=changed_by,
-            conversation_notes=(
-                f"Auto: AI call. Sentiment={sentiment}, Interest={interest_level}"
-            ),
-        ))
-
-    # Activity log (one entry for the full transition)
-    db.add(ActivityLog(
-        company_id=company_id,
-        actor_id=None,
-        action="stage_changed",
-        entity_type="lead",
-        entity_id=lead.id,
-        new_values={
-            "from": old_stage, "to": final_stage,
-            "sentiment": sentiment, "interest": interest_level,
-            "call_id": str(call.id),
-        },
-    ))
-
-    # Notification to assigned agent
-    notify_user = lead.assigned_agent_id or changed_by
-    if notify_user:
-        db.add(Notification(
-            company_id=company_id,
-            user_id=notify_user,
-            type="stage_changed",
-            title=f"Lead moved: {old_stage} → {final_stage}",
-            message=f"{lead.full_name} auto-updated after AI call. Sentiment: {sentiment}.",
-            lead_id=lead.id,
-        ))
-
-    # Auto-create follow-up task for qualified leads
-    if final_stage == qualified_stage:
-        assignee = lead.assigned_agent_id or changed_by
-        db.add(Task(
-            company_id=company_id,
-            lead_id=lead.id,
-            assigned_to=assignee,
-            created_by=assignee,
-            task_type="follow_up",
-            title=f"Follow up: {lead.full_name} — Qualified Lead",
-            description=f"AI call showed high interest. Summary: {call_summary[:300] if call_summary else 'N/A'}",
-            status="pending",
-            due_date=add_business_days(now_utc(), 1),
-        ))
-        db.add(Notification(
-            company_id=company_id,
-            user_id=assignee,
-            type="task_created",
-            title=f"Follow-up task: {lead.full_name}",
-            message="Auto-created for qualified lead after AI call.",
-            lead_id=lead.id,
-        ))
-
-    # Auto-complete stale callback tasks. AI auto-stage advancement means
-    # the lead moved forward; previous overdue callback tasks are no
-    # longer relevant.
-    if final_stage != old_stage:
-        from app.services.stage_machine import auto_complete_stale_call_tasks
-        await auto_complete_stale_call_tasks(
-            db,
-            lead_id=lead.id,
-            company_id=company_id,
-            new_stage=final_stage,
-        )
-
-    await db.commit()
-
-    logger.info(
-        "LEAD_AUTO_UPDATE lead=%s %s→%s sentiment=%s interest=%s call=%s",
-        str(lead.id)[:8], old_stage, final_stage, sentiment, interest_level, str(call.id)[:8],
-    )
