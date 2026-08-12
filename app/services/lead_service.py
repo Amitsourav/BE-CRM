@@ -67,6 +67,7 @@ from app.core.constants import (
     UserRole, LeadStage, RESTRICTED_VIEW_ROLES,
     TaskType, TaskStatus,
     get_initial_stage_for_brand,
+    get_stages_for_pipeline,
 )
 from app.utils.pagination import paginate
 from app.utils.date_helpers import now_utc
@@ -471,6 +472,22 @@ class LeadService:
                     existing_name=clash.full_name,
                 )
 
+        # A lead on the AI board whose stage is advanced past what that
+        # board shows would vanish — no column to render it in. That is
+        # exactly the dead-end that stranded 1,575 leads at stage 'lead'.
+        # Promote it to the normal board instead: advancing a lead into
+        # loan processing IS a counsellor taking it over.
+        from app.core.constants import AI_PIPELINE_STAGE_VALUES, PIPELINE_AI, PIPELINE_NORMAL
+        if (
+            getattr(lead, "pipeline", PIPELINE_NORMAL) == PIPELINE_AI
+            and lead.current_stage not in AI_PIPELINE_STAGE_VALUES
+        ):
+            logger.info(
+                "LEAD %s auto-promoted to the normal pipeline (stage %s is "
+                "outside the AI board)", lead.id, lead.current_stage,
+            )
+            lead.pipeline = PIPELINE_NORMAL
+
         for key, value in data.items():
             setattr(lead, key, value)
 
@@ -760,6 +777,10 @@ class LeadService:
         # FE only shows this dropdown to admin users; non-admins can't
         # see other people's leads anyway via the visibility gate.
         lead_segment: str | None = None,
+        # Which board: 'ai' (campaign leads) or 'normal' (counsellor-worked).
+        # None = both, preserving the pre-Aug-2026 behaviour for any caller
+        # that hasn't been updated.
+        pipeline: str | None = None,
         # Sort: created_desc (default), loan_asc/desc (FMC), budget_asc/desc (AV).
         # Affects only the per-column row order; counts are unchanged.
         sort_by: str = "created_desc",
@@ -791,6 +812,11 @@ class LeadService:
             application_status, university, budget_min, budget_max, budget_currency,
             important_only,
             lead_segment,
+            # MUST be in the key: the AI and normal boards differ only by
+            # this argument, so leaving it out made switching boards
+            # within the 15s TTL serve the other board's payload —
+            # including its stage columns.
+            pipeline,
             sort_by,
         )
         cached = _kanban_cache_get(cache_key)
@@ -856,6 +882,8 @@ class LeadService:
             important_only=important_only,
             lead_segment=lead_segment,
         )
+        if pipeline:
+            base = base.where(Lead.pipeline == pipeline)
 
         sub = base.subquery()
         # Outer ORDER BY matches the window function order so the result
@@ -908,6 +936,10 @@ class LeadService:
             important_only=important_only,
             lead_segment=lead_segment,
         )
+        if pipeline:
+            # Same filter as the items query above — drift here means a
+            # "Qualified · 23" header sitting above 4 cards.
+            count_query = count_query.where(Lead.pipeline == pipeline)
         count_query = count_query.group_by(Lead.current_stage)
         count_rows = (await self.db.execute(count_query)).all()
         counts_by_stage = {stage: cnt for stage, cnt in count_rows}
@@ -920,6 +952,13 @@ class LeadService:
         await self._enrich_cards(rows)
 
         payload = {
+            # Column list for this board. The AI board is a short set;
+            # without this the FE would have to know the split itself and
+            # would drift from the backend.
+            "stages": [
+                st.value for st in get_stages_for_pipeline(pipeline, slug)
+            ],
+            "pipeline": pipeline,
             "items_by_stage": items_by_stage,
             "counts_by_stage": counts_by_stage,
             "total": total,
@@ -2276,3 +2315,88 @@ class LeadService:
             select(Profile.id, Profile.full_name).where(Profile.id.in_(ids))
         )).all()
         return {r[0]: r[1] for r in rows}
+
+    # ─── AI board ⇄ normal board ────────────────────────────────────────
+
+    async def move_pipeline(
+        self, lead_id: uuid.UUID, target: str, user: Profile,
+        reason: str | None = None,
+    ):
+        """Hand a lead between the AI board and the counsellor board.
+
+        Moving to 'normal' is the handover: the lead leaves the AI board
+        and future campaigns skip it (campaign_worker filters on
+        pipeline='ai'), so the AI never cold-calls someone a counsellor is
+        working. Its campaign rows and call history are untouched — that
+        history is usually the reason the lead is worth taking over.
+
+        Moving back to 'ai' is allowed so a mistake is reversible.
+        """
+        from app.core.constants import (
+            PIPELINE_VALUES, PIPELINE_AI, PIPELINE_NORMAL,
+            AI_PIPELINE_STAGE_VALUES,
+        )
+        from app.models.lead_remark import LeadRemark
+
+        if target not in PIPELINE_VALUES:
+            raise BadRequestError(
+                f"pipeline must be one of {list(PIPELINE_VALUES)} (got '{target}')."
+            )
+
+        lead = await self.get_lead(lead_id, user)
+        previous = lead.pipeline or PIPELINE_NORMAL
+        if previous == target:
+            return lead  # idempotent
+
+        # Going back to the AI board only makes sense from a stage that
+        # board can display; otherwise the lead would be invisible again.
+        if target == PIPELINE_AI and lead.current_stage not in AI_PIPELINE_STAGE_VALUES:
+            raise BadRequestError(
+                f"This lead is at stage '{lead.current_stage}', which the AI "
+                f"board does not show. Move it to one of "
+                f"{list(AI_PIPELINE_STAGE_VALUES)} first, or leave it on the "
+                f"normal pipeline."
+            )
+
+        lead.pipeline = target
+        body = (
+            f"Moved from the {previous} pipeline to the {target} pipeline"
+            + (f": {reason}" if reason else ".")
+        )
+        self.db.add(LeadRemark(
+            company_id=self.company_id, lead_id=lead.id,
+            author_id=user.id, author_role=user.role, body=body,
+        ))
+        await self.db.commit()
+        await self.db.refresh(lead)
+        invalidate_kanban_cache_for_company(self.company_id)
+        logger.info(
+            "LEAD %s pipeline %s -> %s by %s", lead.id, previous, target, user.email,
+        )
+        return lead
+
+    async def get_lead_campaigns(self, lead_ids: list) -> dict:
+        """campaign membership per lead, for the 'which campaign did this
+        come from?' block on the lead page."""
+        from app.models.campaign import Campaign
+        from app.models.campaign_lead import CampaignLead
+        if not lead_ids:
+            return {}
+        rows = (await self.db.execute(
+            select(
+                CampaignLead.lead_id, Campaign.id, Campaign.name,
+                Campaign.status, CampaignLead.status, CampaignLead.attempt_count,
+                CampaignLead.created_at,
+            )
+            .join(Campaign, Campaign.id == CampaignLead.campaign_id)
+            .where(CampaignLead.lead_id.in_(lead_ids))
+            .order_by(CampaignLead.created_at.desc())
+        )).all()
+        out: dict = {}
+        for lid, cid, cname, cstatus, clstatus, attempts, enrolled in rows:
+            out.setdefault(lid, []).append({
+                "campaign_id": cid, "campaign_name": cname,
+                "campaign_status": cstatus, "lead_status": clstatus,
+                "attempt_count": attempts, "enrolled_at": enrolled,
+            })
+        return out

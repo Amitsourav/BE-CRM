@@ -4,7 +4,7 @@ import uuid
 import logging
 from typing import Optional, List
 
-from sqlalchemy import select, func
+from sqlalchemy import update as sa_update, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -243,6 +243,17 @@ class CampaignService:
                 status="pending",
             ))
             added += 1
+
+        if added:
+            # Enrolling puts the lead on the AI board. Leads a counsellor
+            # has already taken over (pipeline='normal') are left alone —
+            # the AI must not cold-call someone being actively worked.
+            from app.models.lead import Lead as _Lead
+            await self.db.execute(
+                sa_update(_Lead)
+                .where(_Lead.id.in_(valid_ids - existing_ids))
+                .values(pipeline="ai")
+            )
 
         campaign.total_leads = (campaign.total_leads or 0) + added
         await self.db.commit()

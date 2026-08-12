@@ -234,6 +234,43 @@ FMC_STAGES: list[LeadStage] = [
 FMC_TERMINAL: set[LeadStage] = {LeadStage.DISBURSED, LeadStage.LOST}
 
 
+# ── AI calling pipeline (Aug 2026) ─────────────────────────────────────
+# Campaign leads live in their own board, separate from the leads
+# counsellors work by hand. Only the stages an AI phone call can actually
+# produce: it can dial, fail to reach, qualify, or lose someone. It
+# cannot collect documents or log a file with a bank — that is human
+# work and belongs to the normal pipeline.
+#
+# A lead leaves this board via the explicit "move to normal pipeline"
+# action (or automatically if someone advances it past these stages —
+# see LeadService.update / StageMachine, which promote rather than let a
+# lead land in a column this board does not render).
+AI_PIPELINE_STAGES: list[LeadStage] = [
+    LeadStage.CREATED,
+    LeadStage.CONTACTED,
+    LeadStage.DNP,
+    LeadStage.QUALIFIED,
+    LeadStage.LOST,
+]
+
+AI_PIPELINE_STAGE_VALUES: tuple[str, ...] = tuple(s.value for s in AI_PIPELINE_STAGES)
+
+# The two boards a lead can sit on.
+PIPELINE_AI = "ai"
+PIPELINE_NORMAL = "normal"
+PIPELINE_VALUES: tuple[str, ...] = (PIPELINE_AI, PIPELINE_NORMAL)
+
+
+def get_stages_for_pipeline(pipeline: str | None, slug: str | None = None) -> list[LeadStage]:
+    """Columns to render for a board. AI gets the short set; anything
+    else gets the brand's full funnel."""
+    if pipeline == PIPELINE_AI:
+        return list(AI_PIPELINE_STAGES)
+    if (slug or "").lower() == "admitverse":
+        return list(ADMITVERSE_STAGES)
+    return list(FMC_STAGES)
+
+
 def _build_fmc_transitions() -> dict[LeadStage, list[LeadStage]]:
     table: dict[LeadStage, list[LeadStage]] = {}
     for src in FMC_STAGES:

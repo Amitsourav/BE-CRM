@@ -176,6 +176,11 @@ class LeadOut(BaseModel):
     call_count: int = 0
     notes_count: int = 0
     has_active_ai_campaign: bool = False
+    # Which board this lead is on: 'ai' | 'normal'.
+    pipeline: str = "normal"
+    # Which campaign(s) this lead came from — the "why is this lead here?"
+    # block on the lead page. Newest first. Empty for non-campaign leads.
+    campaigns: list[dict] = []
     created_by: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
@@ -261,6 +266,7 @@ class LeadCardOut(BaseModel):
     call_count: int = 0
     notes_count: int = 0
     has_active_ai_campaign: bool = False
+    pipeline: str = "normal"
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -270,6 +276,11 @@ class LeadsByStageOut(BaseModel):
     """Response for GET /leads/by-stage. Kanban fetches all stages in
     one round trip; frontend slices `items_by_stage` into columns.
     """
+    # Column order for this board. The AI board is a short set (created,
+    # contacted, dnp, qualified, lost); render from this rather than
+    # hard-coding, or the two boards will drift from the backend.
+    stages: list[str] = []
+    pipeline: str | None = None
     items_by_stage: dict[str, list[LeadCardOut]]
     counts_by_stage: dict[str, int]
     total: int
@@ -624,3 +635,11 @@ class BankOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class LeadPipelineMove(BaseModel):
+    """Body for POST /leads/{id}/pipeline — hand a lead between boards."""
+    pipeline: str = Field(pattern="^(ai|normal)$")
+    reason: str | None = Field(default=None, max_length=500)
+
+    model_config = {"extra": "forbid"}

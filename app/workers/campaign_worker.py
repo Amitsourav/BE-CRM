@@ -173,6 +173,11 @@ class CampaignWorker:
                 CampaignLead.campaign_id == campaign.id,
                 Lead.is_deleted == False,  # noqa: E712
                 Lead.phone.isnot(None),
+                # A lead moved to the normal pipeline has been handed to a
+                # counsellor. Skip it rather than cold-calling someone a
+                # human is actively working. Its campaign row stays, so
+                # history and reporting are unaffected.
+                Lead.pipeline == "ai",
                 or_(
                     CampaignLead.status == "pending",
                     and_(

@@ -63,6 +63,22 @@ class Lead(Base, TimestampMixin):
     lost_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     lost_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    # Which board this lead sits on: 'ai' (worked by AI campaigns) or
+    # 'normal' (worked by a counsellor). Aug 2026.
+    #
+    # Previously "is this an AI lead?" was DERIVED from having a
+    # campaign_leads row, which meant it could never be undone — the only
+    # way to un-flag a lead was to delete its campaign history. Storing it
+    # explicitly is what makes "move to normal pipeline" possible while
+    # the call history stays intact.
+    #
+    # Enrolling a lead in a campaign sets this to 'ai'. Moving it to
+    # 'normal' also stops future campaigns picking it up, so the AI never
+    # cold-calls someone a counsellor is actively working.
+    pipeline: Mapped[str] = mapped_column(
+        String(10), nullable=False, server_default=text("'normal'")
+    )
+
     # Meta
     custom_fields: Mapped[Dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     tags: Mapped[List[str]] = mapped_column(ARRAY(String), nullable=False, server_default=text("'{}'"))

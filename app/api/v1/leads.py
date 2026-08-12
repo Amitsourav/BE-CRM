@@ -21,6 +21,7 @@ from app.schemas.lead import (
     LeadApplicationCreate, LeadApplicationUpdate, LeadApplicationOut,
     LeadReassign,
     BankCreate, BankUpdate, BankOut,
+    LeadPipelineMove,
     BankShareCreate, BankShareOut, BankShareDetailOut,
     BankMessageCreate, BankMessageOut, BankShareGridOut,
 )
@@ -134,6 +135,18 @@ async def list_leads_by_stage(
         regex="^(campaign|normal|unassigned|counsellor|pre_counsellor)$",
         description="Admin-only slice: campaign (AI-calling leads) | normal (never in a campaign) | unassigned | counsellor | pre_counsellor. FE should hide this dropdown for non-admin roles since restricted-view roles already only see their own leads.",
     ),
+    pipeline: str | None = Query(
+        None,
+        regex="^(ai|normal)$",
+        description=(
+            "Which board to render. 'ai' = leads worked by AI campaigns "
+            "(short stage set: created/contacted/dnp/qualified/lost). "
+            "'normal' = leads worked by counsellors (full FMC funnel). "
+            "Omit for both, which is the pre-Aug-2026 behaviour. The "
+            "response's `stages` array is this board's column order — "
+            "render from it rather than hard-coding."
+        ),
+    ),
     sort_by: str = Query(
         "created_desc",
         regex="^(created_desc|loan_asc|loan_desc|budget_asc|budget_desc)$",
@@ -159,9 +172,12 @@ async def list_leads_by_stage(
         budget_min=budget_min, budget_max=budget_max, budget_currency=budget_currency,
         important_only=important_only,
         lead_segment=lead_segment,
+        pipeline=pipeline,
         sort_by=sort_by,
     )
     return {
+        "stages": data.get("stages", []),
+        "pipeline": data.get("pipeline"),
         "items_by_stage": {
             stage: [LeadCardOut.model_validate(lead) for lead in leads]
             for stage, leads in data["items_by_stage"].items()
@@ -435,7 +451,13 @@ async def get_lead(
     db: AsyncSession = Depends(get_db),
 ):
     service = LeadService(db, company_id)
-    return await service.get_lead(lead_id, current_user)
+    lead = await service.get_lead(lead_id, current_user)
+    # Which campaign(s) this lead came from — shown on the lead page so a
+    # counsellor can see why an AI-called lead is in front of them.
+    # Enriched here rather than in get_lead(), which is called internally
+    # by a dozen methods that don't need the extra query.
+    lead.campaigns = (await service.get_lead_campaigns([lead.id])).get(lead.id, [])
+    return lead
 
 
 @router.put("/{lead_id}", response_model=LeadOut)
@@ -815,6 +837,34 @@ async def reassign_lead(
         actor=admin,
         updates=updates,
         reason=body.reason,
+    )
+
+
+@router.post("/{lead_id}/pipeline", response_model=LeadOut, tags=["Pipelines"])
+async def move_lead_pipeline(
+    lead_id: uuid.UUID,
+    body: LeadPipelineMove,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Hand a lead between the AI board and the counsellor board.
+
+    `{"pipeline": "normal"}` is the handover a counsellor makes when an
+    AI-called lead is worth working by hand. The lead leaves the AI board
+    and **future campaigns skip it**, so the AI never cold-calls someone
+    being actively worked. Its campaign rows and call history stay — that
+    history is usually why the lead is worth taking over.
+
+    `{"pipeline": "ai"}` puts it back, so a mistake is reversible. That
+    direction is refused when the lead's stage isn't one the AI board
+    renders, since it would otherwise vanish from both boards.
+
+    Idempotent, and logged as a remark on the lead's timeline.
+    """
+    service = LeadService(db, company_id)
+    return await service.move_pipeline(
+        lead_id, body.pipeline, current_user, reason=body.reason,
     )
 
 
