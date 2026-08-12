@@ -104,12 +104,6 @@ PROVIDER_OPTIONS = {
         {"value": "sarvam", "label": "Sarvam AI (Indian English)"},
     ],
     "tts_voices_english": {
-        "smallest": [
-            {"value": "emily", "label": "Emily (Female English)"},
-            {"value": "sarah", "label": "Sarah (Female English)"},
-            {"value": "luna", "label": "Luna (Female English)"},
-            {"value": "john", "label": "John (Male English)"},
-        ],
         "elevenlabs": [
             {"value": "Rachel", "label": "Rachel (Female English)"},
             {"value": "Domi", "label": "Domi (Female English)"},

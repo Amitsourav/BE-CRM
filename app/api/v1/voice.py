@@ -2171,7 +2171,6 @@ async def _auto_update_lead_stage(
     slug = (slug_result.scalar_one_or_none() or "").lower()
     brand = "admitverse" if slug == "admitverse" else "fmc"
 
-    old_stage = lead.current_stage
     # A "connected" call needs an actual conversation, not just a brief
     # pickup-and-hangup. Without the transcript guard, every silent
     # connect (duration > 0 but the user said nothing) was treated as
