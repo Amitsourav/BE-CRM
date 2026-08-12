@@ -1764,6 +1764,24 @@ _STAGE_ORDERS = {
 _FMC_AUTO_ADVANCE_STAGES = frozenset({"created", "contacted", "dnp"})
 _FMC_DNP_LOST_THRESHOLD = 12
 
+# ── Admitverse auto-advance config (Aug 2026) ──────────────────────────
+# Admitverse used to walk created → contacted → connected → qualified one
+# stage per call and had NO route to DNP or LOST at all. Two consequences
+# seen in production on the Sep'26 intake campaign:
+#   * an unanswered call moved the lead to "contacted", so leads that
+#     never picked up looked identical to leads we had spoken to
+#   * "not interested" never reached LOST, so rejections stayed in the
+#     working queue forever
+#   * qualification required FOUR conditions at once (positive AND high
+#     interest AND ≥500 chars AND ≥3 user turns), so 36 genuinely
+#     interested people sat at "connected" and had to be moved by hand
+# This mirrors the FMC decision matrix instead: one transition per call,
+# straight to the stage the outcome implies.
+_AV_AUTO_ADVANCE_STAGES = frozenset({
+    "created", "contacted", "connected", "dnp_pre_qualified",
+})
+_AV_DNP_LOST_THRESHOLD = 12
+
 
 async def _fmc_auto_advance(
     db, call, lead, sentiment: str, interest_level: str,
@@ -1962,6 +1980,176 @@ async def _fmc_auto_advance(
     )
 
 
+async def _av_auto_advance(
+    db, call, lead, sentiment: str, interest_level: str,
+    call_summary: str, call_agent_id, call_connected: bool,
+):
+    """Admitverse AI auto-stage logic. One transition per call.
+
+      no pickup at created/contacted/connected     → dnp_pre_qualified
+      no pickup at dnp_pre_qualified, attempts ≥12 → lost  (auto-churn)
+      negative sentiment or decline phrasing       → lost
+      positive/intent + future-study signal        → opportunity
+      positive/intent, wants to go now             → qualified
+      real conversation, neutral                   → connected
+      anything else                                → no-op
+
+    Replaces a linear path-walk that had no DNP and no LOST route, and
+    that required positive AND high-interest AND a 500-char transcript
+    AND 3+ user turns before it would qualify anyone — which left 36
+    interested people stuck at "connected" on the Sep'26 campaign.
+
+    Anything at processing or beyond is human counsellor work (documents,
+    applications, visa) and is never touched by an AI call.
+    """
+    from app.utils.date_helpers import now_utc, add_business_days
+    from app.models.notification import Notification
+    from app.models.task import Task
+
+    old_stage = lead.current_stage
+    if old_stage not in _AV_AUTO_ADVANCE_STAGES:
+        return
+
+    summary_lower = (call_summary or "").lower()
+
+    decline_keywords = (
+        "not interested", "no interest", "don't want", "do not want",
+        "declined", "asked not to be called", "stop calling",
+        "wrong number", "not looking", "already enrolled", "not planning",
+    )
+    # "Yes, but not yet" — a real lead whose intake is far off. Worth
+    # keeping warm as an opportunity rather than chasing as qualified.
+    future_keywords = (
+        "next year", "later", "future", "after completing", "after my current",
+        "still studying", "in 12th", "in ninth", "planning for 2028",
+        "not decided yet", "after graduation", "currently working",
+    )
+    # Study-abroad intent, not loan intent — the FMC list is the wrong
+    # vocabulary for this brand.
+    intent_keywords = (
+        "interested in studying", "wants to study", "planning to study",
+        "looking for guidance", "wants to pursue", "interested in",
+        "masters", "master's", "mba", "phd", "msc", "ms in", "mbbs",
+        "bachelor", "intake", "university", "ielts", "toefl", "gre", "gmat",
+        "scholarship", "admission", "counsellor", "counselor",
+        "australia", "germany", "canada", "uk ", "usa", "ireland",
+        "new zealand", "france", "italy", "poland", "netherlands",
+    )
+    has_decline = any(k in summary_lower for k in decline_keywords)
+    has_future = any(k in summary_lower for k in future_keywords)
+    has_intent = any(k in summary_lower for k in intent_keywords)
+
+    target: str | None = None
+    if not call_connected:
+        attempts = lead.call_attempt_count or 0
+        if old_stage == "dnp_pre_qualified" and attempts >= _AV_DNP_LOST_THRESHOLD:
+            target = "lost"
+        else:
+            target = "dnp_pre_qualified"
+    elif sentiment == "negative" or has_decline:
+        target = "lost"
+    elif sentiment == "positive" or interest_level in ("high", "medium") or has_intent:
+        target = "opportunity" if has_future else "qualified"
+    elif call_connected:
+        # Spoke to someone but nothing conclusive — record that we
+        # reached them so it isn't confused with a no-answer.
+        target = "connected"
+
+    if not target or target == old_stage:
+        return
+
+    changed_by = call_agent_id or lead.assigned_agent_id or lead.created_by
+    if not changed_by:
+        from app.models.profile import Profile
+        from app.core.constants import UserRole
+        fb = (await db.execute(
+            select(Profile).where(
+                Profile.company_id == lead.company_id,
+                Profile.role.in_([UserRole.ADMIN, UserRole.MANAGER]),
+                Profile.is_active == True,  # noqa: E712
+            ).limit(1)
+        )).scalar_one_or_none()
+        if fb:
+            changed_by = fb.id
+        else:
+            logger.warning(
+                "AV_AUTO_UPDATE skipped — no owner / admin fallback for lead %s",
+                lead.id,
+            )
+            return
+
+    company_id = lead.company_id
+    lead.current_stage = target
+
+    if target in ("connected", "qualified", "opportunity") and not lead.connected_time:
+        lead.connected_time = now_utc()
+    if target in ("qualified", "opportunity"):
+        lead.due_date = add_business_days(now_utc(), 1)
+    if target == "lost":
+        lead.lost_time = now_utc()
+        if not lead.lost_reason:
+            lead.lost_reason = (
+                f"Auto-lost: {_AV_DNP_LOST_THRESHOLD} unanswered AI attempts"
+                if not call_connected else
+                "Auto-lost: not interested (AI call)"
+            )
+
+    db.add(LeadStageLog(
+        lead_id=lead.id, company_id=company_id,
+        from_stage=old_stage, to_stage=target, changed_by=changed_by,
+        conversation_notes=(
+            f"Auto: AI call. Sentiment={sentiment}, Interest={interest_level}. "
+            f"{(call_summary or '')[:300]}"
+        ),
+    ))
+    db.add(ActivityLog(
+        company_id=company_id, actor_id=None, action="stage_changed",
+        entity_type="lead", entity_id=lead.id,
+        new_values={"from": old_stage, "to": target, "sentiment": sentiment,
+                    "interest": interest_level, "call_id": str(call.id)},
+    ))
+
+    notify_user = lead.assigned_agent_id or changed_by
+    if notify_user:
+        db.add(Notification(
+            company_id=company_id, user_id=notify_user, type="stage_changed",
+            title=f"Lead moved: {old_stage} → {target}",
+            message=f"{lead.full_name} auto-updated after AI call. Sentiment: {sentiment}.",
+            lead_id=lead.id,
+        ))
+
+    if target in ("qualified", "opportunity"):
+        assignee = lead.assigned_agent_id or changed_by
+        db.add(Task(
+            company_id=company_id, lead_id=lead.id,
+            assigned_to=assignee, created_by=assignee,
+            task_type="follow_up",
+            title=f"Follow up: {lead.full_name} — {target.title()}",
+            description=(
+                f"AI call showed interest. Summary: "
+                f"{call_summary[:300] if call_summary else 'N/A'}"
+            ),
+            status="pending", due_date=add_business_days(now_utc(), 1),
+        ))
+        db.add(Notification(
+            company_id=company_id, user_id=assignee, type="task_created",
+            title=f"Follow-up task: {lead.full_name}",
+            message=f"Auto-created for {target} lead after AI call.",
+            lead_id=lead.id,
+        ))
+
+    from app.services.stage_machine import auto_complete_stale_call_tasks
+    await auto_complete_stale_call_tasks(
+        db, lead_id=lead.id, company_id=company_id, new_stage=target,
+    )
+    await db.commit()
+    logger.info(
+        "AV_AUTO_UPDATE lead=%s %s→%s sentiment=%s interest=%s call=%s",
+        str(lead.id)[:8], old_stage, target, sentiment, interest_level,
+        str(call.id)[:8],
+    )
+
+
 async def _auto_update_lead_stage(
     db, call, lead, sentiment: str, interest_level: str,
     call_summary: str = "", call_agent_id=None,
@@ -2013,6 +2201,15 @@ async def _auto_update_lead_stage(
             call_summary, call_agent_id, call_connected,
         )
         return
+
+    # Admitverse gets the same decision-matrix treatment as FMC. The
+    # linear path-walk below is kept only for any caller that still
+    # passes an unrecognised brand.
+    await _av_auto_advance(
+        db, call, lead, sentiment, interest_level,
+        call_summary, call_agent_id, call_connected,
+    )
+    return
 
     stage_path = _STAGE_PATHS[brand]
     stage_order = _STAGE_ORDERS[brand]
