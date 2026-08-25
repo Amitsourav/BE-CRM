@@ -4,11 +4,19 @@ Companion to `BANK_SHARE_GRID_FRONTEND_PROMPT.md`, which describes the
 grid itself. This one covers making it **editable**. Backend is live; no
 new endpoints are needed beyond what is listed here.
 
-Three things to build:
+Four things to build:
 
 1. Click the **Loan** cell → edit the lead's loan amount in place.
 2. Click the **Stage** cell → dropdown to change the lead's stage.
 3. Colour the **whole row** by stage.
+4. Click any **bank cell** → dropdown to change that lender's status.
+
+> **(2) and (4) are different things that share four words.** The row
+> stage is the lead's position in the pipeline. The cell status is one
+> lender's decision about one file. `sanctioned`, `pf_paid`, `disbursed`
+> and `lost` exist in both, and they do not move together: PNB can be
+> `lost` while the lead is happily `processing` with Axis. Do not sync
+> them in the UI — the backend deliberately doesn't.
 
 ---
 
@@ -166,6 +174,81 @@ Each cell also now carries `loan_amount_lakh` — that lender's own figure,
 
 ---
 
+## 4b. Bank cell — per-lender status dropdown
+
+**Endpoint:** `PATCH /api/v1/leads/{lead_id}/banks/{entry_id}`
+**Body:** `{"bank_status": "loan_login"}`
+
+`entry_id` comes from the cell itself — every cell in `shares` now
+carries it:
+
+```jsonc
+"shares": {
+  "UniCred": {
+    "entry_id": "ae31e840-d7c6-4c5c-b75f-bf4942c76aed",   // <- PATCH target
+    "bank_status": "sanctioned",
+    "loan_amount_lakh": 45.00,
+    "shared_at": "...", "message_count": 3, ...
+  }
+}
+```
+
+**Options:** `GET /api/v1/leads/bank-statuses` →
+`[{"value": "loan_login", "label": "Login"}, …]`. Use the label as-is;
+don't invent your own wording for the enum.
+
+| value | label |
+|---|---|
+| `applied` | Applied |
+| `loan_login` | Login |
+| `sanctioned` | Sanctioned |
+| `pf_paid` | PF Paid |
+| `disbursed` | Disbursed |
+| `lost` | Lost |
+
+### Three rules
+
+**1. PF Paid needs the amount.** Same popover as the row-level one, minus
+the bank (the cell already is the bank) and minus the date:
+
+```
+UniCred → PF Paid
+  Amount (lakh) [ 45 ]        <- LAKHS, field is loan_amount_lakh
+         [Cancel] [Save]
+```
+
+`PATCH … {"bank_status": "pf_paid", "loan_amount_lakh": 45}`
+
+Skip the amount and you get a 400: *"loan_amount_lakh is required when
+setting a bank to 'pf_paid'…"*. If the cell already has an amount you may
+send the status alone — the backend accepts the stored value.
+
+Every other status is a plain one-click PATCH, no popover.
+
+**2. `lost` here means THIS LENDER declined.** It does not touch the
+lead's `current_stage` and must not recolour the row. A lead with three
+banks can have one `lost` and two still live; that is a normal state, not
+something to reconcile. Style the cell itself, not the row.
+
+**3. The dropdown is not a whitelist.** `docs_reviewed` and
+`under_review` are no longer offered but remain valid, and 6 cells still
+hold them. Render whatever the cell's `bank_status` says even when it is
+absent from `/bank-statuses`, and append the offered options to it —
+otherwise those cells show an empty dropdown.
+
+### Cells that don't exist yet
+
+`shares` only contains banks this lead has actually been shared with.
+A blank cell has no `entry_id`, so there is nothing to PATCH. To set a
+status on a blank cell, create the entry first:
+
+`POST /api/v1/leads/{lead_id}/banks` → `{"bank_name": "Axis", "bank_status": "applied"}`
+
+then PATCH the returned `id`. Only do this if you want blank cells to be
+clickable — otherwise leave them inert, which is the current behaviour.
+
+---
+
 ## 5. After any change
 
 A stage change touches more than this page. On success:
@@ -194,6 +277,8 @@ they are written for the user, not for logs.
 | Missing follow-up date | `Follow-up date is required when moving a lead to 'X'.` |
 | Lost with no reason | `lost_reason is required when moving to 'lost'` |
 | Lost reason not in the list | `lost_reason must be one of the canonical FMC values…` |
+| Cell set to PF Paid with no amount | `loan_amount_lakh is required when setting a bank to 'pf_paid' — record the amount this lender sanctioned.` |
+| Cell given an unknown status | `bank_status must be one of […] (got 'X').` |
 
 ---
 

@@ -256,6 +256,20 @@ AI_PIPELINE_STAGES: list[LeadStage] = [
 
 AI_PIPELINE_STAGE_VALUES: tuple[str, ...] = tuple(s.value for s in AI_PIPELINE_STAGES)
 
+# Per-bank status, as offered in the bank-share grid's cell dropdown.
+# NOT the full set of accepted values: 'docs_reviewed' and 'under_review'
+# remain valid and are still stored (6 rows use them), they are simply
+# not offered any more. Anything already on a cell must still render, so
+# the frontend shows the stored value even when it is absent from here.
+BANK_STATUS_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("applied", "Applied"),
+    ("loan_login", "Login"),
+    ("sanctioned", "Sanctioned"),
+    ("pf_paid", "PF Paid"),
+    ("disbursed", "Disbursed"),
+    ("lost", "Lost"),
+)
+
 # Two loan columns, two units. Users type and read lakhs everywhere
 # (lead.loan_amount is "30 Lakh" / "64", lead.loan_amount_lakh is 30.00),
 # but lead_banks.loan_amount holds rupees (6000000.00) because that is how

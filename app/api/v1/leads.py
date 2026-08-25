@@ -206,6 +206,34 @@ async def list_lost_reasons(
     return list(reasons) if reasons else []
 
 
+@router.get("/bank-statuses", response_model=list[dict], tags=["Bank Shares"])
+async def list_bank_statuses(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Options for the per-bank status dropdown in the bank-share grid.
+
+    Returned as [{"value": "loan_login", "label": "Login"}, …] so the
+    wire value and the words on screen are decided in one place instead
+    of the frontend inventing its own labels for the enum.
+
+    This is the OFFERED set, not the accepted set: 'docs_reviewed' and
+    'under_review' are still valid and still stored on 6 existing rows,
+    they are simply no longer offered. A cell holding one of them must
+    still render its own value — treat this list as additions to
+    whatever the cell already has, not as a whitelist.
+
+    Per-bank and per-bank only: this status describes one lender's
+    decision about one file. It does not move the lead's own
+    current_stage, and 'lost' here means that lender declined, not that
+    the lead is lost.
+    """
+    from app.core.constants import BANK_STATUS_OPTIONS
+    if await _company_slug(db, company_id) == "admitverse":
+        return []
+    return [{"value": v, "label": lbl} for v, lbl in BANK_STATUS_OPTIONS]
+
+
 @router.get("/banks", response_model=list[str])
 async def list_banks(
     company_id: uuid.UUID = Depends(get_current_company_id),

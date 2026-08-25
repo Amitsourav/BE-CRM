@@ -384,7 +384,15 @@ class LeadBankUpdate(BaseModel):
     # actually sanctions the loan.
     application_id: str | None = None
     sanction_date: date | None = None
+    # In RUPEES — the unit this column has always used, and what the
+    # lead page's Sanction Details card sends. Left alone so that form
+    # keeps working untouched.
     loan_amount: Decimal | None = None
+    # The same figure in LAKHS, for callers that speak lakhs (the
+    # bank-share grid, where every other amount on screen is in lakhs).
+    # Converted server-side; if both are sent, this one wins, because a
+    # caller that bothered to send lakhs is the one that meant it.
+    loan_amount_lakh: Decimal | None = Field(default=None, gt=0)
     roi: Decimal | None = None
     tenure_months: int | None = None
     pf_amount: Decimal | None = None
@@ -571,6 +579,11 @@ class BankShareCell(BaseModel):
     one of these per shared (lead, bank), and the full conversation is
     fetched on hover instead of being inlined for every cell on the page.
     """
+    # The lead_banks row id. Required to change this cell's status —
+    # PATCH /leads/{lead_id}/banks/{entry_id} is addressed by id, so
+    # without this the grid can render a status dropdown but has nothing
+    # to submit it to.
+    entry_id: uuid.UUID
     shared_at: datetime | None = None
     shared_by_name: str | None = None
     source: str | None = None

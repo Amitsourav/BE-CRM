@@ -5,6 +5,7 @@ import time
 import uuid
 import logging
 from datetime import date
+from decimal import Decimal
 from sqlalchemy import select, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1255,6 +1256,10 @@ class LeadService:
     _BANK_STATUS_PRIORITY = {
         "disbursed": 7, "pf_paid": 6, "sanctioned": 5, "loan_login": 4,
         "under_review": 3, "docs_reviewed": 2, "applied": 1,
+        # Below 'applied' deliberately. A lender that rejected the file
+        # must never be lifted onto lead.bank_name as the lead's primary
+        # bank while another lender is still working on it.
+        "lost": 0,
     }
     _BANK_VALID_STATUSES = set(_BANK_STATUS_PRIORITY.keys())
 
@@ -1364,6 +1369,16 @@ class LeadService:
         if not entry:
             raise NotFoundError("Bank entry not found")
 
+        # Lakhs in, rupees out — the column stores rupees. Normalised up
+        # front so every check below sees a single field, and a caller
+        # sending lakhs can never write a lakh figure into a rupee column.
+        if payload.get("loan_amount_lakh") is not None:
+            from app.core.constants import LAKH_IN_RUPEES
+            payload["loan_amount"] = (
+                Decimal(payload["loan_amount_lakh"]) * LAKH_IN_RUPEES
+            ).quantize(Decimal("0.01"))
+        payload.pop("loan_amount_lakh", None)
+
         # Apply bank_status first so the gate below sees the new value
         # (FE often sends status change + sanction details in one PATCH).
         new_status = payload.get("bank_status")
@@ -1371,6 +1386,17 @@ class LeadService:
             if new_status not in self._BANK_VALID_STATUSES:
                 raise BadRequestError(
                     f"bank_status must be one of {sorted(self._BANK_VALID_STATUSES)} (got '{new_status}')."
+                )
+            # PF paid means a fee was paid against a specific sanctioned
+            # amount, so the amount is part of the claim, not an optional
+            # extra. Accepted from this payload OR already on the row, so
+            # correcting a typo in the status doesn't force re-entry of a
+            # figure that is already there.
+            if new_status == "pf_paid" and payload.get("loan_amount") is None \
+                    and entry.loan_amount is None:
+                raise BadRequestError(
+                    "loan_amount_lakh is required when setting a bank to "
+                    "'pf_paid' — record the amount this lender sanctioned."
                 )
             entry.bank_status = new_status
         if "notes" in payload and payload["notes"] is not None:
@@ -2292,6 +2318,7 @@ class LeadService:
                 (s.loan_amount / LAKH_IN_RUPEES) if s.loan_amount is not None else None
             )
             by_lead.setdefault(s.lead_id, {})[s.bank_name] = {
+                "entry_id": s.id,
                 "shared_at": s.shared_at,
                 "shared_by_name": s.sharer.full_name if s.sharer else None,
                 "source": s.source,

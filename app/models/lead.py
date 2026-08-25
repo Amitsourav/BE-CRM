@@ -114,6 +114,14 @@ class Lead(Base, TimestampMixin):
         ENUM(
             'applied', 'docs_reviewed', 'under_review', 'loan_login',
             'sanctioned', 'pf_paid', 'disbursed',
+            # Same DB type as lead_banks.bank_status — both columns share
+            # the one `bank_status` enum, so a value added for the per-bank
+            # column MUST be listed here too. Omitting it doesn't fail on
+            # write; it fails on the next READ of the lead, because
+            # SQLAlchemy validates the label coming back against this
+            # tuple. Reachable whenever every one of a lead's banks has
+            # declined and _resync_primary_bank picks a 'lost' entry.
+            'lost',
             name='bank_status', create_type=False,
         ),
         nullable=True,

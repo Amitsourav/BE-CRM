@@ -31,6 +31,9 @@ class LeadBank(Base):
         ENUM(
             "applied", "docs_reviewed", "under_review", "loan_login",
             "sanctioned", "pf_paid", "disbursed",
+            # This lender declined. Per-BANK only — it says nothing about
+            # the lead, which may still be live with another lender.
+            "lost",
             name="bank_status", create_type=False,
         ),
         nullable=False, server_default=text("'applied'"),
