@@ -31,6 +31,8 @@ async def transition_stage(
         agent_agenda=body.agent_agenda,
         due_date=body.due_date,
         lost_reason=body.lost_reason,
+        bank_name=body.bank_name,
+        bank_loan_amount_lakh=body.bank_loan_amount_lakh,
     )
 
 

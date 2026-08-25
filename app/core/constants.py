@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+from decimal import Decimal
 
 
 class UserRole(str, enum.Enum):
@@ -254,6 +255,14 @@ AI_PIPELINE_STAGES: list[LeadStage] = [
 ]
 
 AI_PIPELINE_STAGE_VALUES: tuple[str, ...] = tuple(s.value for s in AI_PIPELINE_STAGES)
+
+# Two loan columns, two units. Users type and read lakhs everywhere
+# (lead.loan_amount is "30 Lakh" / "64", lead.loan_amount_lakh is 30.00),
+# but lead_banks.loan_amount holds rupees (6000000.00) because that is how
+# its existing rows were written from the sanction-details form. Every
+# crossing between the two goes through this constant so the factor is
+# stated once instead of appearing as a bare 100000 at each call site.
+LAKH_IN_RUPEES = Decimal("100000")
 
 # The two boards a lead can sit on.
 PIPELINE_AI = "ai"

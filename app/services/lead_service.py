@@ -2279,9 +2279,18 @@ class LeadService:
             )).scalars().all()
         roll = await self._share_rollup([s.id for s in shares])
 
+        from app.core.constants import LAKH_IN_RUPEES
+
         by_lead: dict = {}
+        pf_paid_by_lead: dict = {}
         for s in shares:
             r = roll.get(s.id, {})
+            # lead_banks.loan_amount is rupees; the UI speaks lakhs.
+            # Converted once, here, so no caller has to remember which
+            # column is in which unit.
+            amount_lakh = (
+                (s.loan_amount / LAKH_IN_RUPEES) if s.loan_amount is not None else None
+            )
             by_lead.setdefault(s.lead_id, {})[s.bank_name] = {
                 "shared_at": s.shared_at,
                 "shared_by_name": s.sharer.full_name if s.sharer else None,
@@ -2290,7 +2299,16 @@ class LeadService:
                 "message_count": r.get("message_count", 0),
                 "last_message_at": r.get("last_message_at"),
                 "last_message_preview": r.get("last_message_preview"),
+                "loan_amount_lakh": amount_lakh,
             }
+            if s.bank_status == "pf_paid":
+                pf_paid_by_lead.setdefault(s.lead_id, []).append({
+                    "bank_name": s.bank_name,
+                    "loan_amount_lakh": amount_lakh,
+                })
+        # Stable order so the row doesn't reshuffle between page loads.
+        for v in pf_paid_by_lead.values():
+            v.sort(key=lambda b: b["bank_name"])
 
         agent_names = await self._agent_name_map(
             [l.assigned_agent_id for l in leads if l.assigned_agent_id]
@@ -2310,6 +2328,7 @@ class LeadService:
                     "counsellor_name": agent_names.get(l.assigned_agent_id),
                     "current_stage": l.current_stage,
                     "loan_amount": l.loan_amount,
+                    "pf_paid_banks": pf_paid_by_lead.get(l.id, []),
                     "shares": by_lead.get(l.id, {}),
                 }
                 for l in leads

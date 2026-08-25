@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import uuid
 import logging
+from decimal import Decimal
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.lead import Lead
+from app.models.lead_bank import LeadBank
 from app.models.lead_stage_log import LeadStageLog
 from app.models.profile import Profile
 from app.models.company import Company
 from app.models.task import Task
+from app.services.bank_registry import get_all_bank_names
 from app.core.constants import (
     LeadStage,
     UserRole,
@@ -19,6 +22,7 @@ from app.core.constants import (
     get_terminal_stages_for_brand,
     get_notes_required_for_brand,
     get_lost_reasons_for_brand,
+    LAKH_IN_RUPEES,
 )
 from app.core.exceptions import (
     NotFoundError, ForbiddenError, BadRequestError, InvalidTransitionError,
@@ -123,6 +127,8 @@ class StageMachine:
         agent_agenda: str | None = None,
         due_date=None,
         lost_reason: str | None = None,
+        bank_name: str | None = None,
+        bank_loan_amount_lakh=None,
     ) -> Lead:
         result = await self.db.execute(
             select(Lead).where(
@@ -176,6 +182,35 @@ class StageMachine:
                     f"(got '{lost_reason}'). See GET /leads/lost-reasons."
                 )
 
+        # PF PAID names a lender and an amount, or it names nothing.
+        # Enforced HERE rather than at the bank-share endpoint so it holds
+        # on every route into the stage — Kanban drag, the lead page, the
+        # bank-share grid, bulk moves — instead of only the one screen the
+        # request came from. 8 of the 10 leads currently sitting at pf_paid
+        # have no bank row at all, so "which lender was actually paid" is
+        # already unanswerable for them; this stops the count growing.
+        pf_bank_amount_rupees = None
+        if target == LeadStage.PF_PAID:
+            if not bank_name or bank_loan_amount_lakh is None:
+                raise BadRequestError(
+                    "bank_name and bank_loan_amount_lakh (in lakhs) are both "
+                    "required when moving a lead to 'pf_paid'."
+                )
+            valid_banks = await get_all_bank_names(self.db)
+            if bank_name not in valid_banks:
+                raise BadRequestError(
+                    f"Unknown bank '{bank_name}'. See GET /leads/banks."
+                )
+            if Decimal(bank_loan_amount_lakh) <= 0:
+                raise BadRequestError("bank_loan_amount_lakh must be greater than 0.")
+            # Lakhs in, rupees out. The 31 lead_banks rows that already
+            # carry an amount are in rupees (1747000.00, 6000000.00), and
+            # silently mixing units into that column would corrupt every
+            # figure downstream far more quietly than a wrong number does.
+            pf_bank_amount_rupees = (
+                Decimal(bank_loan_amount_lakh) * LAKH_IN_RUPEES
+            ).quantize(Decimal("0.01"))
+
         # Follow-up date is mandatory for every non-terminal transition.
         # Terminal stages (FMC: disbursed + lost) don't need one — the
         # lead is done. Telecallers were leaving leads in active stages
@@ -218,6 +253,44 @@ class StageMachine:
             # Reopen — clear lost fields (FMC only)
             lead.lost_time = None
             lead.lost_reason = None
+
+        # Record the lender side of a PF-paid move. Upsert, because the
+        # lead is usually already shared with this bank (the grid cell
+        # exists) — in that case we promote the existing row rather than
+        # creating a second one, which the (lead_id, bank_name) unique
+        # constraint would reject anyway.
+        if target == LeadStage.PF_PAID:
+            entry = (await self.db.execute(
+                select(LeadBank).where(
+                    LeadBank.lead_id == lead.id,
+                    LeadBank.company_id == self.company_id,
+                    LeadBank.bank_name == bank_name,
+                )
+            )).scalar_one_or_none()
+            if entry is None:
+                # Marking PF paid for a lender the lead was never formally
+                # shared with is legitimate — shares are recorded by the
+                # WhatsApp bot and it does not see every conversation. The
+                # row is created so the fact isn't lost; source='manual'
+                # keeps it distinguishable from a bot-observed share.
+                entry = LeadBank(
+                    company_id=self.company_id,
+                    lead_id=lead.id,
+                    bank_name=bank_name,
+                    shared_at=now_utc(),
+                    shared_by=user.id,
+                    source="manual",
+                )
+                self.db.add(entry)
+            entry.bank_status = "pf_paid"
+            entry.loan_amount = pf_bank_amount_rupees
+            entry.updated_at = now_utc()
+            # Lift lead.bank_name / lead.bank_status onto the best entry.
+            # Reused from LeadService rather than reimplemented: the
+            # priority table it consults is the single definition of what
+            # "best" means, and a second copy here would drift from it.
+            from app.services.lead_service import LeadService
+            await LeadService(self.db, self.company_id)._resync_primary_bank(lead)
 
         # Create stage log
         stage_log = LeadStageLog(

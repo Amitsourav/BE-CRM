@@ -580,6 +580,16 @@ class BankShareCell(BaseModel):
     # First ~120 chars of the newest message, so the grid can show a
     # preview without a round trip.
     last_message_preview: str | None = None
+    # This lender's own sanctioned figure, in LAKHS — converted from the
+    # rupees the column stores so it reads the same way as every other
+    # loan number in the UI. None until the bank reaches sanctioned.
+    loan_amount_lakh: Decimal | None = None
+
+
+class PfPaidBank(BaseModel):
+    """A lender whose processing fee has been paid, and for how much."""
+    bank_name: str
+    loan_amount_lakh: Decimal | None = None
 
 
 class BankShareGridRow(BaseModel):
@@ -589,7 +599,19 @@ class BankShareGridRow(BaseModel):
     phone: str | None = None
     counsellor_name: str | None = None
     current_stage: str
+    # The LEAD's overall requirement, free text ("30 Lakh", "64"). Always
+    # present, always editable — PATCH /leads/{id}.
     loan_amount: str | None = None
+    # Every bank of this lead that is at pf_paid, with that bank's own
+    # amount. Empty for most leads. Once a lead reaches the pf_paid stage
+    # the row should show THESE figures instead of loan_amount above:
+    # `loan_amount` is what the student asked for, these are what a lender
+    # actually committed, and at that point the second is the real number.
+    # A list rather than one value because a lead can genuinely have two
+    # lenders paid, and collapsing them would hide one.
+    # Can still be empty at stage pf_paid for the 8 leads that predate
+    # the bank being mandatory — fall back to loan_amount there.
+    pf_paid_banks: list[PfPaidBank] = []
     # bank_name -> cell. Banks absent from this dict are blank cells.
     shares: dict[str, BankShareCell] = {}
 
