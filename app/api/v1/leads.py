@@ -414,9 +414,20 @@ async def bank_share_grid(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     q: str | None = Query(None, description="Search name/phone/email"),
-    stage: str | None = Query(None, alias="current_stage"),
-    agent_id: uuid.UUID | None = Query(None),
-    bank_name: str | None = Query(None, description="Only leads shared with this bank"),
+    # Repeatable filters — a multi-select in the toolbar sends the param
+    # once per checked box (?current_stage=created&current_stage=dnp).
+    # Passing a single value behaves exactly as it did before, so an
+    # existing single-select frontend keeps working untouched.
+    stage: list[str] | None = Query(
+        None, alias="current_stage",
+        description="Repeatable; matches any of the supplied stages",
+    ),
+    agent_id: list[uuid.UUID] | None = Query(
+        None, description="Repeatable; matches any of the supplied counsellors",
+    ),
+    bank_name: list[str] | None = Query(
+        None, description="Repeatable; leads shared with ANY of these banks",
+    ),
     shared_only: bool = Query(False, description="Only leads shared with at least one bank"),
 ):
     """The grid: one row per lead, one column per bank, in one call.
@@ -432,6 +443,12 @@ async def bank_share_grid(
     `GET /leads/{id}/bank-shares/{bank}` rather than inlined, since
     embedding every message for 25 leads x 19 banks would dwarf the rest
     of the payload.
+
+    `current_stage`, `agent_id` and `bank_name` are repeatable and OR
+    together within a filter, while different filters AND with each other
+    — so ?bank_name=PNB&bank_name=Axis&current_stage=processing reads as
+    "at PNB *or* Axis, *and* in processing". Same rule the `tags` filter
+    on /leads already follows.
 
     Three queries regardless of page size.
     """

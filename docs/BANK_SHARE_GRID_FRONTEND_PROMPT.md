@@ -75,6 +75,20 @@ Query params: `page`, `page_size` (max 100), `q` (name/phone/email),
 `current_stage`, `agent_id`, `bank_name` (only leads shared with that
 bank), `shared_only` (only leads shared with at least one bank).
 
+**`current_stage`, `agent_id` and `bank_name` are repeatable.** Send the
+param once per selected option — the backend ORs them together:
+
+```
+?bank_name=PNB&bank_name=Axis&current_stage=processing&current_stage=logged_in
+```
+
+reads as "shared with PNB **or** Axis, **and** in processing **or**
+logged_in". Different filters AND with each other; values within one
+filter OR. Sending a single value behaves exactly as before, so a
+single-select dropdown needs no change. Send the param **not at all**
+when a multi-select is empty — `?current_stage=` (empty value) is
+tolerated and treated as no filter, but omitting it is cleaner.
+
 ---
 
 ## Hover
@@ -136,6 +150,11 @@ staff; fall back to `sender_phone`.
 
 ## Suggested filters in the toolbar
 
-`q` search · stage dropdown · counsellor dropdown · a bank dropdown
-(`bank_name`) for "everything sitting with PNB" · a `shared_only` toggle
-for "only files that have gone out".
+`q` search · stage multi-select · counsellor multi-select · a bank
+multi-select (`bank_name`) for "everything sitting with PNB or Axis" ·
+a `shared_only` toggle for "only files that have gone out".
+
+Render the three multi-selects as checkbox lists with a summary label
+("2 banks"), a "Clear" action, and — since the bank list is ~20 entries
+— a "Select all" on the bank one. Reset `page` to 1 whenever a selection
+changes, or a user filtering while on page 8 lands on an empty grid.

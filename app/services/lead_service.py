@@ -2206,8 +2206,9 @@ class LeadService:
 
     async def bank_share_grid(
         self, user: Profile, page: int = 1, page_size: int = 25,
-        stage: str | None = None, agent_id: uuid.UUID | None = None,
-        bank_name: str | None = None, shared_only: bool = False,
+        stage: list[str] | None = None,
+        agent_id: list[uuid.UUID] | None = None,
+        bank_name: list[str] | None = None, shared_only: bool = False,
         q: str | None = None,
     ) -> dict:
         """Leads with all their bank shares, in one round trip.
@@ -2221,6 +2222,14 @@ class LeadService:
 
         await self._require_fmc_banks()
 
+        # A multi-select that has just been cleared still tends to send the
+        # param with an empty value (?current_stage=), which would other-
+        # wise filter on a stage literally named "" and return an empty
+        # grid that looks like a broken page. Blanks mean "no filter".
+        stage = [s.strip() for s in (stage or []) if s and s.strip()]
+        bank_name = [b.strip() for b in (bank_name or []) if b and b.strip()]
+        agent_id = [a for a in (agent_id or []) if a]
+
         base = select(Lead).where(
             Lead.company_id == self.company_id,
             Lead.is_deleted == False,  # noqa: E712
@@ -2232,24 +2241,28 @@ class LeadService:
             ))
         elif agent_id:
             base = base.where(or_(
-                Lead.assigned_agent_id == agent_id,
-                Lead.pre_counsellor_id == agent_id,
+                Lead.assigned_agent_id.in_(agent_id),
+                Lead.pre_counsellor_id.in_(agent_id),
             ))
         if stage:
-            base = base.where(Lead.current_stage == stage)
+            base = base.where(Lead.current_stage.in_(stage))
         if q:
             base = base.where(or_(
                 Lead.full_name.ilike(f"%{q}%"),
                 Lead.phone.ilike(f"%{q}%"),
                 Lead.email.ilike(f"%{q}%"),
             ))
-        # "Only leads that have gone to a bank" — and optionally to one
-        # specific bank, which is how you answer "everything sitting with
-        # PNB right now".
+        # "Only leads that have gone to a bank" — and optionally to a
+        # specific set of banks, which is how you answer "everything
+        # sitting with PNB or Axis right now". Multiple banks OR together:
+        # a lead shared with either one is a hit, matching what ticking two
+        # boxes in a multi-select means. (An "at ALL of these banks" filter
+        # would need a GROUP BY … HAVING count = n instead; nobody has
+        # asked for it, so it isn't built.)
         if shared_only or bank_name:
             sub = select(LeadBank.lead_id).where(LeadBank.company_id == self.company_id)
             if bank_name:
-                sub = sub.where(LeadBank.bank_name == bank_name)
+                sub = sub.where(LeadBank.bank_name.in_(bank_name))
             base = base.where(Lead.id.in_(sub))
 
         base = base.order_by(Lead.created_at.desc())
