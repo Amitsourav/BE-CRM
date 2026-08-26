@@ -1,0 +1,233 @@
+"""Commission reconciliation — what lenders owe us, and what has arrived.
+
+Answers the three questions that find money:
+  1. which disbursements were never billed  (status=to_bill)
+  2. which bills were never paid            (status=billed)
+  3. where the lender paid less than it owed (status=short_paid)
+
+Admin-only throughout, matching the invoice module: this is the money
+surface, and the same people who raise the bills reconcile them.
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import date
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_db
+from app.dependencies import get_current_admin
+from app.core.tenant import get_current_company_id
+from app.core.exceptions import BadRequestError, NotFoundError
+from app.models.profile import Profile
+from app.models.lead_bank import LeadBank
+from app.services.commission_service import CommissionService
+from app.schemas.commission import (
+    DisbursementCreate, DisbursementUpdate, DisbursementOut,
+    ReconciliationOut, LenderSummaryRow,
+)
+
+router = APIRouter(prefix="/reconciliation", tags=["Commission"])
+
+
+async def _require_fmc(db: AsyncSession, company_id: uuid.UUID) -> None:
+    """Admitverse has no lenders, so it has no commission to reconcile.
+
+    Same gate the bank features already use — stated here rather than
+    imported so this module doesn't depend on the leads router.
+    """
+    from app.models.company import Company
+    slug = (await db.execute(
+        select(Company.slug).where(Company.id == company_id)
+    )).scalar_one_or_none()
+    if (slug or "").lower() == "admitverse":
+        raise BadRequestError(
+            "Commission reconciliation is a lender feature and is not "
+            "available for this tenant."
+        )
+
+
+# ─────────────────────────────────────────────
+# The report
+# ─────────────────────────────────────────────
+
+@router.get("", response_model=ReconciliationOut)
+async def reconciliation(
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    bank_name: list[str] | None = Query(
+        None, description="Repeatable; matches any of the supplied lenders",
+    ),
+    status: list[str] | None = Query(
+        None,
+        description=(
+            "Repeatable. to_bill | billed | short_paid | paid | written_off. "
+            "to_bill = disbursed but never invoiced; billed = invoiced, "
+            "nothing received; short_paid = they paid less than they owed."
+        ),
+    ),
+    disbursed_from: date | None = Query(None),
+    disbursed_to: date | None = Query(None),
+    q: str | None = Query(None, description="Search the student's name"),
+):
+    """Every disbursement with what it earned and what came back.
+
+    `totals` covers the whole filtered set, not the page — a page total
+    is the wrong answer to "how much are we owed".
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionService(db, company_id).reconciliation(
+        page=page, page_size=page_size, bank_name=bank_name, status=status,
+        disbursed_from=disbursed_from, disbursed_to=disbursed_to, q=q,
+    )
+
+
+@router.get("/summary", response_model=list[LenderSummaryRow])
+async def summary(
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """One row per lender: disbursed, earned, received, still owed.
+
+    The "who do we chase this month" view. Ordered by commission earned.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionService(db, company_id).summary()
+
+
+# ─────────────────────────────────────────────
+# Individual disbursements
+# ─────────────────────────────────────────────
+
+@router.get("/disbursements/{disbursement_id}", response_model=DisbursementOut)
+async def get_disbursement(
+    disbursement_id: uuid.UUID,
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_fmc(db, company_id)
+    return await CommissionService(db, company_id).get(disbursement_id)
+
+
+@router.patch("/disbursements/{disbursement_id}", response_model=DisbursementOut)
+async def update_disbursement(
+    disbursement_id: uuid.UUID,
+    body: DisbursementUpdate,
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record a payment, correct a figure, or write the row off.
+
+    Recording a payment means sending `amount_received` AND
+    `tds_deducted` together. Sending only the cash makes the row look
+    short by whatever the lender withheld, which is the single most
+    common way this kind of report fills up with false shortfalls.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionService(db, company_id).update(
+        disbursement_id, body.model_dump(exclude_unset=True), admin,
+    )
+
+
+@router.delete("/disbursements/{disbursement_id}")
+async def delete_disbursement(
+    disbursement_id: uuid.UUID,
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a disbursement entered by mistake.
+
+    Refused once a bill claims it — an invoice pointing at nothing is
+    worse than a wrong row, and invoice numbers are permanent.
+    """
+    await _require_fmc(db, company_id)
+    await CommissionService(db, company_id).delete(disbursement_id)
+    return {"message": "Disbursement deleted"}
+
+
+# ─────────────────────────────────────────────
+# Tranches on one (lead, lender) file
+# ─────────────────────────────────────────────
+
+lead_router = APIRouter(prefix="/leads", tags=["Commission"])
+
+
+async def _entry(db: AsyncSession, company_id, lead_id, entry_id) -> LeadBank:
+    entry = (await db.execute(
+        select(LeadBank).where(
+            LeadBank.id == entry_id,
+            LeadBank.lead_id == lead_id,
+            LeadBank.company_id == company_id,
+        )
+    )).scalar_one_or_none()
+    if not entry:
+        raise NotFoundError("Bank entry not found")
+    return entry
+
+
+@lead_router.get(
+    "/{lead_id}/banks/{entry_id}/disbursements",
+    response_model=list[DisbursementOut],
+)
+async def list_disbursements(
+    lead_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every tranche this lender has released on this file, in order."""
+    await _require_fmc(db, company_id)
+    await _entry(db, company_id, lead_id, entry_id)
+    return await CommissionService(db, company_id).list_for_entry(entry_id)
+
+
+@lead_router.post(
+    "/{lead_id}/banks/{entry_id}/disbursements",
+    response_model=DisbursementOut, status_code=201,
+)
+async def add_disbursement(
+    lead_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    body: DisbursementCreate,
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record another tranche on a file that has already disbursed once.
+
+    The FIRST tranche is captured automatically when the file is marked
+    `disbursed`, so this endpoint is for the instalments that follow.
+    `tranche_no` is assigned automatically.
+    """
+    await _require_fmc(db, company_id)
+    entry = await _entry(db, company_id, lead_id, entry_id)
+
+    from decimal import Decimal
+    from app.core.constants import LAKH_IN_RUPEES
+
+    data = body.model_dump(exclude_unset=True)
+    amount = (
+        Decimal(data["disbursed_amount_lakh"]) * LAKH_IN_RUPEES
+    ).quantize(Decimal("0.01"))
+
+    return await CommissionService(db, company_id).record_disbursement(
+        entry=entry,
+        disbursed_amount=amount,
+        disbursed_on=data["disbursed_on"],
+        user=admin,
+        rate_override=data.get("commission_rate"),
+        utr_reference=data.get("utr_reference"),
+        notes=data.get("notes"),
+        source="manual",
+        commit=True,
+    )
