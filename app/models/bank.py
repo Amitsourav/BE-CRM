@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Boolean, Integer, String, ForeignKey, text
+from sqlalchemy import Boolean, Integer, Numeric, String, ForeignKey, text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -52,6 +53,24 @@ class Bank(Base, TimestampMixin):
     # Dropdown and grid-column order. Seeded from the constant's order:
     # banks first, then NBFCs.
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+
+    # What this lender pays us, as a percentage of the amount it
+    # disburses. Nullable because it has to be filled in per lender and
+    # nothing can guess it — a lender with no rate set simply cannot have
+    # its commission computed, and the reconciliation report is expected
+    # to say so out loud rather than quietly bill it at zero.
+    #
+    # This is the CURRENT default only. Every disbursement snapshots the
+    # rate that applied to it (bank_disbursements.commission_rate), so
+    # renegotiating a rate never rewrites what was already earned.
+    #
+    # Lives here, on a table with no company_id, which means the rate is
+    # shared across tenants. Acceptable only because Admitverse is
+    # brand-gated out of every bank feature; if a second FMC-like tenant
+    # ever appears this must move to a tenant-scoped table.
+    commission_rate: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 2), nullable=True
+    )
 
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True

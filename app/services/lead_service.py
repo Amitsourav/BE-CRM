@@ -1378,9 +1378,24 @@ class LeadService:
                 Decimal(payload["loan_amount_lakh"]) * LAKH_IN_RUPEES
             ).quantize(Decimal("0.01"))
         payload.pop("loan_amount_lakh", None)
+        # Same conversion for the disbursed figure, which is a different
+        # number from loan_amount: loan_amount is what the lender
+        # SANCTIONED, this is what it actually released. Commission is
+        # earned on the second, so conflating them would misstate every
+        # figure downstream.
+        if payload.get("disbursed_amount_lakh") is not None:
+            from app.core.constants import LAKH_IN_RUPEES
+            payload["disbursed_amount"] = (
+                Decimal(payload["disbursed_amount_lakh"]) * LAKH_IN_RUPEES
+            ).quantize(Decimal("0.01"))
+        payload.pop("disbursed_amount_lakh", None)
 
         # Apply bank_status first so the gate below sees the new value
         # (FE often sends status change + sanction details in one PATCH).
+        # The disbursement row is built AFTER the sanction fields land,
+        # so it reads a fully-updated entry, but validated up here so a
+        # missing amount fails before anything is written.
+        _pending_disbursement = None
         new_status = payload.get("bank_status")
         if new_status is not None:
             if new_status not in self._BANK_VALID_STATUSES:
@@ -1398,6 +1413,33 @@ class LeadService:
                     "loan_amount_lakh is required when setting a bank to "
                     "'pf_paid' — record the amount this lender sanctioned."
                 )
+            # Disbursed is where FMC actually earns: commission is a
+            # percentage of what came out, on the date it came out. Both
+            # are required because neither can be reconstructed later —
+            # the 34 rows that reached this status before today have 17
+            # amounts and zero dates between them, which is precisely why
+            # the commission ledger had to live on a spreadsheet.
+            #
+            # Skipped when the file already has a tranche recorded, so
+            # re-saving a cell that is already disbursed doesn't demand
+            # the figures a second time.
+            if new_status == "disbursed" and entry.bank_status != "disbursed":
+                from app.services.commission_service import CommissionService
+                _commission = CommissionService(self.db, self.company_id)
+                if not await _commission.has_disbursement(entry.id):
+                    if payload.get("disbursed_amount") is None or payload.get("disbursed_on") is None:
+                        raise BadRequestError(
+                            "disbursed_amount_lakh and disbursed_on are both "
+                            "required when setting a bank to 'disbursed' — "
+                            "the commission is a percentage of what was "
+                            "released, on the date it was released."
+                        )
+                    _pending_disbursement = {
+                        "disbursed_amount": payload["disbursed_amount"],
+                        "disbursed_on": payload["disbursed_on"],
+                        "utr_reference": payload.get("utr_reference"),
+                        "rate_override": payload.get("commission_rate"),
+                    }
             entry.bank_status = new_status
         if "notes" in payload and payload["notes"] is not None:
             entry.notes = payload["notes"]
@@ -1426,6 +1468,16 @@ class LeadService:
 
         entry.updated_at = now_utc()
         await self.db.flush()
+
+        # Same transaction as the status change: a file that says
+        # "disbursed" with no money behind it is the state this whole
+        # feature exists to eliminate, so the two must land together.
+        if _pending_disbursement:
+            from app.services.commission_service import CommissionService
+            await CommissionService(self.db, self.company_id).record_disbursement(
+                entry=entry, user=user, source="bank_grid", **_pending_disbursement,
+            )
+
         await self._resync_primary_bank(lead)
         await self.db.commit()
         await self.db.refresh(entry)

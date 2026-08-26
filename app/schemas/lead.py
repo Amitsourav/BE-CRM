@@ -393,6 +393,18 @@ class LeadBankUpdate(BaseModel):
     # Converted server-side; if both are sent, this one wins, because a
     # caller that bothered to send lakhs is the one that meant it.
     loan_amount_lakh: Decimal | None = Field(default=None, gt=0)
+    # ── Disbursement (required when bank_status becomes 'disbursed') ──
+    # A DIFFERENT number from loan_amount above: that is what the lender
+    # sanctioned, these are what it actually released and when. Commission
+    # is earned on the released figure, so the two must not be conflated.
+    # In LAKHS, converted server-side, same as loan_amount_lakh.
+    disbursed_amount_lakh: Decimal | None = Field(default=None, gt=0)
+    disbursed_on: date | None = None
+    # The lender's own payout reference, if they gave one.
+    utr_reference: str | None = Field(default=None, max_length=100)
+    # Overrides the lender's configured rate for this one disbursement,
+    # for the cases where a file was negotiated separately.
+    commission_rate: Decimal | None = Field(default=None, ge=0, le=100)
     roi: Decimal | None = None
     tenure_months: int | None = None
     pf_amount: Decimal | None = None
@@ -645,6 +657,7 @@ class BankCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     # Where it sits in the dropdown / grid columns. Omitted = appended.
     sort_order: int | None = None
+    commission_rate: Decimal | None = Field(default=None, ge=0, le=100)
 
     model_config = {"extra": "forbid"}
 
@@ -654,6 +667,11 @@ class BankUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     is_active: bool | None = None
     sort_order: int | None = None
+    # What this lender pays us, as a percentage of what it disburses.
+    # Changing it affects only FUTURE disbursements — every existing one
+    # snapshotted the rate that applied to it, so a renegotiation can
+    # never rewrite what was already earned.
+    commission_rate: Decimal | None = Field(default=None, ge=0, le=100)
 
     model_config = {"extra": "forbid"}
 
@@ -666,6 +684,10 @@ class BankOut(BaseModel):
     # How many (lead, bank) rows point at this lender — so an admin can
     # see what deactivating or renaming would affect.
     usage_count: int = 0
+    # None means no rate has been configured. The reconciliation feature
+    # refuses to guess: a lender with no rate cannot have its commission
+    # computed, and that gap is reported rather than billed as zero.
+    commission_rate: Decimal | None = None
     created_at: datetime
     updated_at: datetime
 

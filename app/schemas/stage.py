@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pydantic import BaseModel, Field
 
@@ -27,6 +27,15 @@ class StageTransitionRequest(BaseModel):
     # rows already use — the conversion happens server-side so neither
     # the user nor the existing data has to change.
     bank_loan_amount_lakh: Decimal | None = Field(default=None, gt=0)
+
+    # ── Required only when to_stage == "disbursed" (FMC) ──────────────
+    # The revenue event. Commission is a percentage of what the lender
+    # RELEASED (not what it sanctioned), on the date it released it, so
+    # both are part of the claim. bank_name may be omitted — it defaults
+    # to the lead's primary lender, which the CRM already knows by the
+    # time a file disburses.
+    disbursed_amount_lakh: Decimal | None = Field(default=None, gt=0)
+    disbursed_on: date | None = None
 
 
 class StageLogOut(BaseModel):

@@ -33,6 +33,8 @@ async def transition_stage(
         lost_reason=body.lost_reason,
         bank_name=body.bank_name,
         bank_loan_amount_lakh=body.bank_loan_amount_lakh,
+        disbursed_amount_lakh=body.disbursed_amount_lakh,
+        disbursed_on=body.disbursed_on,
     )
 
 

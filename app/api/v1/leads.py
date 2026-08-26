@@ -279,6 +279,7 @@ async def list_banks_for_management(
         {
             "id": b.id, "name": b.name, "is_active": b.is_active,
             "sort_order": b.sort_order, "usage_count": counts.get(b.name, 0),
+            "commission_rate": b.commission_rate,
             "created_at": b.created_at, "updated_at": b.updated_at,
         }
         for b in rows
@@ -325,7 +326,10 @@ async def add_bank_to_list(
     else:
         sort_order = body.sort_order
 
-    bank = Bank(name=name, sort_order=sort_order, created_by=admin.id)
+    bank = Bank(
+        name=name, sort_order=sort_order, created_by=admin.id,
+        commission_rate=body.commission_rate,
+    )
     db.add(bank)
     await db.commit()
     await db.refresh(bank)
@@ -334,6 +338,7 @@ async def add_bank_to_list(
     return {
         "id": bank.id, "name": bank.name, "is_active": bank.is_active,
         "sort_order": bank.sort_order, "usage_count": 0,
+        "commission_rate": bank.commission_rate,
         "created_at": bank.created_at, "updated_at": bank.updated_at,
     }
 
@@ -383,6 +388,11 @@ async def update_bank_in_list(
         bank.is_active = data["is_active"]
     if "sort_order" in data and data["sort_order"] is not None:
         bank.sort_order = data["sort_order"]
+    # Explicit `in data` rather than a truthiness check so a rate can be
+    # cleared back to None — a lender whose deal lapsed must be able to
+    # stop having commission computed for it.
+    if "commission_rate" in data:
+        bank.commission_rate = data["commission_rate"]
 
     await db.commit()
     await db.refresh(bank)
@@ -399,6 +409,7 @@ async def update_bank_in_list(
     return {
         "id": bank.id, "name": bank.name, "is_active": bank.is_active,
         "sort_order": bank.sort_order, "usage_count": usage,
+        "commission_rate": bank.commission_rate,
         "created_at": bank.created_at, "updated_at": bank.updated_at,
     }
 

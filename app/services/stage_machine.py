@@ -129,6 +129,8 @@ class StageMachine:
         lost_reason: str | None = None,
         bank_name: str | None = None,
         bank_loan_amount_lakh=None,
+        disbursed_amount_lakh=None,
+        disbursed_on=None,
     ) -> Lead:
         result = await self.db.execute(
             select(Lead).where(
@@ -211,6 +213,38 @@ class StageMachine:
                 Decimal(bank_loan_amount_lakh) * LAKH_IN_RUPEES
             ).quantize(Decimal("0.01"))
 
+        # DISBURSED is the revenue event: commission is a percentage of
+        # what the lender released, on the date it released it. Neither
+        # can be reconstructed afterwards — of the 78 leads that reached
+        # this stage before today, 44 do not even record WHICH lender
+        # paid, and not one carries a date. That is the whole reason the
+        # commission ledger had to live on a spreadsheet.
+        #
+        # bank_name defaults to the lead's primary lender: by the time a
+        # file disburses the CRM already knows who it is, and making the
+        # user retype it is exactly the kind of friction this feature is
+        # meant to remove.
+        disbursed_amount_rupees = None
+        if target == LeadStage.DISBURSED:
+            bank_name = bank_name or lead.bank_name
+            if not bank_name or disbursed_amount_lakh is None or disbursed_on is None:
+                raise BadRequestError(
+                    "bank_name, disbursed_amount_lakh (in lakhs) and "
+                    "disbursed_on are all required when moving a lead to "
+                    "'disbursed' — the commission is a percentage of what "
+                    "was released, on the date it was released."
+                )
+            valid_banks = await get_all_bank_names(self.db)
+            if bank_name not in valid_banks:
+                raise BadRequestError(
+                    f"Unknown bank '{bank_name}'. See GET /leads/banks."
+                )
+            if Decimal(disbursed_amount_lakh) <= 0:
+                raise BadRequestError("disbursed_amount_lakh must be greater than 0.")
+            disbursed_amount_rupees = (
+                Decimal(disbursed_amount_lakh) * LAKH_IN_RUPEES
+            ).quantize(Decimal("0.01"))
+
         # Follow-up date is mandatory for every non-terminal transition.
         # Terminal stages (FMC: disbursed + lost) don't need one — the
         # lead is done. Telecallers were leaving leads in active stages
@@ -289,6 +323,51 @@ class StageMachine:
             # Reused from LeadService rather than reimplemented: the
             # priority table it consults is the single definition of what
             # "best" means, and a second copy here would drift from it.
+            from app.services.lead_service import LeadService
+            await LeadService(self.db, self.company_id)._resync_primary_bank(lead)
+
+        # Same shape for DISBURSED, plus the money. The lead_banks upsert
+        # records the relationship reaching its end state; the
+        # bank_disbursements row records what actually came out of it,
+        # which is what FMC gets paid on.
+        if target == LeadStage.DISBURSED:
+            entry = (await self.db.execute(
+                select(LeadBank).where(
+                    LeadBank.lead_id == lead.id,
+                    LeadBank.company_id == self.company_id,
+                    LeadBank.bank_name == bank_name,
+                )
+            )).scalar_one_or_none()
+            if entry is None:
+                entry = LeadBank(
+                    company_id=self.company_id,
+                    lead_id=lead.id,
+                    bank_name=bank_name,
+                    shared_at=now_utc(),
+                    shared_by=user.id,
+                    source="manual",
+                )
+                self.db.add(entry)
+            entry.bank_status = "disbursed"
+            entry.updated_at = now_utc()
+            await self.db.flush()
+
+            # Idempotent: a lead can legitimately be moved to disbursed
+            # more than once (a correction, a re-open and re-close), and
+            # each of those must not invent another tranche. Further
+            # tranches are added deliberately, through the disbursements
+            # endpoint.
+            from app.services.commission_service import CommissionService
+            _commission = CommissionService(self.db, self.company_id)
+            if not await _commission.has_disbursement(entry.id):
+                await _commission.record_disbursement(
+                    entry=entry,
+                    disbursed_amount=disbursed_amount_rupees,
+                    disbursed_on=disbursed_on,
+                    user=user,
+                    source="stage_machine",
+                )
+
             from app.services.lead_service import LeadService
             await LeadService(self.db, self.company_id)._resync_primary_bank(lead)
 
