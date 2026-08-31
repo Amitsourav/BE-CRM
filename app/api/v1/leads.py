@@ -212,13 +212,18 @@ async def list_leads_by_stage(
         lead_segment=lead_segment,
         pipeline=pipeline,
         sort_by=sort_by,
+        stage=stage,
+        offset=offset,
     )
     return {
         "stages": data.get("stages", []),
         "pipeline": data.get("pipeline"),
         "items_by_stage": {
-            stage: [LeadCardOut.model_validate(lead) for lead in leads]
-            for stage, leads in data["items_by_stage"].items()
+            # Loop var deliberately not named `stage` — that's the
+            # single-column query param in this scope now, and shadowing
+            # it here is how the plumbing above went missing unnoticed.
+            st: [LeadCardOut.model_validate(lead) for lead in leads]
+            for st, leads in data["items_by_stage"].items()
         },
         "counts_by_stage": data["counts_by_stage"],
         "total": data["total"],
