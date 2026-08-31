@@ -61,6 +61,7 @@ class CommissionService:
         utr_reference: str | None = None,
         notes: str | None = None,
         source: str = "manual",
+        earns_commission: bool = True,
         commit: bool = False,
     ) -> BankDisbursement:
         """Record one tranche against an existing (lead, lender) file.
@@ -107,7 +108,14 @@ class CommissionService:
             tranche_no=tranche_no,
             utr_reference=utr_reference,
             commission_rate=Decimal(rate),
-            commission_amount=compute_commission(disbursed_amount, rate),
+            earns_commission=earns_commission,
+            # A tranche that earns nothing is worth zero regardless of the
+            # rate, and the rate is still stored so the report can show
+            # what it WOULD have been worth.
+            commission_amount=(
+                compute_commission(disbursed_amount, rate)
+                if earns_commission else Decimal("0")
+            ),
             notes=notes,
             source=source,
             created_by=user.id if user else None,
@@ -187,15 +195,30 @@ class CommissionService:
             row.disbursed_amount = Decimal(payload["disbursed_amount"])
         if payload.get("commission_rate") is not None:
             row.commission_rate = Decimal(payload["commission_rate"])
-        if payload.get("disbursed_amount") is not None or payload.get("commission_rate") is not None:
-            row.commission_amount = compute_commission(
-                row.disbursed_amount, row.commission_rate
+        # Toggling eligibility recomputes too — ticking it back on has to
+        # restore the figure, not leave a zero behind.
+        if "earns_commission" in payload:
+            row.earns_commission = bool(payload["earns_commission"])
+        if (
+            payload.get("disbursed_amount") is not None
+            or payload.get("commission_rate") is not None
+            or "earns_commission" in payload
+        ):
+            row.commission_amount = (
+                compute_commission(row.disbursed_amount, row.commission_rate)
+                if row.earns_commission else Decimal("0")
             )
         # An explicit commission overrides the formula — lenders do
         # occasionally settle at a negotiated figure, and the report has
         # to reflect what was actually agreed rather than what the
         # percentage says.
         if payload.get("commission_amount") is not None:
+            if not row.earns_commission:
+                raise BadRequestError(
+                    "This disbursement is marked as not earning commission, "
+                    "so an amount cannot be set on it. Tick 'earns "
+                    "commission' first."
+                )
             row.commission_amount = _round2(Decimal(payload["commission_amount"]))
 
         for f in self._EDITABLE:
@@ -290,6 +313,7 @@ class CommissionService:
                 "disbursed_amount": r.disbursed_amount,
                 "disbursed_on": r.disbursed_on,
                 "commission_rate": r.commission_rate,
+                "earns_commission": r.earns_commission,
                 "commission_amount": r.commission_amount,
                 "gst_amount": r.gst_amount,
                 "invoice_id": r.invoice_id,
@@ -371,7 +395,7 @@ class CommissionService:
             )
             .where(
                 LeadBank.company_id == self.company_id,
-                LeadBank.bank_status.in_(self._SANCTIONED_OR_LATER),
+                LeadBank.bank_status.in_(self._REVENUE_ELIGIBLE_STATUSES),
             )
             .group_by(LeadBank.bank_name)
         )).all()
@@ -435,7 +459,20 @@ class CommissionService:
     # The interesting number is the gap between the two: loans approved
     # but never fully drawn.
 
-    _SANCTIONED_OR_LATER = ("sanctioned", "pf_paid", "disbursed")
+    # Revenue counts from PF onward, NOT from sanction. FMC's revenue
+    # tracker states the rule outright — "Revenue counts only for stage =
+    # PF or Disbursed" — and its own numbers match it exactly: 114
+    # revenue-eligible students = 17 at PF + 97 disbursed, with the 17
+    # sitting at Sanction contributing nothing.
+    #
+    # That is the whole significance of PF: the student paying the
+    # processing fee is FMC's confirmation that the loan is real and which
+    # lender won it. Before that, a sanction is only an offer.
+    _REVENUE_ELIGIBLE_STATUSES = ("pf_paid", "disbursed")
+    # Sanctioned files are still worth counting SEPARATELY — approved but
+    # not yet confirmed — so they are reported rather than silently
+    # dropped out of the picture.
+    _AWAITING_CONFIRMATION_STATUSES = ("sanctioned",)
 
     async def gross_theoretical(self, bank_name: list[str] | None = None) -> dict:
         """GTR, plus an honest count of what it could not include.
@@ -448,7 +485,7 @@ class CommissionService:
         """
         base = select(LeadBank).where(
             LeadBank.company_id == self.company_id,
-            LeadBank.bank_status.in_(self._SANCTIONED_OR_LATER),
+            LeadBank.bank_status.in_(self._REVENUE_ELIGIBLE_STATUSES),
         )
         if bank_name:
             base = base.where(LeadBank.bank_name.in_(bank_name))

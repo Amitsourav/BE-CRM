@@ -6,8 +6,8 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
-    Date, Integer, Numeric, String, Text, ForeignKey, Index, UniqueConstraint,
-    case, func, text,
+    Boolean, Date, Integer, Numeric, String, Text, ForeignKey, Index,
+    UniqueConstraint, case, func, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -89,6 +89,16 @@ class BankDisbursement(Base, TimestampMixin):
     utr_reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     # ── What we are owed ───────────────────────────────────────────────
+    # Off means this tranche earns nothing, whatever the rate says, and
+    # commission_amount is forced to 0 rather than computed.
+    #
+    # Mirrors "Eligible for Commission?" in the revenue tracker, where a
+    # ₹3.22 L disbursement to PNB Direct sits marked No against a 0.7%
+    # rate and earns zero. Amit decides it case by case rather than by a
+    # rule, so this is a plain flag and nothing infers it.
+    earns_commission: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
     # SNAPSHOT of the rate that applied to THIS disbursement, never looked
     # up at read time. banks.commission_rate is only the current default:
     # moving Axis from 1.5% to 1.75% must not rewrite what was owed on

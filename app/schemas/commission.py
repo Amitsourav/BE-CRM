@@ -41,6 +41,10 @@ class DisbursementUpdate(BaseModel):
     # cases where a lender settles at an agreed figure instead.
     commission_amount: Decimal | None = Field(default=None, ge=0)
     gst_amount: Decimal | None = Field(default=None, ge=0)
+    # Untick to make this tranche earn nothing, whatever the rate says.
+    # Mirrors "Eligible for Commission?" in the revenue tracker. Ticking
+    # it back on restores the calculated figure.
+    earns_commission: bool | None = None
 
     # ── Payment ────────────────────────────────────────────────────────
     # What actually hit the bank account.
@@ -69,6 +73,9 @@ class DisbursementOut(BaseModel):
     disbursed_on: date
     utr_reference: str | None = None
     commission_rate: Decimal
+    # False = this tranche earns nothing. The rate is still shown, so the
+    # report can say what it would otherwise have been worth.
+    earns_commission: bool = True
     commission_amount: Decimal
     gst_amount: Decimal | None = None
     invoice_id: uuid.UUID | None = None
@@ -104,6 +111,7 @@ class ReconciliationRow(BaseModel):
     disbursed_amount: Decimal
     disbursed_on: date
     commission_rate: Decimal
+    earns_commission: bool = True
     commission_amount: Decimal
     gst_amount: Decimal | None = None
     invoice_id: uuid.UUID | None = None

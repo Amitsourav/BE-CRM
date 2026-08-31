@@ -12,7 +12,20 @@ from app.models.base import Base, TimestampMixin
 
 
 class Bank(Base, TimestampMixin):
-    """The canonical lender list, editable without a deploy.
+    """The canonical lender list — a ROUTE to money, not an institution.
+
+    Two entries can be the same bank. `UC Axis` and `Axis Direct (UC
+    Code)` are Axis reached through UniCred and reached directly, and
+    they pay 1.00% and 1.35%; `Nomad Normal` and `Nomad US` are one
+    lender and two products at 1.60% and 3.00%. FMC's revenue tracker has
+    always modelled it this way, and commission cannot be computed
+    without it — which is why `commission_rate` hangs off this row.
+
+    The flat names that predate this (`Axis`, `Nomad`) are deliberately
+    left with NO rate: each maps to more than one route at different
+    rates, and guessing one would misprice every file on the other.
+
+    Editable without a deploy.
 
     Was a Python tuple (`FMC_BANKS`), which meant every new lending
     relationship needed a code change and a release before shares from
