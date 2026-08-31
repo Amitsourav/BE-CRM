@@ -481,6 +481,41 @@ class CommissionService:
             "gross_theoretical_revenue": gtr,
         }
 
+    # Falls back to 80 when a tenant has no invoice_settings row at all.
+    # Better a stated default than a crash on a screen whose job is to
+    # show a number.
+    _DEFAULT_NET_FACTOR = Decimal("80.00")
+
+    async def net_theoretical_factor(self) -> Decimal:
+        """The % of gross theoretical revenue expected to be realised.
+
+        Gross theoretical assumes every sanctioned loan draws down in
+        full. They do not — students take less than approved, go
+        elsewhere, or drop out — so this haircut is what makes the figure
+        usable as a forecast rather than a ceiling.
+        """
+        from app.models.invoice_settings import InvoiceSettings
+        factor = (await self.db.execute(
+            select(InvoiceSettings.net_theoretical_factor)
+            .where(InvoiceSettings.company_id == self.company_id)
+        )).scalar_one_or_none()
+        return factor if factor is not None else self._DEFAULT_NET_FACTOR
+
+    async def set_net_theoretical_factor(self, factor: Decimal) -> Decimal:
+        from app.models.invoice_settings import InvoiceSettings
+        row = (await self.db.execute(
+            select(InvoiceSettings)
+            .where(InvoiceSettings.company_id == self.company_id)
+        )).scalar_one_or_none()
+        if row is None:
+            raise BadRequestError(
+                "This tenant has no invoice settings yet. Set up the "
+                "company's billing details first (PUT /invoices/settings)."
+            )
+        row.net_theoretical_factor = Decimal(factor)
+        await self.db.commit()
+        return row.net_theoretical_factor
+
     async def revenue_vs_theoretical(self) -> dict:
         """GTR against actual revenue, and the gap between them.
 
@@ -497,8 +532,15 @@ class CommissionService:
             select(func.coalesce(func.sum(BankDisbursement.disbursed_amount), 0))
             .where(BankDisbursement.company_id == self.company_id)
         )).scalar_one()
+        factor = await self.net_theoretical_factor()
         return {
             **theo,
+            # Amit's term: 80% of gross theoretical. The haircut for loans
+            # that are approved but never fully drawn.
+            "net_theoretical_factor": factor,
+            "net_theoretical_revenue": _round2(
+                theo["gross_theoretical_revenue"] * factor / Decimal("100")
+            ),
             "disbursed_total": disbursed,
             "revenue": earned,
             # Positive = approved money that has not been drawn down (or

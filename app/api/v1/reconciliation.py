@@ -27,6 +27,7 @@ from app.services.commission_service import CommissionService
 from app.schemas.commission import (
     DisbursementCreate, DisbursementUpdate, DisbursementOut,
     ReconciliationOut, LenderSummaryRow, GrossTheoreticalOut,
+    NetTheoreticalFactorIn, NetTheoreticalFactorOut,
 )
 
 router = APIRouter(prefix="/reconciliation", tags=["Commission"])
@@ -121,6 +122,42 @@ async def gross_theoretical(
     """
     await _require_fmc(db, company_id)
     return await CommissionService(db, company_id).revenue_vs_theoretical()
+
+
+@router.get("/settings", response_model=NetTheoreticalFactorOut)
+async def get_settings(
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """The drawdown assumption behind net theoretical revenue."""
+    await _require_fmc(db, company_id)
+    factor = await CommissionService(db, company_id).net_theoretical_factor()
+    return {"net_theoretical_factor": factor}
+
+
+@router.patch("/settings", response_model=NetTheoreticalFactorOut)
+async def update_settings(
+    body: NetTheoreticalFactorIn,
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change the % of gross theoretical revenue expected to be realised.
+
+    Its own endpoint rather than a field on PUT /invoices/settings, which
+    is a full upsert — changing one assumption should not mean re-sending
+    the company's legal name, GSTIN and bank details.
+
+    Takes effect immediately and applies to every figure, historical
+    included: it is an assumption about the future, not a record of what
+    happened, so there is nothing to snapshot.
+    """
+    await _require_fmc(db, company_id)
+    factor = await CommissionService(db, company_id).set_net_theoretical_factor(
+        body.net_theoretical_factor
+    )
+    return {"net_theoretical_factor": factor}
 
 
 # ─────────────────────────────────────────────

@@ -57,6 +57,23 @@ class InvoiceSettings(Base):
     # that FY (the atomic counter only increments). Admin-configurable.
     invoice_start_number: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("20"))
     default_tax_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, server_default=text("18.00"))
+
+    # Net theoretical revenue = gross theoretical revenue × this %.
+    #
+    # Not every sanctioned loan draws down in full — students take less
+    # than approved, go elsewhere, or drop out — so the gross figure
+    # overstates what will realistically be earned. 80% is FMC's standing
+    # assumption (Amit, 2026-08-31); the same factor applies to every
+    # lender, and it is stored rather than hard-coded because he asked for
+    # it to be changeable.
+    #
+    # It lives here because invoice_settings is already the per-company
+    # business-settings table — it holds the tax rate, the invoice
+    # numbering rules and the company's legal identity. The table has
+    # outgrown its name; this is not an invoicing field.
+    net_theoretical_factor: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, server_default=text("80.00")
+    )
     default_terms: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))

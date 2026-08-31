@@ -186,9 +186,29 @@ class GrossTheoreticalOut(BaseModel):
     files_missing_rate: int
     sanctioned_total: Decimal
     gross_theoretical_revenue: Decimal
+    # The realistic version: gross x net_theoretical_factor. Gross assumes
+    # every sanctioned loan draws down in full, which they do not, so this
+    # is the figure to forecast against.
+    net_theoretical_factor: Decimal
+    net_theoretical_revenue: Decimal
     disbursed_total: Decimal
     revenue: Decimal
     # GTR minus revenue: approved money not yet drawn down. Can go
     # negative if a lender released more than the sanction on file, which
     # is a data problem worth surfacing rather than hiding.
     drawdown_gap: Decimal
+
+
+class NetTheoreticalFactorIn(BaseModel):
+    """The drawdown assumption, as a percentage of gross theoretical.
+
+    One value for all lenders. 80 means "we expect to realise 80% of what
+    the sanctions are theoretically worth".
+    """
+    net_theoretical_factor: Decimal = Field(gt=0, le=100)
+
+    model_config = {"extra": "forbid"}
+
+
+class NetTheoreticalFactorOut(BaseModel):
+    net_theoretical_factor: Decimal
