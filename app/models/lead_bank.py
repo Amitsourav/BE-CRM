@@ -56,6 +56,24 @@ class LeadBank(Base):
         nullable=True,
     )
 
+    # What FMC earns from this lender, as a percentage — snapshotted when
+    # the file reaches `sanctioned`, from banks.commission_rate.
+    #
+    # NOT `roi` above. `roi` is the interest rate the STUDENT pays the
+    # bank; this is the commission the BANK pays FMC. Unrelated numbers
+    # that both happen to be percentages on the same row.
+    #
+    # Snapshotted for the same reason bank_disbursements.commission_rate
+    # is: renegotiating a lender must not silently restate what earlier
+    # files were theoretically worth. It also keeps gross theoretical
+    # revenue comparable with actual revenue — if one used today's rate
+    # and the other the rate captured at disbursement, the gap between
+    # them would include a rate change that has nothing to do with how
+    # much of the loan was actually drawn.
+    commission_rate: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 2), nullable=True
+    )
+
     # ── Share provenance (Aug 2026) ────────────────────────────────────
     # WHEN and BY WHOM this lead's file was put in front of this bank —
     # as distinct from bank_status, which is the bank's decision about it.

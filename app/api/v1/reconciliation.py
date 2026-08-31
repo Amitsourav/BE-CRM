@@ -26,7 +26,7 @@ from app.models.lead_bank import LeadBank
 from app.services.commission_service import CommissionService
 from app.schemas.commission import (
     DisbursementCreate, DisbursementUpdate, DisbursementOut,
-    ReconciliationOut, LenderSummaryRow,
+    ReconciliationOut, LenderSummaryRow, GrossTheoreticalOut,
 )
 
 router = APIRouter(prefix="/reconciliation", tags=["Commission"])
@@ -99,6 +99,28 @@ async def summary(
     """
     await _require_fmc(db, company_id)
     return await CommissionService(db, company_id).summary()
+
+
+@router.get("/theoretical", response_model=GrossTheoreticalOut)
+async def gross_theoretical(
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Gross theoretical revenue against actual revenue.
+
+    Theoretical is the lender's rate on what it SANCTIONED — what FMC
+    would earn if every approved loan drew down in full. Revenue is the
+    same rate on what was actually DISBURSED. `drawdown_gap` is the
+    difference: approved money that has not converted.
+
+    Read `files_missing_amount` and `files_missing_rate` before quoting
+    the total anywhere. Files they count are excluded from the sum, not
+    counted as zero, so the figure is a floor rather than a full picture
+    until they reach nil.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionService(db, company_id).revenue_vs_theoretical()
 
 
 # ─────────────────────────────────────────────

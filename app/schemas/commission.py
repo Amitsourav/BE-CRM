@@ -145,8 +145,13 @@ class ReconciliationOut(BaseModel):
 
 
 class LenderSummaryRow(BaseModel):
-    """Per-lender rollup — "who owes us what"."""
+    """Per-lender rollup — "who owes us what", against "what they promised".
+
+    A lender can appear with sanctioned files and zero disbursements. That
+    is the case worth looking at: approved money that has not converted.
+    """
     bank_name: str
+    # Actual side — from recorded disbursements
     files: int
     disbursed_total: Decimal
     commission_total: Decimal
@@ -154,3 +159,36 @@ class LenderSummaryRow(BaseModel):
     tds_total: Decimal
     outstanding_total: Decimal
     unbilled_count: int
+    # Theoretical side — from sanctioned files
+    sanctioned_files: int = 0
+    sanctioned_total: Decimal = Decimal("0")
+    gross_theoretical_revenue: Decimal = Decimal("0")
+    # How many of this lender's sanctioned files have no amount recorded,
+    # and are therefore missing from the figure above.
+    files_missing_amount: int = 0
+
+
+class GrossTheoreticalOut(BaseModel):
+    """Gross theoretical revenue, and honestly what it could not count.
+
+    GTR is the lender's rate applied to the amount it SANCTIONED — what
+    FMC would earn if every approved loan drew down in full. `revenue` is
+    the same rate applied to what was actually DISBURSED.
+
+    The counters are not decoration. A file with no sanctioned amount, or
+    whose lender has no rate configured, is excluded from the sum rather
+    than counted as zero — so without them the total reads as complete
+    when it is not.
+    """
+    files: int
+    files_counted: int
+    files_missing_amount: int
+    files_missing_rate: int
+    sanctioned_total: Decimal
+    gross_theoretical_revenue: Decimal
+    disbursed_total: Decimal
+    revenue: Decimal
+    # GTR minus revenue: approved money not yet drawn down. Can go
+    # negative if a lender released more than the sanction on file, which
+    # is a data problem worth surfacing rather than hiding.
+    drawdown_gap: Decimal

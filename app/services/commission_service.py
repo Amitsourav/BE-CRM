@@ -354,8 +354,43 @@ class CommissionService:
             .group_by(BankDisbursement.bank_name)
             .order_by(func.sum(BankDisbursement.commission_amount).desc())
         )).all()
-        return [
-            {
+        # Gross theoretical per lender, merged in. Comes from lead_banks
+        # rather than bank_disbursements, so a lender can appear here with
+        # sanctioned files and no disbursements at all — which is exactly
+        # the case worth seeing, since it is approved money that has not
+        # converted.
+        theo = (await self.db.execute(
+            select(
+                LeadBank.bank_name,
+                func.count(),
+                func.coalesce(func.sum(LeadBank.loan_amount), 0),
+                func.count().filter(LeadBank.loan_amount.is_(None)),
+                func.coalesce(func.sum(
+                    LeadBank.loan_amount * LeadBank.commission_rate / 100
+                ), 0),
+            )
+            .where(
+                LeadBank.company_id == self.company_id,
+                LeadBank.bank_status.in_(self._SANCTIONED_OR_LATER),
+            )
+            .group_by(LeadBank.bank_name)
+        )).all()
+        theo_by_bank = {
+            t[0]: {
+                "sanctioned_files": t[1],
+                "sanctioned_total": t[2],
+                "files_missing_amount": t[3],
+                "gross_theoretical_revenue": _round2(Decimal(t[4])),
+            }
+            for t in theo
+        }
+
+        out = []
+        seen = set()
+        for r in rows:
+            seen.add(r[0])
+            t = theo_by_bank.get(r[0], {})
+            out.append({
                 "bank_name": r[0],
                 "files": r[1],
                 "disbursed_total": r[2],
@@ -364,9 +399,114 @@ class CommissionService:
                 "tds_total": r[5],
                 "outstanding_total": r[3] - (r[4] + r[5]),
                 "unbilled_count": r[6],
-            }
-            for r in rows
-        ]
+                "sanctioned_files": t.get("sanctioned_files", 0),
+                "sanctioned_total": t.get("sanctioned_total", Decimal("0")),
+                "gross_theoretical_revenue": t.get(
+                    "gross_theoretical_revenue", Decimal("0")
+                ),
+                "files_missing_amount": t.get("files_missing_amount", 0),
+            })
+        # Lenders with sanctioned files but nothing disbursed yet. Left
+        # out of the loop above because it iterates disbursements.
+        for name, t in theo_by_bank.items():
+            if name in seen:
+                continue
+            out.append({
+                "bank_name": name,
+                "files": 0,
+                "disbursed_total": Decimal("0"),
+                "commission_total": Decimal("0"),
+                "received_total": Decimal("0"),
+                "tds_total": Decimal("0"),
+                "outstanding_total": Decimal("0"),
+                "unbilled_count": 0,
+                **t,
+            })
+        out.sort(key=lambda x: x["gross_theoretical_revenue"], reverse=True)
+        return out
+
+    # ── Gross theoretical revenue ──────────────────────────────────────
+    # Amit's term, and his definition: the commission FMC would earn if
+    # every sanctioned loan drew down in full — the lender's rate applied
+    # to the SANCTIONED amount, as against `revenue` which applies it to
+    # what was actually disbursed. Lifetime, every file ever sanctioned,
+    # whether or not it has since disbursed (his choice, 2026-08-31).
+    #
+    # The interesting number is the gap between the two: loans approved
+    # but never fully drawn.
+
+    _SANCTIONED_OR_LATER = ("sanctioned", "pf_paid", "disbursed")
+
+    async def gross_theoretical(self, bank_name: list[str] | None = None) -> dict:
+        """GTR, plus an honest count of what it could not include.
+
+        A file with no sanctioned amount, or one whose lender has no rate,
+        is EXCLUDED from the sum and counted separately — never treated as
+        zero. Of the 79 files that reached sanctioned before the capture
+        rule existed, 48 carry no amount, so a total presented without
+        those counters would read as complete and be barely half the book.
+        """
+        base = select(LeadBank).where(
+            LeadBank.company_id == self.company_id,
+            LeadBank.bank_status.in_(self._SANCTIONED_OR_LATER),
+        )
+        if bank_name:
+            base = base.where(LeadBank.bank_name.in_(bank_name))
+        rows = (await self.db.execute(base)).scalars().all()
+
+        sanctioned_total = Decimal("0")
+        gtr = Decimal("0")
+        missing_amount = 0
+        missing_rate = 0
+        counted = 0
+        for r in rows:
+            if r.loan_amount is None:
+                missing_amount += 1
+                continue
+            sanctioned_total += r.loan_amount
+            if r.commission_rate is None:
+                # The amount is known but the lender's cut is not, so the
+                # file's worth is unknowable rather than zero.
+                missing_rate += 1
+                continue
+            gtr += compute_commission(r.loan_amount, r.commission_rate)
+            counted += 1
+
+        return {
+            "files": len(rows),
+            "files_counted": counted,
+            "files_missing_amount": missing_amount,
+            "files_missing_rate": missing_rate,
+            "sanctioned_total": sanctioned_total,
+            "gross_theoretical_revenue": gtr,
+        }
+
+    async def revenue_vs_theoretical(self) -> dict:
+        """GTR against actual revenue, and the gap between them.
+
+        `revenue` here is the same figure the reconciliation report calls
+        `commission_total` — commission on what was actually disbursed.
+        Kept to one definition so the two screens cannot disagree.
+        """
+        theo = await self.gross_theoretical()
+        earned = (await self.db.execute(
+            select(func.coalesce(func.sum(BankDisbursement.commission_amount), 0))
+            .where(BankDisbursement.company_id == self.company_id)
+        )).scalar_one()
+        disbursed = (await self.db.execute(
+            select(func.coalesce(func.sum(BankDisbursement.disbursed_amount), 0))
+            .where(BankDisbursement.company_id == self.company_id)
+        )).scalar_one()
+        return {
+            **theo,
+            "disbursed_total": disbursed,
+            "revenue": earned,
+            # Positive = approved money that has not been drawn down (or
+            # has been drawn but not yet recorded). Can go negative if a
+            # lender releases more than the sanction on file, which is a
+            # data problem worth seeing rather than clamping away.
+            "drawdown_gap": theo["gross_theoretical_revenue"] - earned,
+        }
 
     async def _lead_names(self, lead_ids: list) -> dict:
         ids = [i for i in lead_ids if i]

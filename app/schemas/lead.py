@@ -405,6 +405,8 @@ class LeadBankUpdate(BaseModel):
     # Overrides the lender's configured rate for this one disbursement,
     # for the cases where a file was negotiated separately.
     commission_rate: Decimal | None = Field(default=None, ge=0, le=100)
+    # NOT commission_rate above. roi is the interest rate the STUDENT
+    # pays the bank; commission_rate is what the bank pays FMC.
     roi: Decimal | None = None
     tenure_months: int | None = None
     pf_amount: Decimal | None = None

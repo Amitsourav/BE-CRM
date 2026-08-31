@@ -37,6 +37,16 @@ class StageTransitionRequest(BaseModel):
     disbursed_amount_lakh: Decimal | None = Field(default=None, gt=0)
     disbursed_on: date | None = None
 
+    # ── Required only when to_stage == "sanctioned" (FMC) ─────────────
+    # Gross theoretical revenue is the lender's rate applied to the
+    # amount it APPROVED — a different number from what it later
+    # releases. The date is required because that figure is reported by
+    # month, and 77 of the 79 files sanctioned before this rule existed
+    # carry no date at all. bank_name may be omitted; it defaults to the
+    # lead's primary lender.
+    sanctioned_amount_lakh: Decimal | None = Field(default=None, gt=0)
+    sanction_date: date | None = None
+
 
 class StageLogOut(BaseModel):
     id: uuid.UUID

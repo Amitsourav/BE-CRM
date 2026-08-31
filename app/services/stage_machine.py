@@ -131,6 +131,8 @@ class StageMachine:
         bank_loan_amount_lakh=None,
         disbursed_amount_lakh=None,
         disbursed_on=None,
+        sanctioned_amount_lakh=None,
+        sanction_date=None,
     ) -> Lead:
         result = await self.db.execute(
             select(Lead).where(
@@ -211,6 +213,34 @@ class StageMachine:
             # figure downstream far more quietly than a wrong number does.
             pf_bank_amount_rupees = (
                 Decimal(bank_loan_amount_lakh) * LAKH_IN_RUPEES
+            ).quantize(Decimal("0.01"))
+
+        # SANCTIONED is where gross theoretical revenue comes from: the
+        # lender's rate applied to the amount it approved. Same shape as
+        # the two gates below it, and for the same reason — the cost of
+        # not asking is already visible, with 48 of 79 sanctioned files
+        # carrying no amount and 77 carrying no date, so the figure would
+        # understate by more than half while looking complete.
+        sanctioned_amount_rupees = None
+        if target == LeadStage.SANCTIONED:
+            bank_name = bank_name or lead.bank_name
+            if not bank_name or sanctioned_amount_lakh is None or sanction_date is None:
+                raise BadRequestError(
+                    "bank_name, sanctioned_amount_lakh (in lakhs) and "
+                    "sanction_date are all required when moving a lead to "
+                    "'sanctioned' — gross theoretical revenue is the "
+                    "lender's rate applied to the amount it approved, "
+                    "reported by month."
+                )
+            valid_banks = await get_all_bank_names(self.db)
+            if bank_name not in valid_banks:
+                raise BadRequestError(
+                    f"Unknown bank '{bank_name}'. See GET /leads/banks."
+                )
+            if Decimal(sanctioned_amount_lakh) <= 0:
+                raise BadRequestError("sanctioned_amount_lakh must be greater than 0.")
+            sanctioned_amount_rupees = (
+                Decimal(sanctioned_amount_lakh) * LAKH_IN_RUPEES
             ).quantize(Decimal("0.01"))
 
         # DISBURSED is the revenue event: commission is a percentage of
@@ -326,6 +356,43 @@ class StageMachine:
             from app.services.lead_service import LeadService
             await LeadService(self.db, self.company_id)._resync_primary_bank(lead)
 
+        # Same upsert for SANCTIONED, recording the approved amount, the
+        # date, and a snapshot of the lender's rate. Those three are what
+        # gross theoretical revenue is computed from.
+        if target == LeadStage.SANCTIONED:
+            entry = (await self.db.execute(
+                select(LeadBank).where(
+                    LeadBank.lead_id == lead.id,
+                    LeadBank.company_id == self.company_id,
+                    LeadBank.bank_name == bank_name,
+                )
+            )).scalar_one_or_none()
+            if entry is None:
+                entry = LeadBank(
+                    company_id=self.company_id,
+                    lead_id=lead.id,
+                    bank_name=bank_name,
+                    shared_at=now_utc(),
+                    shared_by=user.id,
+                    source="manual",
+                )
+                self.db.add(entry)
+            entry.bank_status = "sanctioned"
+            entry.loan_amount = sanctioned_amount_rupees
+            entry.sanction_date = sanction_date
+            # Only when absent — an existing snapshot is history. A file
+            # re-sanctioned at a different amount keeps the rate it was
+            # first booked under unless someone corrects it explicitly.
+            if entry.commission_rate is None:
+                from app.services.bank_registry import get_commission_rate
+                entry.commission_rate = await get_commission_rate(
+                    self.db, entry.bank_name
+                )
+            entry.updated_at = now_utc()
+
+            from app.services.lead_service import LeadService
+            await LeadService(self.db, self.company_id)._resync_primary_bank(lead)
+
         # Same shape for DISBURSED, plus the money. The lead_banks upsert
         # records the relationship reaching its end state; the
         # bank_disbursements row records what actually came out of it,
@@ -349,6 +416,14 @@ class StageMachine:
                 )
                 self.db.add(entry)
             entry.bank_status = "disbursed"
+            # A file can reach disbursed without ever passing through
+            # sanctioned, so snapshot here too rather than assuming the
+            # sanctioned block already ran.
+            if entry.commission_rate is None:
+                from app.services.bank_registry import get_commission_rate
+                entry.commission_rate = await get_commission_rate(
+                    self.db, entry.bank_name
+                )
             entry.updated_at = now_utc()
             await self.db.flush()
 

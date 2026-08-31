@@ -1447,6 +1447,29 @@ class LeadService:
                     "loan_amount_lakh is required when setting a bank to "
                     "'pf_paid' — record the amount this lender sanctioned."
                 )
+            # Sanctioned is where gross theoretical revenue comes from:
+            # the lender's rate applied to the amount it approved. Neither
+            # the amount nor the date can be reconstructed later, and the
+            # cost of not asking is already visible — of the 79 files that
+            # reached this status before today, 48 carry no amount and 77
+            # carry no date, so the figure would silently understate by
+            # more than half while looking complete.
+            #
+            # Accepted from the payload OR already on the row, so
+            # correcting an unrelated field on a sanctioned file does not
+            # demand the figures again.
+            if new_status == "sanctioned":
+                if payload.get("loan_amount") is None and entry.loan_amount is None:
+                    raise BadRequestError(
+                        "loan_amount_lakh is required when setting a bank to "
+                        "'sanctioned' — record the amount this lender approved."
+                    )
+                if payload.get("sanction_date") is None and entry.sanction_date is None:
+                    raise BadRequestError(
+                        "sanction_date is required when setting a bank to "
+                        "'sanctioned' — gross theoretical revenue is reported "
+                        "by month and cannot be without it."
+                    )
             # Disbursed is where FMC actually earns: commission is a
             # percentage of what came out, on the date it came out. Both
             # are required because neither can be reconstructed later —
@@ -1499,6 +1522,25 @@ class LeadService:
             for f in sanction_fields:
                 if f in payload and payload[f] is not None:
                     setattr(entry, f, payload[f])
+
+        # Snapshot the lender's commission rate onto the file the first
+        # time it reaches sanctioned-or-later. Gross theoretical revenue
+        # is computed from this, not from the lender's current rate, so
+        # renegotiating a lender later cannot restate what earlier files
+        # were theoretically worth.
+        #
+        # Only if absent: an existing snapshot is history and must not be
+        # overwritten by a subsequent edit. An explicit commission_rate in
+        # the payload does override it, which is how a file negotiated
+        # off-schedule gets corrected.
+        if entry.bank_status in {"sanctioned", "pf_paid", "disbursed"}:
+            if payload.get("commission_rate") is not None:
+                entry.commission_rate = Decimal(payload["commission_rate"])
+            elif entry.commission_rate is None:
+                from app.services.bank_registry import get_commission_rate
+                entry.commission_rate = await get_commission_rate(
+                    self.db, entry.bank_name
+                )
 
         entry.updated_at = now_utc()
         await self.db.flush()
