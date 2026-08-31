@@ -152,10 +152,48 @@ async def list_leads_by_stage(
         regex="^(created_desc|loan_asc|loan_desc|budget_asc|budget_desc)$",
         description="Per-column row order: created_desc (default), loan_asc/desc (FMC), budget_asc/desc (AV). Leads without the sort value are placed at the end.",
     ),
+    stage: str | None = Query(
+        None,
+        description=(
+            "Restrict the response to ONE column. Powers the board's "
+            "'Show more' button: pair with `offset` to fetch the next page "
+            "of a single stage instead of refetching every column. The "
+            "response keeps the same shape, with one entry in "
+            "`items_by_stage` and `stages`. Omit for the whole board."
+        ),
+    ),
+    offset: int = Query(
+        0, ge=0,
+        description=(
+            "Skip this many cards within `stage` before returning "
+            "`per_stage_limit` more. Requires `stage`. Resend every filter "
+            "the board currently has applied, or page 2 will not match "
+            "page 1."
+        ),
+    ),
 ):
     """Kanban board endpoint — returns all leads grouped by stage in one
     round trip (replaces 19 per-column requests for Admitverse, 6 for FMC).
+
+    Pass `stage` + `offset` to page a single column instead ("Show more").
     """
+    # offset without stage would page every column at once, which no
+    # caller wants and which silently hides the first N cards of each.
+    # Rejected loudly rather than guessing which column was meant.
+    from app.core.constants import get_stages_for_pipeline
+    if offset and not stage:
+        raise BadRequestError("offset requires stage")
+    # A stage that isn't on this board returns an empty column rather than
+    # an error — but a typo would then look like "no leads here" forever,
+    # so it's validated against the board the caller actually asked for.
+    if stage:
+        slug = await _company_slug(db, company_id)
+        valid = {st.value for st in get_stages_for_pipeline(pipeline, slug)}
+        if stage not in valid:
+            raise BadRequestError(
+                f"unknown stage '{stage}' for this board; expected one of "
+                f"{sorted(valid)}"
+            )
     service = LeadService(db, company_id)
     data = await service.list_leads_by_stage(
         user=current_user, agent_id=agent_id, campaign_id=campaign_id,

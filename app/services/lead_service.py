@@ -785,6 +785,14 @@ class LeadService:
         # Sort: created_desc (default), loan_asc/desc (FMC), budget_asc/desc (AV).
         # Affects only the per-column row order; counts are unchanged.
         sort_by: str = "created_desc",
+        # "Show more" support. stage restricts the response to ONE column
+        # and offset skips that many rows within it, so the board can pull
+        # cards 51-100 of Created without refetching every other column.
+        # Both default to the whole-board behaviour every existing caller
+        # already gets. See the note above the rn window for why offset is
+        # only meaningful alongside stage.
+        stage: str | None = None,
+        offset: int = 0,
     ) -> dict:
         """Fetch leads grouped by stage in one round trip.
 
@@ -819,6 +827,12 @@ class LeadService:
             # including its stage columns.
             pipeline,
             sort_by,
+            # MUST be in the key for the same reason pipeline is: page 2 of
+            # Created and the full board differ only by these two args, so
+            # leaving them out would serve one as the other inside the 15s
+            # TTL — the board would replace itself with a single column.
+            stage,
+            offset,
         )
         cached = _kanban_cache_get(cache_key)
         if cached is not None:
@@ -885,6 +899,14 @@ class LeadService:
         )
         if pipeline:
             base = base.where(Lead.pipeline == pipeline)
+        if stage:
+            # Single-column mode. Filtering here rather than after the
+            # window keeps the row_number() sequence dense within the one
+            # stage we care about, which is what makes offset arithmetic
+            # correct — ranking all stages and then discarding the others
+            # would still number them 1..N per partition, but we'd scan
+            # the whole board to return one column.
+            base = base.where(Lead.current_stage == stage)
 
         sub = base.subquery()
         # Outer ORDER BY matches the window function order so the result
@@ -895,7 +917,7 @@ class LeadService:
         result = await self.db.execute(
             select(Lead)
             .join(sub, Lead.id == sub.c.id)
-            .where(sub.c.rn <= per_stage_limit)
+            .where(sub.c.rn > offset, sub.c.rn <= offset + per_stage_limit)
             .order_by(Lead.current_stage, sub.c.rn)
         )
         rows = result.scalars().all()
@@ -941,9 +963,18 @@ class LeadService:
             # Same filter as the items query above — drift here means a
             # "Qualified · 23" header sitting above 4 cards.
             count_query = count_query.where(Lead.pipeline == pipeline)
+        if stage:
+            count_query = count_query.where(Lead.current_stage == stage)
         count_query = count_query.group_by(Lead.current_stage)
         count_rows = (await self.db.execute(count_query)).all()
-        counts_by_stage = {stage: cnt for stage, cnt in count_rows}
+        counts_by_stage = {st: cnt for st, cnt in count_rows}
+        if stage:
+            # GROUP BY yields no row for a stage with zero matches, but the
+            # board needs the key present to compute `remaining` and hide
+            # its "Show more" button. Absent would read as undefined on the
+            # FE and keep the button up forever.
+            counts_by_stage.setdefault(stage, 0)
+            items_by_stage.setdefault(stage, [])
         total = sum(counts_by_stage.values())
 
         # Enrichment for the FMC-enhanced tile. Five extra batched
@@ -956,7 +987,10 @@ class LeadService:
             # Column list for this board. The AI board is a short set;
             # without this the FE would have to know the split itself and
             # would drift from the backend.
-            "stages": [
+            # Single-column mode reports just that column, so a "Show more"
+            # response can never be mistaken for a full board payload and
+            # re-render the page down to one column.
+            "stages": [stage] if stage else [
                 st.value for st in get_stages_for_pipeline(pipeline, slug)
             ],
             "pipeline": pipeline,
