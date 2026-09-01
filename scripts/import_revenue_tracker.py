@@ -118,15 +118,45 @@ def digits10(s) -> str | None:
     return d[-10:] if len(d) >= 10 else None
 
 
+# Month names as they appear in the sheet's hand-typed dates.
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun",
+     "jul", "aug", "sep", "oct", "nov", "dec"], start=1)}
+
+# Every hand-typed date in the tracker is from the current book year.
+# Amit confirmed "26th AUg" means 26-Aug-2026 (2026-09-01). A written
+# date with no year is otherwise unguessable, so anything that does not
+# match this shape stays None and gets reported rather than assumed.
+_TEXT_DATE_YEAR = 2026
+_TEXT_DATE = re.compile(
+    r"^\s*(\d{1,2})\s*(?:st|nd|rd|th)?\s*[-/ ]?\s*([A-Za-z]{3,9})\.?\s*$"
+)
+
+
 def to_date(v):
-    """Excel serial -> date. Returns None for anything else."""
+    """Excel serial, or a hand-typed date like "26th AUg" -> date.
+
+    Returns None for anything it cannot read with certainty. A guessed
+    date is worse than a missing one: every ageing and monthly figure is
+    built on this column.
+    """
     try:
         f = float(v)
+        if f < 1000:                   # not a plausible date serial
+            return None
+        return (EXCEL_EPOCH + timedelta(days=f)).date()
     except (TypeError, ValueError):
+        pass
+    m = _TEXT_DATE.match(str(v or ""))
+    if not m:
         return None
-    if f < 1000:                       # not a plausible date serial
+    day, mon = m.group(1), m.group(2)[:3].lower()
+    if mon not in _MONTHS:
         return None
-    return (EXCEL_EPOCH + timedelta(days=f)).date()
+    try:
+        return datetime(_TEXT_DATE_YEAR, _MONTHS[mon], int(day)).date()
+    except ValueError:                 # e.g. 31 Feb
+        return None
 
 
 def to_dec(v):
