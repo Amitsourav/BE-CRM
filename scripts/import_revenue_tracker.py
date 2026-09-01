@@ -184,6 +184,20 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
             if r["full_name"]:
                 by_name.setdefault(r["full_name"].strip().lower(), []).append(r["id"])
 
+        # A phone that appears against TWO different students in the
+        # sheet cannot identify either of them. Mehak Ekley and Nishant
+        # Ranjan both carry 8878388425; on an earlier run that put
+        # Nishant's ₹14.6 L disbursement and ₹19,710 commission onto the
+        # lead created for Mehak. One student's money on another
+        # student's record is the worst thing this import can do, so
+        # those phones are disqualified outright rather than resolved to
+        # whichever lead happens to exist.
+        from collections import Counter
+        sheet_phone_counts = Counter(
+            digits10(d.get("D")) for d in students if digits10(d.get("D"))
+        )
+        duplicated_in_sheet = {p for p, n in sheet_phone_counts.items() if n > 1}
+
         # ── resolve every student row to a lead, or explain why not ──
         resolved: dict[str, dict] = {}       # sheet name(lower) -> plan
         to_create: list[tuple] = []          # (name, phone, sheet row)
@@ -193,6 +207,11 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
             key = name.lower()
             phone = digits10(d.get("D"))
             lead_id = how = None
+            if phone and phone in duplicated_in_sheet:
+                skipped["ambiguous"].append(
+                    (name, f"phone {phone} is shared with another student IN THE SHEET")
+                )
+                continue
             if phone and len(by_phone.get(phone, [])) == 1:
                 lead_id, how = by_phone[phone][0], "phone"
             elif not phone and len(by_name.get(key, [])) == 1:
