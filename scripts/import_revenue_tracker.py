@@ -333,6 +333,14 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
             if when is None:
                 t_nodate.append(d.get("B"))
                 continue
+            # L = commission, M = the same figure with GST. Their
+            # difference is the GST actually charged — 18% on every row —
+            # and it is part of what the lender owes, so it belongs in
+            # the settlement sum rather than being recomputed later from
+            # a rate that might since have changed.
+            comm_ex = to_dec(d.get("L")) or Decimal("0")
+            comm_inc = to_dec(d.get("M")) or Decimal("0")
+            gst = (comm_inc - comm_ex) if comm_inc > comm_ex else None
             t_ok.append({
                 "parent": parent,
                 "tranche_no": int(float(d.get("F") or 1)),
@@ -340,6 +348,10 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
                 "on": when,
                 "rate": (to_dec(d.get("J")) or Decimal("0")) * 100,   # sheet stores 0.01
                 "earns": (d.get("K") or "Yes").strip().lower() != "no",
+                "sheet_commission": comm_ex,
+                "gst": gst,
+                # T is the cash received INCLUDING GST, which is what
+                # actually arrives, so it is what settles the debt.
                 "received": to_dec(d.get("T")),
                 "received_on": to_date(d.get("U")),
                 "invoice_no": d.get("P"),
@@ -353,8 +365,16 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
             print("      " + ", ".join(dict.fromkeys(t_nodate))[:150])
 
         total_comm = sum((t["amount"] or 0) * t["rate"] / 100 for t in t_ok if t["earns"])
+        sheet_comm = sum(t["sheet_commission"] for t in t_ok)
+        total_gst = sum(t["gst"] or 0 for t in t_ok)
         print(f"\n  disbursed value       : ₹{sum(t['amount'] or 0 for t in t_ok):,.0f}")
-        print(f"  commission on them    : ₹{total_comm:,.0f}")
+        print(f"  commission (computed) : ₹{total_comm:,.0f}")
+        print(f"  commission (sheet's L): ₹{sheet_comm:,.0f}")
+        drift = total_comm - sheet_comm
+        if abs(drift) > 1:
+            print(f"  ⚠ DRIFT               : ₹{drift:,.0f} — the sheet's own "
+                  f"figure differs from rate x amount")
+        print(f"  GST (sheet's M - L)   : ₹{total_gst:,.0f}")
 
         if not apply:
             print("\nDRY RUN — nothing written. Re-run with --apply.")
@@ -395,14 +415,20 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
                     INSERT INTO bank_disbursements
                       (company_id, lead_bank_id, lead_id, bank_name, disbursed_amount,
                        disbursed_on, tranche_no, commission_rate, earns_commission,
-                       commission_amount, amount_received, received_on,
+                       commission_amount, gst_amount, amount_received, received_on,
                        payment_reference, source, notes)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'backfill',$14)
-                    ON CONFLICT (lead_bank_id, tranche_no) DO NOTHING
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'backfill',$15)
+                    ON CONFLICT (lead_bank_id, tranche_no) DO UPDATE SET
+                      -- Only fills gaps. A figure someone has since
+                      -- corrected by hand is not overwritten by a re-run.
+                      gst_amount = COALESCE(bank_disbursements.gst_amount, EXCLUDED.gst_amount),
+                      amount_received = COALESCE(bank_disbursements.amount_received, EXCLUDED.amount_received),
+                      received_on = COALESCE(bank_disbursements.received_on, EXCLUDED.received_on),
+                      updated_at = now()
                     """,
                     company_id, lb, t["parent"]["lead_id"], t["parent"]["bank_name"],
                     t["amount"], t["on"], t["tranche_no"], t["rate"], t["earns"],
-                    round(comm, 2), t["received"], t["received_on"],
+                    round(comm, 2), t["gst"], t["received"], t["received_on"],
                     (f"Invoice {t['invoice_no']}" if t.get("invoice_no") else None),
                     t.get("remarks"),
                 )

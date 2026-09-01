@@ -163,10 +163,10 @@ brackets are ignored):
     "source": "backfill"
   }],
   "totals": {
-    "count": 60, "disbursed_total": "68920820.00",
-    "commission_total": "768477.16", "gst_total": "0",
-    "received_total": "703212.07", "tds_total": "0",
-    "outstanding_total": "65265.09"
+    "count": 62, "disbursed_total": "70316236.00",
+    "commission_total": "784499.00", "gst_total": "141209.81",
+    "received_total": "721796.83", "tds_total": "0.00",
+    "outstanding_total": "203911.98"
   },
   "total": 60, "page": 1, "page_size": 50, "total_pages": 2
 }
@@ -370,6 +370,7 @@ to the lender admin screen from it.
 - **Invoicing isn't built yet.** `invoice_id` is on every row and stays
   `null`, so `to_bill` currently means "not linked to a bill". Build the
   report and payments; billing follows.
-- **`gst_amount` is null on every imported row.** It's filled when a bill
-  is raised, so the GST total reads 0 until invoicing exists. Don't show
-  it as a headline yet.
+- **GST is populated.** 18% on every commission, imported from the
+  tracker's own figures (its columns L and M). `outstanding_total` is
+  therefore `commission + GST − received − TDS`, and the amounts a lender
+  actually pays are GST-inclusive. Show the GST line; it is real money.
