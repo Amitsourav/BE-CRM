@@ -82,7 +82,17 @@ class BankDisbursement(Base, TimestampMixin):
     # converts via LAKH_IN_RUPEES so the two money columns can never
     # disagree about their unit.
     disbursed_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
-    disbursed_on: Mapped[date] = mapped_column(Date, nullable=False)
+    # Nullable ONLY so historical rows can be loaded. 38 tranches in FMC's
+    # revenue tracker carry a real amount, commission and outstanding
+    # balance but no date — one is annotated "Date not recorded" — and
+    # refusing them kept 57% of the outstanding book out of the CRM.
+    # The amount is the fact; the date is metadata about it.
+    #
+    # A dateless row counts fully toward commission, GST, receipts and
+    # outstanding. It is excluded only from AGEING, which cannot be
+    # computed without it. New disbursements still require a date:
+    # CommissionService.record_disbursement refuses one without.
+    disbursed_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     tranche_no: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     # The lender's own payout reference, when they give one. The single
     # most useful field when arguing about whether a file was ever paid.

@@ -322,7 +322,13 @@ class CommissionService:
                 "received_on": r.received_on,
                 "shortfall": r.shortfall,
                 "status": r.status,
-                "days_outstanding": (now_utc().date() - r.disbursed_on).days,
+                # None rather than 0 when the date is unknown — a
+                # historical row with no date is not "0 days old", and
+                # showing it as fresh would hide the oldest debts.
+                "days_outstanding": (
+                    (now_utc().date() - r.disbursed_on).days
+                    if r.disbursed_on else None
+                ),
                 "utr_reference": r.utr_reference,
                 "source": r.source,
             }

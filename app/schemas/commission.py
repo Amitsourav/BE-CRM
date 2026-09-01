@@ -70,7 +70,9 @@ class DisbursementOut(BaseModel):
     bank_name: str
     tranche_no: int
     disbursed_amount: Decimal
-    disbursed_on: date
+    # Null on historical rows imported without one. Ageing is
+    # unavailable for those; every money figure still counts.
+    disbursed_on: date | None = None
     utr_reference: str | None = None
     commission_rate: Decimal
     # False = this tranche earns nothing. The rate is still shown, so the
@@ -109,7 +111,7 @@ class ReconciliationRow(BaseModel):
     bank_name: str
     tranche_no: int
     disbursed_amount: Decimal
-    disbursed_on: date
+    disbursed_on: date | None = None
     commission_rate: Decimal
     earns_commission: bool = True
     commission_amount: Decimal
@@ -120,8 +122,9 @@ class ReconciliationRow(BaseModel):
     received_on: date | None = None
     shortfall: Decimal
     status: str
-    # Days since the money left the lender. The ageing column.
-    days_outstanding: int
+    # Days since the money left the lender. NULL when the disbursement
+    # date is unknown — show "—", never 0.
+    days_outstanding: int | None = None
     utr_reference: str | None = None
     source: str | None = None
 

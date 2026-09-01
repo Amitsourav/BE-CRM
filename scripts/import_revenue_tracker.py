@@ -329,10 +329,14 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
             if parent is None:
                 t_noparent.append(d.get("B"))
                 continue
+            # A missing date no longer blocks the row. The amount,
+            # commission and outstanding balance are real money and must
+            # reach the CRM; only ageing is lost, and ageing is a
+            # convenience. 38 tranches carrying ₹3.83 L of outstanding
+            # were being discarded over one blank column.
             when = to_date(d.get("H"))
             if when is None:
                 t_nodate.append(d.get("B"))
-                continue
             # L = commission, M = the same figure with GST. Their
             # difference is the GST actually charged — 18% on every row —
             # and it is part of what the lender owes, so it belongs in
@@ -360,7 +364,7 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
         print("\n=== TRANCHES ===")
         print(f"  importable            : {len(t_ok)}")
         print(f"  student not imported  : {len(t_noparent)}")
-        print(f"  NO disbursement date  : {len(t_nodate)}  (skipped — never invented)")
+        print(f"  of those, NO date     : {len(t_nodate)}  (imported anyway; ageing unavailable, date never invented)")
         if t_nodate:
             print("      " + ", ".join(dict.fromkeys(t_nodate))[:150])
 
