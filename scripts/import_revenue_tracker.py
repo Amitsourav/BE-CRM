@@ -25,6 +25,10 @@ Usage:
     .venv/bin/python -m scripts.import_revenue_tracker            # dry run
     .venv/bin/python -m scripts.import_revenue_tracker --apply
     .venv/bin/python -m scripts.import_revenue_tracker --xlsx /path/to.xlsx
+
+    # also create leads for sheet students the CRM has never heard of,
+    # but only where the sheet gives a phone number to identify them by
+    .venv/bin/python -m scripts.import_revenue_tracker --apply --create-missing
 """
 from __future__ import annotations
 
@@ -140,7 +144,18 @@ def _db_url() -> str:
     raise SystemExit("SUPABASE_DB_URL not found in .env")
 
 
-async def main(apply: bool, xlsx: str) -> None:
+# Sheet stage -> the lead's own pipeline stage, used only when creating a
+# lead that does not exist yet. An existing lead's stage is never touched.
+LEAD_STAGE_MAP = {
+    "log in": "logged_in",
+    "sanction": "sanctioned",
+    "pf": "pf_paid",
+    "disbursed": "disbursed",
+    "dropped": "lost",
+}
+
+
+async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
     wb = Workbook(xlsx)
     students = [d for n, d in wb.rows("Student_Master", 5) if d.get("C")]
     tranches = [d for n, d in wb.rows("Disbursement_Log", 5) if d.get("B")]
@@ -171,6 +186,7 @@ async def main(apply: bool, xlsx: str) -> None:
 
         # ── resolve every student row to a lead, or explain why not ──
         resolved: dict[str, dict] = {}       # sheet name(lower) -> plan
+        to_create: list[tuple] = []          # (name, phone, sheet row)
         skipped = {"ambiguous": [], "unmatched": [], "no_lender": [], "no_rate": []}
         for d in students:
             name = (d.get("C") or "").strip()
@@ -186,6 +202,13 @@ async def main(apply: bool, xlsx: str) -> None:
                 continue
             elif len(by_name.get(key, [])) > 1:
                 skipped["ambiguous"].append((name, f"{len(by_name[key])} leads share this name"))
+                continue
+            elif phone and create_missing:
+                # No lead anywhere and the sheet has a phone, so the lead
+                # can be created honestly — a phone is the CRM's identity
+                # key, and creating on a name alone would risk merging two
+                # different people.
+                to_create.append((name, phone, d))
                 continue
             else:
                 skipped["unmatched"].append((name, d.get("D") or "no phone"))
@@ -212,9 +235,82 @@ async def main(apply: bool, xlsx: str) -> None:
                 "closure": d.get("I"),
             }
 
+        # Two sheet rows can carry the same phone (Mehak Ekley and Nishant
+        # Ranjan both show 8878388425). The CRM has a unique index on
+        # (company_id, phone) for active leads, so only the first can be
+        # created; the rest are reported rather than silently dropped.
+        created_ids: dict[str, str] = {}
+        phone_clash: list[tuple[str, str]] = []
+        if to_create and apply:
+            seen_phone: dict[str, str] = {}
+            src_ids = {
+                r["name"].strip().lower(): r["id"]
+                for r in await conn.fetch(
+                    "SELECT id, name FROM lead_sources WHERE company_id = $1", company_id
+                )
+            }
+            author = await conn.fetchval(
+                "SELECT id FROM profiles WHERE company_id = $1 AND role = 'admin' "
+                "ORDER BY created_at LIMIT 1", company_id,
+            )
+            next_serial = (await conn.fetchval(
+                "SELECT coalesce(max(serial_no), 0) FROM leads WHERE company_id = $1",
+                company_id,
+            )) or 0
+            for name, phone, d in to_create:
+                if phone in seen_phone:
+                    phone_clash.append((name, f"phone {phone} already used by "
+                                              f"'{seen_phone[phone]}' in the sheet"))
+                    continue
+                seen_phone[phone] = name
+                next_serial += 1
+                lead_id = await conn.fetchval(
+                    """
+                    INSERT INTO leads
+                      (company_id, serial_no, full_name, phone, current_stage,
+                       pipeline, lead_source_id, college_name, created_by, notes)
+                    VALUES ($1,$2,$3,$4,$5::lead_stage,'normal',$6,$7,$8,$9)
+                    RETURNING id
+                    """,
+                    company_id, next_serial, name, "+91" + phone,
+                    LEAD_STAGE_MAP.get((d.get("H") or "").strip().lower(), "created"),
+                    src_ids.get((d.get("E") or "").strip().lower()),
+                    d.get("F"), author,
+                    "Created from the FMC Revenue Tracker import — this student "
+                    "was on the sheet but had no record in the CRM.",
+                )
+                created_ids[name.lower()] = lead_id
+
+            # Fold the new leads into the same plan the matched ones use,
+            # so their lender file and tranches import in this same run.
+            for name, phone, d in to_create:
+                lead_id = created_ids.get(name.lower())
+                if lead_id is None:
+                    continue
+                route = (d.get("G") or "").strip()
+                hit = banks.get(route.lower())
+                if hit is None or hit[1] is None:
+                    skipped["no_rate"].append((name, f"'{route}' has no usable rate"))
+                    continue
+                resolved[name.lower()] = {
+                    "lead_id": lead_id, "how": "created", "name": name,
+                    "bank_name": hit[0], "rate": hit[1],
+                    "status": STAGE_MAP.get((d.get("H") or "").strip().lower()),
+                    "sanction": to_dec(d.get("J")),
+                    "closure": d.get("I"),
+                }
+
         print("=== STUDENTS ===")
         print(f"  matched by phone : {sum(1 for v in resolved.values() if v['how']=='phone')}")
         print(f"  matched by name  : {sum(1 for v in resolved.values() if v['how']=='name')}")
+        if to_create:
+            verb = "CREATED" if apply else "would CREATE (--apply to do it)"
+            print(f"  {verb}: {len(created_ids) if apply else len(to_create)} new lead(s)")
+            for nm, ph, _ in to_create:
+                mark = "+" if (not apply or nm.lower() in created_ids) else "!"
+                print(f"      {mark} {nm:<28} {ph}")
+        for nm, why in phone_clash:
+            print(f"      ! {nm:<28} SKIPPED — {why}")
         for k, label in [("ambiguous", "AMBIGUOUS — never guessed"),
                          ("unmatched", "no CRM lead"),
                          ("no_lender", "lender problem"),
@@ -373,4 +469,4 @@ if __name__ == "__main__":
     path = DEFAULT_XLSX
     if "--xlsx" in sys.argv:
         path = sys.argv[sys.argv.index("--xlsx") + 1]
-    asyncio.run(main("--apply" in sys.argv, path))
+    asyncio.run(main("--apply" in sys.argv, path, "--create-missing" in sys.argv))
