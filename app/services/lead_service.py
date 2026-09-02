@@ -76,6 +76,64 @@ from app.utils.date_helpers import now_utc
 logger = logging.getLogger(__name__)
 
 
+async def reserve_serial_numbers(
+    db: AsyncSession, company_id: uuid.UUID, count: int = 1,
+) -> int:
+    """Atomically reserve `count` consecutive lead serials for a tenant.
+
+    Returns the FIRST serial in the range; the caller owns
+    [start, start+count). Backed by company_lead_counters, where the
+    ON CONFLICT DO UPDATE takes a row lock, so concurrent reservations
+    queue instead of colliding.
+
+    The GREATEST(...) is a self-heal, and it is load-bearing. The counter
+    is only authoritative while every insert goes through this function;
+    anything that writes leads.serial_no directly — a migration, a
+    one-off script, an edit in the Supabase table editor — leaves the
+    counter behind the table. FMC hit exactly that on 2026-09-01: six
+    rows landed at 9674-9679 while the counter stayed at 9674.
+
+    That failure does not recover on its own. The reservation and the
+    INSERT share one transaction, so the unique violation on
+    (company_id, serial_no) rolls the counter increment back too, and the
+    next attempt reserves the same doomed number. FMC created zero leads
+    for a day — every form, import, Meta ingest and website conversion
+    500'd — until the counter was dragged forward by hand.
+
+    Clamping to max(serial_no)+1 makes the very next call repair it. The
+    subquery is an index-only scan on uniq_leads_serial_per_company, so
+    the cost is a few microseconds against a reservation that is already
+    doing a write.
+    """
+    from sqlalchemy import text as sa_text
+    result = (await db.execute(
+        sa_text(
+            """
+            INSERT INTO company_lead_counters (company_id, next_serial)
+            VALUES (
+                :cid,
+                COALESCE(
+                    (SELECT max(serial_no) + 1 FROM leads WHERE company_id = :cid),
+                    1
+                ) + :inc
+            )
+            ON CONFLICT (company_id) DO UPDATE
+              SET next_serial = GREATEST(
+                    company_lead_counters.next_serial,
+                    COALESCE(
+                        (SELECT max(serial_no) + 1 FROM leads WHERE company_id = :cid),
+                        1
+                    )
+                  ) + :inc,
+                  updated_at = now()
+            RETURNING next_serial - :inc AS start_serial
+            """
+        ),
+        {"cid": company_id, "inc": count},
+    )).first()
+    return int(result.start_serial)
+
+
 class LeadService:
     def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
@@ -153,26 +211,10 @@ class LeadService:
         tenant. Returns the FIRST serial in the reserved range — caller
         uses [start, start+count) for the leads it's about to insert.
 
-        Backed by company_lead_counters with row-level locking via the
-        UPDATE … RETURNING pattern — concurrent inserts can't collide.
-        Auto-creates the counter row for tenants that don't have one yet
-        (e.g. a brand-new tenant created post-migration).
+        See `reserve_serial_numbers` for the locking and self-healing
+        rules; this is the LeadService-bound wrapper.
         """
-        from sqlalchemy import text as sa_text
-        result = (await self.db.execute(
-            sa_text(
-                """
-                INSERT INTO company_lead_counters (company_id, next_serial)
-                VALUES (:cid, :inc + 1)
-                ON CONFLICT (company_id) DO UPDATE
-                  SET next_serial = company_lead_counters.next_serial + :inc,
-                      updated_at = now()
-                RETURNING next_serial - :inc AS start_serial
-                """
-            ),
-            {"cid": self.company_id, "inc": count},
-        )).first()
-        return int(result.start_serial)
+        return await reserve_serial_numbers(self.db, self.company_id, count)
 
     async def create_lead(self, data: dict, created_by: uuid.UUID, creator_role: str | None = None) -> Lead:
         data["company_id"] = self.company_id

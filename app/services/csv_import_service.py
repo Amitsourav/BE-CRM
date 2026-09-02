@@ -337,21 +337,14 @@ class CSVImportService:
         # then distribute them across the rows before bulk insert. Way
         # cheaper than per-row reservation for 1000-row uploads.
         if lead_dicts:
-            from sqlalchemy import text as sa_text
-            row = (await self.db.execute(
-                sa_text(
-                    """
-                    INSERT INTO company_lead_counters (company_id, next_serial)
-                    VALUES (:cid, :inc + 1)
-                    ON CONFLICT (company_id) DO UPDATE
-                      SET next_serial = company_lead_counters.next_serial + :inc,
-                          updated_at = now()
-                    RETURNING next_serial - :inc AS start_serial
-                    """
-                ),
-                {"cid": self.company_id, "inc": len(lead_dicts)},
-            )).first()
-            start_serial = int(row.start_serial)
+            # Shared with LeadService rather than a second copy of the SQL.
+            # The copy that used to live here missed the self-heal clamp,
+            # which is the class of drift that broke FMC lead creation for
+            # a day on 2026-09-01 — see reserve_serial_numbers' docstring.
+            from app.services.lead_service import reserve_serial_numbers
+            start_serial = await reserve_serial_numbers(
+                self.db, self.company_id, len(lead_dicts),
+            )
             for i, d in enumerate(lead_dicts):
                 d["serial_no"] = start_serial + i
 
