@@ -168,6 +168,9 @@ class LenderSummaryRow(BaseModel):
     commission_total: Decimal
     received_total: Decimal
     tds_total: Decimal
+    gst_total: Decimal = Decimal("0")
+    # (commission + GST) - (received + TDS) — same definition as
+    # /reconciliation's totals.outstanding_total, so the two agree.
     outstanding_total: Decimal
     unbilled_count: int
     # Theoretical side — from sanctioned files

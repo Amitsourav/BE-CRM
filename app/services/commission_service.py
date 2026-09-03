@@ -379,6 +379,9 @@ class CommissionService:
                 func.coalesce(func.sum(BankDisbursement.amount_received), 0),
                 func.coalesce(func.sum(BankDisbursement.tds_deducted), 0),
                 func.count().filter(BankDisbursement.invoice_id.is_(None)),
+                # GST belongs in the outstanding figure — see below. Added
+                # last so the existing positional indices don't shift.
+                func.coalesce(func.sum(BankDisbursement.gst_amount), 0),
             )
             .where(BankDisbursement.company_id == self.company_id)
             .group_by(BankDisbursement.bank_name)
@@ -427,7 +430,13 @@ class CommissionService:
                 "commission_total": r[3],
                 "received_total": r[4],
                 "tds_total": r[5],
-                "outstanding_total": r[3] - (r[4] + r[5]),
+                "gst_total": r[7],
+                # (commission + GST) - (received + TDS), the same formula
+                # _totals uses. This used to omit GST, so this endpoint and
+                # /reconciliation disagreed on what a lender owes by exactly
+                # the GST — Rs 3,03,763 across the book on 2026-09-03. The
+                # invoice charges GST, so the lender owes it.
+                "outstanding_total": (r[3] + r[7]) - (r[4] + r[5]),
                 "unbilled_count": r[6],
                 "sanctioned_files": t.get("sanctioned_files", 0),
                 "sanctioned_total": t.get("sanctioned_total", Decimal("0")),
@@ -448,6 +457,7 @@ class CommissionService:
                 "commission_total": Decimal("0"),
                 "received_total": Decimal("0"),
                 "tds_total": Decimal("0"),
+                "gst_total": Decimal("0"),
                 "outstanding_total": Decimal("0"),
                 "unbilled_count": 0,
                 **t,
