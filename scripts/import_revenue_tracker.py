@@ -185,11 +185,82 @@ LEAD_STAGE_MAP = {
 }
 
 
+# Lender corrections, confirmed by Amit 2026-09-02. Keyed by student name.
+#
+# UniCred and Nomad are aggregators — several banks sit under each, at
+# different rates — so the bare aggregator name carries no commission rate
+# and never can. Where the sheet records only "UniCred", the actual product
+# has to come from Amit. Recorded here rather than edited into the .xlsx so
+# the sheet stays the one thing the team maintains.
+LENDER_FIXES = {
+    "garima chandra": "UniCred Normal",
+    "raveena": "UniCred Normal",
+    "arvind kumar singh": "UniCred Normal",
+}
+
+
+def sheet_lender(d) -> str:
+    """The student's lender, with confirmed corrections applied."""
+    fix = LENDER_FIXES.get(str(d.get("C") or "").strip().lower())
+    return fix if fix else (d.get("G") or "").strip()
+
+
+def sheet_phone(d) -> str:
+    """The student's phone as 10 digits, with confirmed corrections applied.
+
+    Every read of column D goes through here so a correction cannot be
+    applied on one code path and missed on another — which is how the
+    duplicate-phone bug reached production the first time.
+    """
+    fix = PHONE_FIXES.get(str(d.get("C") or "").strip().lower())
+    return digits10(fix) if fix else digits10(d.get("D"))
+
+
+# Phone corrections applied on top of the sheet, confirmed by Amit 2026-09-02.
+# Keyed by student name, lowercased. Kept here rather than edited into the
+# .xlsx so the sheet stays the single thing the team maintains and every
+# deviation from it is visible in one place.
+PHONE_FIXES = {
+    # The sheet gave Palak Rai the SAME number as Rishi (8003442200), which
+    # would have written her sanction onto Rishi's lead #8696 — the exact
+    # failure that put one student's Rs 15L on another's record in August.
+    "palak rai": "7879084573",
+    # Sheet says ...535, which was lead #9428: a duplicate of #9427 created
+    # by the same WhatsApp import with a one-digit-different phone. #9428 is
+    # now soft-deleted, so the sheet value would match nothing.
+    "ekansh sisodiya": "9810171534",
+}
+
+
 async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
     wb = Workbook(xlsx)
     students = [d for n, d in wb.rows("Student_Master", 5) if d.get("C")]
+
+    # The sheet's last row is a "TOTAL" footer, not a student. It has a
+    # name-column value so the filter above lets it through, and it was
+    # being counted as a 166th student with no phone.
+    students = [d for d in students
+                if str(d.get("C") or "").strip().upper() != "TOTAL"]
+
+    # Dropped students are excluded (Amit, 2026-09-02). Verified this
+    # costs nothing: all 37 of them carry ZERO commission due, and only
+    # one (Manish Chaudhary) has any disbursement at all. They are also
+    # the entire remaining phone gap — every non-dropped student in the
+    # sheet now has a number, so dropping them takes the unmatchable
+    # rows out with them.
+    dropped = [d for d in students
+               if str(d.get("H") or "").strip().lower() == "dropped"]
+    students = [d for d in students if d not in dropped]
+
     tranches = [d for n, d in wb.rows("Disbursement_Log", 5) if d.get("B")]
-    print(f"sheet: {len(students)} students, {len(tranches)} tranches\n")
+    dropped_names = {str(d.get("C") or "").strip().lower() for d in dropped}
+    skipped_tranches = [t for t in tranches
+                        if str(t.get("B") or "").strip().lower() in dropped_names]
+    tranches = [t for t in tranches if t not in skipped_tranches]
+
+    print(f"sheet: {len(students)} students, {len(tranches)} tranches")
+    print(f"  excluded {len(dropped)} dropped students "
+          f"and {len(skipped_tranches)} of their tranches\n")
 
     conn = await asyncpg.connect(_db_url(), statement_cache_size=0, timeout=90)
     try:
@@ -224,7 +295,7 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
         # whichever lead happens to exist.
         from collections import Counter
         sheet_phone_counts = Counter(
-            digits10(d.get("D")) for d in students if digits10(d.get("D"))
+            sheet_phone(d) for d in students if sheet_phone(d)
         )
         duplicated_in_sheet = {p for p, n in sheet_phone_counts.items() if n > 1}
 
@@ -235,7 +306,7 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
         for d in students:
             name = (d.get("C") or "").strip()
             key = name.lower()
-            phone = digits10(d.get("D"))
+            phone = sheet_phone(d)
             lead_id = how = None
             if phone and phone in duplicated_in_sheet:
                 skipped["ambiguous"].append(
@@ -260,10 +331,10 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
                 to_create.append((name, phone, d))
                 continue
             else:
-                skipped["unmatched"].append((name, d.get("D") or "no phone"))
+                skipped["unmatched"].append((name, sheet_phone(d) or "no phone"))
                 continue
 
-            route = (d.get("G") or "").strip()
+            route = sheet_lender(d)
             if not route:
                 skipped["no_lender"].append((name, "no lender in the sheet"))
                 continue
@@ -302,10 +373,32 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
                 "SELECT id FROM profiles WHERE company_id = $1 AND role = 'admin' "
                 "ORDER BY created_at LIMIT 1", company_id,
             )
+            # Reserve from company_lead_counters, the same counter the app
+            # uses. Reading max(serial_no) and counting up — which this did
+            # until 2026-09-02 — leaves that counter behind the table, and
+            # because the failed INSERT rolls its increment back too, the
+            # next lead created anywhere reserves the same doomed number
+            # forever. That is precisely how this script took ALL FMC lead
+            # creation down for a day on 2026-09-01.
             next_serial = (await conn.fetchval(
-                "SELECT coalesce(max(serial_no), 0) FROM leads WHERE company_id = $1",
-                company_id,
-            )) or 0
+                """
+                INSERT INTO company_lead_counters (company_id, next_serial)
+                VALUES (
+                    $1,
+                    COALESCE((SELECT max(serial_no) + 1 FROM leads
+                              WHERE company_id = $1), 1) + $2
+                )
+                ON CONFLICT (company_id) DO UPDATE
+                  SET next_serial = GREATEST(
+                        company_lead_counters.next_serial,
+                        COALESCE((SELECT max(serial_no) + 1 FROM leads
+                                  WHERE company_id = $1), 1)
+                      ) + $2,
+                      updated_at = now()
+                RETURNING next_serial - $2
+                """,
+                company_id, len(to_create),
+            )) - 1
             for name, phone, d in to_create:
                 if phone in seen_phone:
                     phone_clash.append((name, f"phone {phone} already used by "
@@ -336,7 +429,7 @@ async def main(apply: bool, xlsx: str, create_missing: bool) -> None:
                 lead_id = created_ids.get(name.lower())
                 if lead_id is None:
                     continue
-                route = (d.get("G") or "").strip()
+                route = sheet_lender(d)
                 hit = banks.get(route.lower())
                 if hit is None or hit[1] is None:
                     skipped["no_rate"].append((name, f"'{route}' has no usable rate"))
