@@ -85,6 +85,21 @@ class Bank(Base, TimestampMixin):
         Numeric(5, 2), nullable=True
     )
 
+    # True = this row is an AGGREGATOR, not a lender you can be paid by.
+    # UniCred and Nomad each front several banks at different rates, so a
+    # single rate on the parent is meaningless and commission on a file
+    # left here can never be computed.
+    #
+    # Explicit rather than inferred. The frontend was detecting these by
+    # checking whether a name appears as a word inside other route names
+    # ("Nomad" inside "Nomad Normal"), which happens to work today and
+    # breaks the moment a sub-product is renamed or a real lender's name
+    # is a prefix of another. A file sitting on an aggregator earns
+    # nothing, so the UI has to be able to say so with certainty.
+    is_aggregator: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True
     )

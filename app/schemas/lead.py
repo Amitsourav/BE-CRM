@@ -674,6 +674,7 @@ class BankUpdate(BaseModel):
     # snapshotted the rate that applied to it, so a renegotiation can
     # never rewrite what was already earned.
     commission_rate: Decimal | None = Field(default=None, ge=0, le=100)
+    is_aggregator: bool | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -690,6 +691,11 @@ class BankOut(BaseModel):
     # refuses to guess: a lender with no rate cannot have its commission
     # computed, and that gap is reported rather than billed as zero.
     commission_rate: Decimal | None = None
+    # True = a ROUTE that fronts several lenders (UniCred, Nomad, Axis),
+    # not something that pays us. It has no rate and cannot have one, so
+    # a file left on it can never earn commission — render it as needing
+    # a specific sub-product rather than as a 0% lender.
+    is_aggregator: bool = False
     created_at: datetime
     updated_at: datetime
 
