@@ -323,6 +323,7 @@ async def list_banks_for_management(
             "id": b.id, "name": b.name, "is_active": b.is_active,
             "sort_order": b.sort_order, "usage_count": counts.get(b.name, 0),
             "commission_rate": b.commission_rate,
+            "is_aggregator": b.is_aggregator,
             "created_at": b.created_at, "updated_at": b.updated_at,
         }
         for b in rows
@@ -372,6 +373,7 @@ async def add_bank_to_list(
     bank = Bank(
         name=name, sort_order=sort_order, created_by=admin.id,
         commission_rate=body.commission_rate,
+        is_aggregator=bool(body.is_aggregator),
     )
     db.add(bank)
     await db.commit()
@@ -382,6 +384,7 @@ async def add_bank_to_list(
         "id": bank.id, "name": bank.name, "is_active": bank.is_active,
         "sort_order": bank.sort_order, "usage_count": 0,
         "commission_rate": bank.commission_rate,
+        "is_aggregator": bank.is_aggregator,
         "created_at": bank.created_at, "updated_at": bank.updated_at,
     }
 
@@ -436,6 +439,8 @@ async def update_bank_in_list(
     # stop having commission computed for it.
     if "commission_rate" in data:
         bank.commission_rate = data["commission_rate"]
+    if "is_aggregator" in data:
+        bank.is_aggregator = data["is_aggregator"]
 
     await db.commit()
     await db.refresh(bank)
@@ -453,6 +458,7 @@ async def update_bank_in_list(
         "id": bank.id, "name": bank.name, "is_active": bank.is_active,
         "sort_order": bank.sort_order, "usage_count": usage,
         "commission_rate": bank.commission_rate,
+        "is_aggregator": bank.is_aggregator,
         "created_at": bank.created_at, "updated_at": bank.updated_at,
     }
 
