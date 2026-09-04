@@ -1,33 +1,27 @@
-# Reconciliation dashboard — frontend build prompt
+# Loan Intelligence Dashboard — frontend build brief
 
 > For the dev/agent working in the **CRM-UI** repo.
-> Backend is live. One new endpoint, no changes to anything existing.
-> Written 2026-09-04 against production data.
+> Built against Amit's design at
+> `fundmycampus-loan-analytics.nishuash.chatgpt.site`.
+> Every endpoint below is live. Rewritten 2026-09-05 — supersedes the
+> earlier single-page version of this document.
 
 ---
 
 ## 1. What this is
 
-FMC's commission book reconciles to its revenue tracker to the rupee.
-Getting there took two days of hand-written SQL, because the CRM could
-show you *rows* and could not answer a single question about the *book*.
+*"Sanction to cash collection — one operating view."*
 
-This dashboard answers five:
-
-1. How much of what lenders approved has actually come out?
-2. How much is still to come, and what is it worth?
-3. Are we collecting faster or slower than we are earning?
-4. Who owes us, and how old is it?
-5. What in here can't be trusted?
-
-One page. Executive summary on top, operational detail below.
+Six tabs, global filters, and **every segment clickable to open the exact
+students behind it.** That last part is the point: a number nobody can
+open is a number nobody trusts.
 
 ### Vocabulary — use these exact words on screen
 
 | Term | Means |
 |---|---|
 | **Sanctioned** | What lenders approved |
-| **Confirmed** | Student paid the PF. FMC's proof the loan is real and which lender won it |
+| **Confirmed** | Student paid the PF — proof the loan is real and which lender won it |
 | **Disbursed** | What the bank actually released, in tranches |
 | **Earned** | Commission + GST on what was disbursed. Entitlement, not cash |
 | **Collected** | Cash received + TDS withheld. Both discharge the debt |
@@ -35,268 +29,298 @@ One page. Executive summary on top, operational detail below.
 | **Undrawn** | Confirmed but not yet released — future commission |
 
 **Sanctioned is not Disbursed.** A ₹10 L sanction comes out semester by
-semester. FMC earns per release, never on the sanction. Confusing the two
-is the single most expensive mistake in this domain — it produced ₹1.36
-crore of wrong figures in the CRM before it was caught.
+semester and FMC earns per release. Confusing the two produced ₹1.36
+crore of wrong figures before it was caught.
 
-> **All amounts in the response are RUPEES.** No conversion. Format with
-> Indian grouping — ₹15,15,50,551, never ₹151,550,551.
+> **Every amount in every response is RUPEES.** Format with Indian
+> grouping — ₹15,46,98,551, never ₹154,698,551.
 
 ---
 
-## 2. The endpoint
+## 2. Global filters — one set, every tab
+
+Every endpoint below takes the same five, as repeatable query params:
+
+| Param | |
+|---|---|
+| `bank_name` | repeatable — matches any of the supplied lenders |
+| `source_id` | repeatable — matches any of the supplied lead sources |
+| `disbursed_from` / `disbursed_to` | date range on the disbursement date |
+| `as_of` | ageing measured against this date instead of today |
+
+Hold the filter state in ONE object and spread it into every call. Passing
+none means the whole book.
+
+**Two controls in the mockup cannot be built yet:**
+
+- **"All closure months"** — the CRM has no closure month. It exists only
+  in the spreadsheet; no column, and zero leads carry it. A real
+  `expected_closure_month` field is planned. **Until then, label the month
+  control "Disbursement month"** and drive it off `disbursed_from` /
+  `disbursed_to`. Do not label it "closure" — that is the exact class of
+  mislabelling that cost two days of reconciliation.
+- **"invoiced" in Cash Control** — there is no invoiced figure. FMC bills
+  outside the CRM; `invoice_service` never touches disbursements, so
+  `invoice_id` is only ever set by a direct database write. Show earned,
+  collected and outstanding. **Do not add an invoiced column.**
+
+---
+
+## 3. Drill-down — build this first
 
 ```http
-GET /api/v1/reconciliation/dashboard?months=12
+GET /api/v1/reconciliation/drilldown?segment=<kind>&value=<v>&<filters>
 ```
 
-**Admin only** (403 otherwise — hide the nav item). **FMC only** (400 on
-Admitverse — gate on brand). One call fills the whole page.
-
-| Param | | |
-|---|---|---|
-| `months` | int, 1-24, default 12 | length of the trend series |
-
-No other filters. Every panel is the whole book by definition — use
-`GET /reconciliation` when the user wants to slice.
-
-Cached 60s server-side. A hard refresh may return the same numbers; that
-is intended.
+`segment` ∈ `stage` · `lender` · `ageing_bucket` · `source` ·
+`funnel_step`. For a source, `value` is the source id or the literal
+`unattributed`.
 
 ```jsonc
 {
-  "funnel": {
-    "sanctioned_total": 485316918.00,      // RUPEES
-    "sanctioned_files": 175,
-    "confirmed_total": 393248742.00,
-    "confirmed_files": 130,
-    "disbursed_total": 151550551.00,
-    "tranches": 125,
-    "earned_total": 1982600.14,            // commission + GST
-    "collected_total": 1309816.19,         // received + TDS
-    "outstanding_total": 672783.95,
-    "confirmed_pct_of_sanctioned": 81.0,   // each step vs the one BEFORE it
-    "disbursed_pct_of_confirmed": 38.5,
-    "collected_pct_of_earned": 66.1
-  },
-  "pipeline_ahead": {
-    "confirmed_files": 115,
-    "sanctioned_total": 393248742.00,
-    "drawn_total": 148855551.00,
-    "undrawn_total": 244393191.00,
-    "future_commission": 2371858.00,       // a FLOOR, see below
-    "drawn_pct": 37.9,
-    "files_missing_rate": 2
-  },
-  "monthly": [
-    { "month": "2026-08", "tranches": 17, "disbursed": 29550290.00,
-      "earned": 418974.00, "collected": 277378.00 }
-  ],
-  "by_lender": [
-    { "bank_name": "UC Axis", "tranches": 21, "disbursed_total": 26073385.00,
-      "earned_total": 307469.00, "collected_total": 138361.00,
-      "outstanding_total": 169108.00, "collected_pct": 45.0 }
-  ],
-  "ageing": {
-    "buckets": [ { "bucket": "0_30", "tranches": 14, "outstanding": 95532.00 } ],
-    "total_outstanding": 673064.00,
-    "undateable_outstanding": 376726.00,
-    "undateable_pct": 56.0
-  },
-  "data_quality": {
-    "tranches": 125,
-    "tranches_without_date": 37,
-    "payments_without_receipt_date": 61,
-    "tranches_with_tds": 0,
-    "tranches_awaiting_payment": 53,
-    "tranches_short": 71,
-    "tranches_materially_short": 4,
-    "tranches_written_off": 0,
-    "tranches_earning_nothing": 0,
-    "live_files": 175,
-    "files_without_sanctioned_amount": 41,
-    "files_that_cannot_be_priced": 14,
-    "files_on_aggregator": 14
-  }
+  "segment": "ageing_bucket", "value": "over_90",
+  "total": 41,            // STUDENTS
+  "tranche_total": 46,    // TRANCHES in this segment
+  "page": 1, "page_size": 50,
+  "items": [ { "lead_id": "...", "serial_no": 3934, "full_name": "Esha",
+               "stage": "disbursed", "bank_name": "UC Axis",
+               "sanctioned": 20000000.00, "disbursed": 4730000.00,
+               "earned": 47300.00, "collected": 0.00,
+               "outstanding": 47300.00 } ]
 }
 ```
 
----
+> **Two counts, and you need both.** The panels do not all count the same
+> thing — ageing and by-lender count TRANCHES, the stage funnel counts
+> STUDENTS. Header the drawer **"41 students · 46 tranches"**. Show only
+> one and the drill-down will look like it contradicts the number the user
+> just clicked.
 
-## 3. Row 1 — the funnel
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Sanctioned      Confirmed       Disbursed      Earned  Collected│
-│  ₹48.53 cr  →   ₹39.32 cr   →   ₹15.16 cr  →  ₹19.83 L → ₹13.10 L│
-│               81% of sanctioned  38% of conf.          66% earned│
-└──────────────────────────────────────────────────────────────────┘
-```
-
-Five tiles left to right. **Each percentage is against the step before
-it, not against the top** — that is what makes a weak step visible. Show
-the percentage under the tile it belongs to.
-
-`disbursed_pct_of_confirmed` at 38% is the number that matters: most
-approved money has not come out yet.
+Verified: every segment returns exactly what its panel claimed. `lead_id`
+links to the lead page.
 
 ---
 
-## 4. Row 2 — coming and owed
+## 4. Overview tab
 
-Two tiles side by side.
+`GET /api/v1/reconciliation/dashboard?months=12&<filters>`
+
+Six panels in one call: `funnel`, `pipeline_ahead`, `monthly`,
+`by_lender`, `ageing`, `data_quality`. Cached 60s.
+
+### Flow of money
 
 ```
-┌── STILL TO COME ──────────────┬── OWED TO US ─────────────────┐
-│ ₹24.44 cr undrawn             │ ₹6,72,784                     │
-│ → ₹23,71,858 commission       │ across 17 lenders             │
-│ 37.9% of confirmed drawn      │ 56% of it cannot be aged      │
-└───────────────────────────────┴───────────────────────────────┘
+Sanctioned  →  Confirmed  →  Disbursed  →  Earned  →  Collected
+ ₹48.53cr      ₹39.32cr      ₹15.47cr     ₹20.1L     ₹13.1L
+              81% of sanc.  38% of conf.            66% earned
 ```
 
-**`future_commission` is a FLOOR, not an estimate.** Files whose lender
-has no configured rate are excluded rather than counted as zero.
-When `files_missing_rate > 0`, say "at least" before the figure.
+**Each percentage is against the step before it, not against the top.**
+That is what makes a weak step visible — 38% drawdown is the headline
+finding on this book.
+
+Click any step → `drilldown?segment=funnel_step&value=sanctioned|confirmed|disbursed`.
+
+### Lender pulse
+
+`by_lender` is pre-sorted by what is owed. Each row carries
+`share_of_disbursed_pct` — that single field drives **Portfolio Mix** and
+**Concentration Risk** with no extra call.
 
 ---
 
-## 5. Row 3 — earned vs collected, by month
+## 5. Pipeline & Forecast tab
 
-Grouped bars or two lines. `earned` by disbursement month, `collected` by
-receipt month.
+```http
+GET /api/v1/reconciliation/pipeline?limit=20&<filters>
+```
 
-**They are different dates on purpose.** A tranche earned in June and
-paid in August appears in both months, in different columns. Do not try
-to reconcile a single month's two bars.
+### Stage funnel — volume AND value
 
-Months with no activity are absent, not zero-filled. Plot the months you
-are given, in order.
+```jsonc
+"stage_funnel": [
+  { "stage": "logged_in",  "leads": 41,  "sanctioned": 5000000,   "disbursed": 0 },
+  { "stage": "sanctioned", "leads": 14,  "sanctioned": 57318176,  "disbursed": 0 },
+  { "stage": "pf_paid",    "leads": 11,  "sanctioned": 73696344,  "disbursed": 0 },
+  { "stage": "disbursed",  "leads": 101, "sanctioned": 297589691, "disbursed": 139628850 }
+]
+```
 
-**Tranches with no date appear in NO month.** On this book that is 37
-tranches and ₹3.90 cr of disbursement. Put a footnote under the chart
-reading off `data_quality.tranches_without_date` — without it the trend
-understates every month and nobody knows why.
+Counts STUDENTS by lead stage. Show value, not just headcount — a stalled
+stage matters as money. Each bar → `drilldown?segment=stage&value=pf_paid`.
+
+### Revenue bridge — booked vs unlockable
+
+```jsonc
+"revenue_bridge": {
+  "booked": 2014080.10, "unlockable": 2340378.00,
+  "undrawn_total": 241245191.00, "drawn_pct": 38.7,
+  "files_missing_rate": 2
+}
+```
+
+**`unlockable` is a FLOOR.** Files whose lender has no rate are excluded,
+not zeroed. When `files_missing_rate > 0`, write "at least" before it.
+
+### Biggest opportunities
+
+| Student | Stage | Lender | Sanction | Disbursed | Pending | Potential net revenue |
+|---|---|---|---|---|---|---|
+| Bhavya Singhal | pf_paid | UC Axis | ₹2,00,00,000 | ₹0 | ₹2,00,00,000 | ₹1,60,000 |
+| Esha | disbursed | UC Axis | ₹2,00,00,000 | ₹47,30,000 | ₹1,52,70,000 | ₹1,22,160 |
+
+`potential_net_revenue` **already has the 80% net haircut applied** — do
+not multiply again. Rows carry `lead_id`; click through to the student.
 
 ---
 
-## 6. Row 4 — who owes, and how old
+## 6. Revenue & Collections tab
 
-Side by side: lender table left, ageing right.
+Uses `dashboard`'s `monthly` and `ageing`, plus the existing
+`GET /reconciliation` for the workbench table.
 
-```
-LENDER                 tr   disbursed      owed   collected
-UC Axis                21  ₹2,60,73,385  ₹1,69,108    45%
-Nomad Normal            4  ₹1,90,16,195  ₹1,66,515    54%
-Axis Direct (UC Code)  30  ₹2,68,72,314  ₹1,32,755    69%
-```
+**Trend:** `earned` is by disbursement month, `collected` by receipt
+month. **Different dates on purpose** — a tranche earned in June and paid
+in August appears in both, in different columns. Do not try to reconcile a
+single month's two bars.
 
-Already sorted by what is owed, then by size. Render in the order given.
-Lenders owing nothing still appear — seeing your biggest route matters
-even in a month it owes nothing.
+Tranches with no date appear in **no month**. Footnote the chart with
+`data_quality.tranches_without_date`.
 
-```
-AGEING          tranches      owed
-0-30 days             14   ₹95,532
-31-60                  9  ₹1,24,988
-61-90                 18   ₹22,694
-90+                   46   ₹53,124   ← red
-no date               37  ₹3,76,726   ← amber, 56%
-```
+**Ageing:** buckets `0_30` `31_60` `61_90` `over_90` `no_date`. Only rows
+still owing appear.
 
-`bucket` is one of `0_30` `31_60` `61_90` `over_90` `no_date`.
+> **`no_date` is a real bucket holding the MAJORITY of what is
+> outstanding** — 56% on this book. Render it, visually distinct, labelled
+> "Cannot be aged — no disbursement date". A panel that hides it
+> understates the debt by more than half.
 
-**`no_date` is a real bucket, not an error.** It holds the majority of
-everything outstanding here. A panel that hides it understates the debt
-by more than half. Render it last, visually distinct, labelled
-"Cannot be aged — no disbursement date".
-
-Only rows still owing appear; settled rows leave the buckets entirely.
-
-> `ageing.total_outstanding` can exceed `funnel.outstanding_total` by a
-> few rupees. That is correct. Ageing sums per-row shortfall, which floors
-> at zero, so a lender that overpaid one tranche cannot cancel out what it
-> owes on another. The funnel is the net position; ageing is what is
-> chaseable. Do not "fix" the difference.
+`ageing.total_outstanding` can exceed `funnel.outstanding_total` by a few
+rupees. Correct, not a bug: ageing sums per-row shortfall which floors at
+zero, so an overpaid tranche cannot cancel out what is owed elsewhere.
 
 ---
 
-## 7. Row 5 — needs attention
+## 7. Lender Performance tab
 
-A row of small counters. Not decoration — these say why a number above
-might be wrong, and every dashboard that hides them ends up trusted more
-than it deserves.
+`GET /api/v1/reconciliation/summary` (existing) for the full matrix, or
+`dashboard`'s `by_lender` for the lighter view.
 
-| Counter | Label | Why it matters |
-|---|---|---|
-| `tranches_without_date` | Undateable | Missing from every month and from ageing |
-| `payments_without_receipt_date` | Payments with no date | Collection trend understated |
-| `files_without_sanctioned_amount` | Files with no amount | Excluded from sanctioned and from future commission |
-| `files_on_aggregator` | On an aggregator | **Can never earn** until moved to a real route |
-| `tranches_materially_short` | Genuinely underpaid | The only "short" number worth acting on |
+Rows are pre-sorted by outstanding, then size. **Render in the order
+given.** Lenders owing nothing still appear — knowing UC Axis is your
+biggest route matters in a month it owes nothing.
+
+`share_of_disbursed_pct` gives you Portfolio Mix and Concentration Risk
+directly. For "Health", combine `collected_pct` with the lender's share of
+ageing — no backend field, it is your call to define.
+
+---
+
+## 8. Source Performance tab
+
+```http
+GET /api/v1/reconciliation/sources?<filters>
+```
+
+```jsonc
+{
+  "sources": [
+    { "source_id": "...", "source_name": "Ankit DM", "students": 9,
+      "tranches": 13, "disbursed_total": 13349780.00,
+      "commission_total": 143020.00, "collected_total": 131428.00,
+      "revenue_per_student": 15891.11, "collected_pct": 91.9,
+      "share_of_disbursed_pct": 8.6 }
+  ],
+  "unattributed": { "source_name": "Unattributed", "students": 35,
+                    "disbursed_total": 60751630.00, ... }
+}
+```
+
+Two things about this tab:
+
+**`students` counts only students who have actually disbursed.** Not every
+lead carrying the source. Counting leads made unattributed read as 8,651
+students earning ₹83 each — useless.
+
+**`unattributed` comes back in its own field, deliberately not ranked.**
+It is ~40% of disbursement — the single biggest bucket. Putting it top of
+a league table of marketing channels would be actively misleading. **Render
+it as a footer row, visually separated, never as the winner.** It is also
+the single best argument for recording lead sources properly.
+
+Quality Matrix (scale vs drawdown) plots `disbursed_total` against
+`collected_pct` from these rows.
+
+---
+
+## 9. Data Control Centre tab
+
+```http
+GET /api/v1/reconciliation/exceptions?limit=200&<filters>
+```
+
+```jsonc
+{
+  "total": 156,
+  "by_code": { "on_aggregator": 14, "no_sanctioned_amount": 40,
+               "no_disbursement_date": 37, "no_receipt_date": 61,
+               "materially_short": 4 },
+  "items": [ { "severity": "high", "code": "on_aggregator",
+               "issue": "File sits on an aggregator",
+               "why": "UniCred, Nomad and Axis front several lenders at "
+                      "different rates, so they carry no rate of their own...",
+               "lead_id": "...", "serial_no": 9465,
+               "full_name": "Muskan Sehgal", "bank_name": "Axis",
+               "amount": 5000000.00 } ]
+}
+```
+
+Already sorted: severity, then money at stake. `why` is written to be
+shown to a person — put it in the row, not a tooltip. `lead_id` opens the
+record.
+
+A record tripping two rules yields two rows, because they are two separate
+fixes. That is why `by_code` reconciles exactly with `data_quality`.
 
 ### The three "short" counters are not the same thing
 
-- `tranches_awaiting_payment` — nothing received at all (53)
+From `dashboard.data_quality`:
+
+- `tranches_awaiting_payment` — nothing received (53)
 - `tranches_short` — paid, but light (71)
-- `tranches_materially_short` — short by over ₹100 **and** over 2% (4)
+- `tranches_materially_short` — over ₹100 **and** over 2% (4)
 
-**Show `tranches_materially_short` as the headline.** The gap between it
-and `tranches_short` is rounding between the lender's arithmetic and
-ours — on this book, 67 of the 71 are trivial. A tile reading "71 lenders
-underpaid us" is wrong and will be ignored within a week.
-
-**`files_on_aggregator`** are files parked on UniCred / Nomad / Axis
-rather than the specific route beneath. An aggregator fronts several
-banks at different rates, so it has none of its own. These earn nothing
-until someone moves them — make it clickable through to the lender list
-if you can.
+**Headline `tranches_materially_short`.** The gap is rounding between the
+lender's arithmetic and ours — 67 of the 71 are trivial. A tile reading
+"71 lenders underpaid us" is wrong and will be ignored in a week.
 
 ---
 
-## 8. Deliberately absent: invoicing
-
-There are no invoice figures here and no `to_bill` / `billed` split, on
-purpose. FMC raises its bills outside the CRM — `invoice_service` never
-touches disbursements, so `invoice_id` is only ever set by a direct
-database write and the `billed` status is unreachable through the API.
-
-**Do not add an "unbilled" tile.** It would report a gap that is really a
-workflow living somewhere else. The existing reconciliation report still
-shows the five row statuses; that is a different screen.
-
----
-
-## 9. Errors
+## 10. Errors and gating
 
 | Situation | Response |
 |---|---|
-| Not an admin | 403 — hide the page from the nav entirely |
-| Admitverse tenant | 400 with a readable `detail` — gate on brand, don't show and fail |
+| Not an admin | 403 — hide the whole section from the nav |
+| Admitverse tenant | 400 — gate on brand, do not show and fail |
+| Bad `segment` or bucket value | 400 with the valid list in `detail` |
 | `months` outside 1-24 | 422 |
-
----
-
-## 10. Notes
-
-- The first load takes a few seconds (nine aggregates against Supabase
-  Korea). It is cached 60s after that. Show a skeleton, not a spinner on
-  an empty page.
-- Every money field is `Decimal` serialised as a JSON number. Do not
-  round for display beyond whole rupees; do not do arithmetic on them in
-  the client — every figure you need is already computed.
-- Nothing here is editable. It is a read surface.
 
 ---
 
 ## Acceptance
 
-- [ ] Funnel shows 5 tiles, each percentage against the previous step
-- [ ] "Still to come" says "at least" when `files_missing_rate > 0`
-- [ ] Trend plots earned and collected as separate series, months in order
-- [ ] Footnote under the trend naming the undateable tranche count
-- [ ] Lender table rendered in the order given, not re-sorted
-- [ ] Ageing shows all five buckets including `no_date`, visually distinct
+- [ ] One filter object drives every tab; no filter = whole book
+- [ ] Month control is labelled **"Disbursement month"**, not closure
+- [ ] No invoiced column anywhere
+- [ ] Every segment is clickable and opens the drill-down drawer
+- [ ] Drawer header shows **both** counts — "41 students · 46 tranches"
+- [ ] Funnel percentages are step-to-step
+- [ ] "At least" prefixes `unlockable` when `files_missing_rate > 0`
+- [ ] `potential_net_revenue` rendered as given, not re-multiplied
+- [ ] Trend plots two series on different dates; undateable count footnoted
+- [ ] Ageing shows `no_date`, visually distinct
+- [ ] Sources: unattributed is a separated footer row, never ranked
+- [ ] Exceptions show `why` in the row; `lead_id` opens the record
 - [ ] `tranches_materially_short` is the headline, not `tranches_short`
-- [ ] No invoice tile anywhere
-- [ ] Indian digit grouping throughout (₹15,15,50,551)
-- [ ] 403 hides the page; 400 on Admitverse never reaches the user
+- [ ] Indian digit grouping throughout
