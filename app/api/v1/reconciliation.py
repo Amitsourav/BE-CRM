@@ -24,9 +24,12 @@ from app.core.exceptions import BadRequestError, NotFoundError
 from app.models.profile import Profile
 from app.models.lead_bank import LeadBank
 from app.services.commission_service import CommissionService
-from app.services.commission_analytics_service import CommissionAnalyticsService
+from app.services.commission_analytics_service import (
+    CommissionAnalyticsService, Filters,
+)
 from app.schemas.commission import (
     ReconciliationDashboardOut,
+    PipelineOut, SourcesOut, ExceptionsOut, DrilldownOut,
     DisbursementCreate, DisbursementUpdate, DisbursementOut,
     ReconciliationOut, LenderSummaryRow, GrossTheoreticalOut,
     NetTheoreticalFactorIn, NetTheoreticalFactorOut,
@@ -55,6 +58,40 @@ async def _require_fmc(db: AsyncSession, company_id: uuid.UUID) -> None:
 # ─────────────────────────────────────────────
 # The report
 # ─────────────────────────────────────────────
+
+def _filters(
+    bank_name: list[str] | None = Query(
+        None, description="Repeatable; matches any of the supplied lenders",
+    ),
+    source_id: list[uuid.UUID] | None = Query(
+        None, description="Repeatable; matches any of the supplied lead sources",
+    ),
+    disbursed_from: date | None = Query(None),
+    disbursed_to: date | None = Query(None),
+    as_of: date | None = Query(
+        None,
+        description=(
+            "Ageing is measured against this date instead of today, so a "
+            "month-end view can be reproduced later rather than drifting "
+            "every time it is opened."
+        ),
+    ),
+) -> Filters:
+    """The one filter set every analytics panel honours.
+
+    A FastAPI dependency rather than five repeated params per route, so a
+    filter cannot come to mean different things on different tabs. Passing
+    none of them means the whole book, which is what every panel returned
+    before filters existed.
+    """
+    return Filters(
+        bank_name=bank_name or [],
+        source_id=source_id or [],
+        disbursed_from=disbursed_from,
+        disbursed_to=disbursed_to,
+        as_of=as_of,
+    )
+
 
 @router.get("", response_model=ReconciliationOut)
 async def reconciliation(
@@ -135,6 +172,7 @@ async def dashboard(
         12, ge=1, le=24,
         description="How many months of the earned-vs-collected trend to return.",
     ),
+    f: Filters = Depends(_filters),
 ):
     """The commission book at a glance — six panels, one round trip.
 
@@ -156,7 +194,106 @@ async def dashboard(
     Carries no invoice figures deliberately — see the response schema.
     """
     await _require_fmc(db, company_id)
-    return await CommissionAnalyticsService(db, company_id).dashboard(months)
+    return await CommissionAnalyticsService(db, company_id).dashboard(months, f)
+
+
+@router.get("/pipeline", response_model=PipelineOut)
+async def pipeline(
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    f: Filters = Depends(_filters),
+    limit: int = Query(20, ge=1, le=100, description="Rows in the opportunities queue."),
+):
+    """Where files are stuck, what is still unlockable, and what to chase.
+
+    `stage_funnel` counts STUDENTS by their lead stage and carries the
+    value at each step, so a stalled stage shows up as money rather than
+    as a headcount.
+
+    `revenue_bridge` is commission already booked against commission still
+    unlockable on approved-but-undrawn money. The unlockable side is a
+    floor — files whose lender has no rate are excluded, not zeroed.
+
+    `opportunities` ranks confirmed files by what their pending drawdown
+    is worth after the 80% net haircut. This is the queue to work.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionAnalyticsService(db, company_id).pipeline(f, limit)
+
+
+@router.get("/sources", response_model=SourcesOut)
+async def sources(
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    f: Filters = Depends(_filters),
+):
+    """Which channels create revenue, measured on money not lead count.
+
+    `students` counts only students who have actually disbursed.
+
+    Unattributed comes back in its own field rather than inside `sources`.
+    It is the largest single bucket on this book, and ranking it among
+    real marketing channels would be misleading — render it as a footer
+    row, not a winner.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionAnalyticsService(db, company_id).sources(f)
+
+
+@router.get("/exceptions", response_model=ExceptionsOut)
+async def exceptions(
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    f: Filters = Depends(_filters),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """Records to fix, each naming the student it belongs to.
+
+    `data_quality` on the dashboard counts these; this lists them so
+    somebody can act. Sorted by severity then by the money at stake.
+
+    One record can trip several rules and each is a separate fix, so each
+    becomes its own row — which is why the count per `code` matches the
+    matching counter in `data_quality`.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionAnalyticsService(db, company_id).exceptions(f, limit)
+
+
+@router.get("/drilldown", response_model=DrilldownOut)
+async def drilldown(
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    segment: str = Query(
+        ...,
+        description="stage | lender | ageing_bucket | source | funnel_step",
+    ),
+    value: str = Query(..., description="The segment's value, e.g. 'UC Axis' or 'over_90'."),
+    f: Filters = Depends(_filters),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    """The students behind any segment on the dashboard.
+
+    One endpoint for every panel: the answer has the same shape whichever
+    segment was clicked, and a drill-down per panel would drift the way
+    the outstanding formula once did.
+
+    Returns TWO counts. `total` is students; `tranche_total` is tranches
+    within this segment. The ageing and by-lender panels count tranches
+    while the stage funnel counts students, so showing both is what stops
+    a drill-down appearing to contradict the number that was clicked.
+
+    `value` for a source is the source id, or the literal `unattributed`.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionAnalyticsService(db, company_id).drilldown(
+        segment, value, f, page, page_size,
+    )
 
 
 @router.get("/settings", response_model=NetTheoreticalFactorOut)

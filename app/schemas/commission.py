@@ -375,3 +375,144 @@ class ReconciliationDashboardOut(BaseModel):
     by_lender: list[LenderDebtRow] = []
     ageing: AgeingOut
     data_quality: DataQualityOut
+
+
+# ── Operating layer: pipeline, sources, exceptions, drill-down ─────────
+
+
+class StageFunnelRow(BaseModel):
+    """One pipeline stage, by student count AND by value.
+
+    Grouped by the LEAD's stage, not by lender-file status: the question
+    is where a STUDENT sits, and a student with three lender files sits in
+    exactly one place.
+    """
+    stage: str = ""
+    leads: int = 0
+    sanctioned: Decimal = Decimal("0")
+    disbursed: Decimal = Decimal("0")
+
+
+class RevenueBridgeOut(BaseModel):
+    """Commission already booked, against commission still unlockable.
+
+    `unlockable` is a FLOOR: files whose lender has no configured rate are
+    excluded rather than counted as zero, and `files_missing_rate` says
+    how many. Say "at least" in front of it when that count is non-zero.
+    """
+    booked: Decimal = Decimal("0")
+    unlockable: Decimal = Decimal("0")
+    undrawn_total: Decimal = Decimal("0")
+    drawn_pct: float = 0.0
+    files_missing_rate: int = 0
+
+
+class OpportunityRow(BaseModel):
+    """A confirmed file with money still to draw, ranked by what it is worth.
+
+    `potential_net_revenue` already has the 80% net-theoretical haircut
+    applied — it is what FMC realistically keeps, not the gross rate on
+    the pending amount.
+    """
+    lead_id: uuid.UUID
+    serial_no: int | None = None
+    full_name: str = ""
+    stage: str = ""
+    bank_name: str = ""
+    sanctioned: Decimal = Decimal("0")
+    disbursed: Decimal = Decimal("0")
+    pending: Decimal = Decimal("0")
+    potential_net_revenue: Decimal = Decimal("0")
+
+
+class PipelineOut(BaseModel):
+    stage_funnel: list[StageFunnelRow] = []
+    revenue_bridge: RevenueBridgeOut
+    opportunities: list[OpportunityRow] = []
+
+
+class SourceRow(BaseModel):
+    """One lead source, measured on money rather than on lead count.
+
+    `students` counts only students who have actually disbursed. Counting
+    every lead carrying the source instead makes unattributed read as
+    8,651 students earning Rs 83 each — a number nobody can act on.
+    """
+    source_id: uuid.UUID | None = None
+    source_name: str = ""
+    students: int = 0
+    tranches: int = 0
+    disbursed_total: Decimal = Decimal("0")
+    commission_total: Decimal = Decimal("0")
+    collected_total: Decimal = Decimal("0")
+    revenue_per_student: Decimal = Decimal("0")
+    collected_pct: float = 0.0
+    share_of_disbursed_pct: float = 0.0
+
+
+class SourcesOut(BaseModel):
+    """Attributed channels, ranked — and unattributed, kept apart.
+
+    Unattributed is returned SEPARATELY and deliberately not ranked among
+    real channels. On FMC's book it is the single largest bucket (~40% of
+    disbursement), and letting it head a league table of marketing
+    channels would be actively misleading. Render it as a footer row.
+    """
+    sources: list[SourceRow] = []
+    unattributed: SourceRow | None = None
+
+
+class ExceptionRow(BaseModel):
+    """One record to fix, naming the student it belongs to.
+
+    A single tranche or file can trip more than one rule and each is a
+    separate thing to fix, so each becomes its own row. That is why the
+    row count per `code` matches the matching counter in `data_quality`.
+    """
+    severity: str = ""          # high | medium | low
+    code: str = ""
+    issue: str = ""
+    why: str = ""
+    lead_id: uuid.UUID
+    serial_no: int | None = None
+    full_name: str = ""
+    bank_name: str | None = None
+    amount: Decimal | None = None
+
+
+class ExceptionsOut(BaseModel):
+    total: int = 0
+    by_code: dict[str, int] = {}
+    items: list[ExceptionRow] = []
+    truncated: bool = False
+
+
+class DrilldownRow(BaseModel):
+    lead_id: uuid.UUID
+    serial_no: int | None = None
+    full_name: str = ""
+    stage: str | None = None
+    bank_name: str | None = None
+    sanctioned: Decimal = Decimal("0")
+    disbursed: Decimal = Decimal("0")
+    earned: Decimal = Decimal("0")
+    collected: Decimal = Decimal("0")
+    outstanding: Decimal = Decimal("0")
+
+
+class DrilldownOut(BaseModel):
+    """The students behind any segment of the dashboard.
+
+    TWO counts, because the panels do not all count the same thing:
+    `total` is STUDENTS, `tranche_total` is TRANCHES within this segment.
+    The ageing and by-lender panels count tranches; the stage funnel counts
+    students. Show both — "17 students · 22 tranches" — so the drill-down
+    never appears to contradict the segment that was clicked.
+    """
+    segment: str = ""
+    value: str = ""
+    total: int = 0
+    tranche_total: int = 0
+    page: int = 1
+    page_size: int = 50
+    items: list[DrilldownRow] = []
