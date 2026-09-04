@@ -111,43 +111,62 @@ parked this way. Flag them for someone to move.
 
 ---
 
-## 4. 🟢 NEW PAGE — the analytics dashboard
+## 4. 🟢 NEW — the Loan Intelligence dashboard (six tabs)
 
-Full brief with mockups: **`docs/RECONCILIATION_DASHBOARD_FRONTEND_PROMPT.md`**.
-Read that one for the layout; this is the summary.
+Full brief: **`docs/RECONCILIATION_DASHBOARD_FRONTEND_PROMPT.md`**.
+Built against Amit's design at
+`fundmycampus-loan-analytics.nishuash.chatgpt.site`. This is the summary;
+read that one before starting.
 
-```http
-GET /api/v1/reconciliation/dashboard?months=12
-```
+Six tabs — Overview · Pipeline & Forecast · Revenue & Collections ·
+Lender Performance · Source Performance · Data Control Centre — with
+global filters and **every segment clickable to open the students behind
+it.**
 
-Admin only, FMC only, one call, cached 60s. Six panels in five rows:
+| Endpoint | Tab |
+|---|---|
+| `GET /reconciliation/dashboard?months=12` | Overview |
+| `GET /reconciliation/pipeline` | Pipeline & Forecast |
+| `GET /reconciliation/summary` *(existing)* | Lender Performance |
+| `GET /reconciliation/sources` | Source Performance |
+| `GET /reconciliation/exceptions` | Data Control Centre |
+| `GET /reconciliation/drilldown?segment=&value=` | every clickable segment |
 
-```
-ROW 1  FUNNEL     ₹48.53cr → ₹39.32cr → ₹15.16cr → ₹19.83L → ₹13.10L
-                  sanctioned  confirmed  disbursed   earned   collected
-ROW 2  AHEAD      ₹24.44cr undrawn → ₹23,71,858 commission
-       OWED       ₹6,72,784 across 17 lenders
-ROW 3  TREND      earned vs collected, monthly
-ROW 4  LENDERS    who owes what   │   AGEING 0-30/31-60/61-90/90+/no date
-ROW 5  ATTENTION  the counters that say why a number might be wrong
-```
+All admin-only, FMC-only, all taking the same five filters:
+`bank_name` · `source_id` · `disbursed_from` · `disbursed_to` · `as_of`
+(the first two repeatable). Hold filter state in ONE object.
 
-Four traps, all covered in the full brief:
+**Build drill-down first.** It is the idea the whole design rests on, and
+it returns TWO counts — `total` (students) and `tranche_total` (tranches
+in that segment) — because ageing and by-lender count tranches while the
+stage funnel counts students. Header the drawer "41 students · 46
+tranches" or it will look like it contradicts what was clicked.
+
+### Six traps, all covered in the full brief
 
 1. Funnel percentages are **step-to-step**, not against the top.
-2. The trend's two series use **different dates** — earned by disbursement
-   month, collected by receipt month. Do not reconcile a single month's
-   two bars.
+2. The trend's two series use **different dates** — earned by
+   disbursement month, collected by receipt month. Do not reconcile a
+   single month's two bars.
 3. **`no_date` is a real ageing bucket** holding 56% of everything
    outstanding. Render it or the panel lies.
 4. Show **`tranches_materially_short` (4)**, not `tranches_short` (71).
-   The difference is rounding. A tile reading "71 lenders underpaid us" is
-   wrong and will be ignored.
+   The rest is rounding.
+5. **Sources: unattributed is a separated footer row, never ranked.** It
+   is ~40% of disbursement; heading a marketing league table with it
+   would be misleading.
+6. `potential_net_revenue` already has the 80% haircut applied. Do not
+   multiply again.
 
-**No invoicing anywhere on this page** — `invoice_service` never touches
-disbursements, so `invoice_id` is only ever set by a direct database write
-and `billed` is unreachable through the API. FMC bills outside the CRM.
-Do not add an "unbilled" tile.
+### Two controls in the mockup that cannot be built yet
+
+- **"All closure months"** — no such field outside the spreadsheet. Label
+  the control **"Disbursement month"** and drive it off
+  `disbursed_from`/`disbursed_to`. A real `expected_closure_month` field
+  is planned.
+- **"invoiced" in Cash Control** — no invoiced figure exists. FMC bills
+  outside the CRM. Show earned, collected, outstanding. No invoiced
+  column, no "unbilled" tile.
 
 ---
 
@@ -157,7 +176,7 @@ Do not add an "unbilled" tile.
 |---|---|---|
 | 1 | §1 PF Paid date field | A stage is unreachable today |
 | 2 | §2 F4 · F5 · F3 | Stops the ₹1.36 cr class of error at source |
-| 3 | §4 the dashboard | The new page |
+| 3 | §4 the dashboard | Six tabs; build drill-down first |
 | 4 | §3 B3/A3 GST column | Explains the outstanding figure |
 | 5 | §3 E4/E1 tranche editing | A wrong rate needs a DB write today |
 | 6 | §3 G4 · G2 · A2 | Cleanups |
