@@ -226,3 +226,152 @@ class NetTheoreticalFactorIn(BaseModel):
 
 class NetTheoreticalFactorOut(BaseModel):
     net_theoretical_factor: Decimal
+
+
+# ── Analytics dashboard ────────────────────────────────────────────────
+# Money stays Decimal, matching the rest of this module. Counts are int
+# and percentages float, matching app/schemas/report.py. Every field has a
+# default so a partially-populated panel still validates rather than 500ing
+# a whole dashboard over one empty table.
+
+
+class FunnelOut(BaseModel):
+    """Sanctioned -> confirmed -> disbursed -> earned -> collected.
+
+    `confirmed` means the student paid the processing fee: FMC's proof the
+    loan is real and which lender won it. A sanction without a PF is an
+    offer, so the two are reported separately and never summed.
+
+    Amounts are RUPEES. Percentages are each step against the one before,
+    not against the top — that is what makes a weak step visible.
+    """
+    sanctioned_total: Decimal = Decimal("0")
+    sanctioned_files: int = 0
+    confirmed_total: Decimal = Decimal("0")
+    confirmed_files: int = 0
+    disbursed_total: Decimal = Decimal("0")
+    tranches: int = 0
+    earned_total: Decimal = Decimal("0")
+    collected_total: Decimal = Decimal("0")
+    outstanding_total: Decimal = Decimal("0")
+    confirmed_pct_of_sanctioned: float = 0.0
+    disbursed_pct_of_confirmed: float = 0.0
+    collected_pct_of_earned: float = 0.0
+
+
+class PipelineAheadOut(BaseModel):
+    """Commission on money already approved but not yet released.
+
+    Education loans draw down semester by semester, so a confirmed file
+    keeps earning for years. `future_commission` is a FLOOR, not an
+    estimate: files whose lender has no configured rate are excluded
+    rather than counted as zero, and `files_missing_rate` says how many.
+    """
+    confirmed_files: int = 0
+    sanctioned_total: Decimal = Decimal("0")
+    drawn_total: Decimal = Decimal("0")
+    undrawn_total: Decimal = Decimal("0")
+    future_commission: Decimal = Decimal("0")
+    drawn_pct: float = 0.0
+    files_missing_rate: int = 0
+
+
+class MonthPoint(BaseModel):
+    """One month. `earned` is by disbursement date, `collected` by receipt date.
+
+    They are different dates on purpose — a tranche earned in June and
+    paid in August appears in both months, in different columns. Months
+    with no activity on either side are absent, not zero-filled, and
+    tranches with no date appear in NO month (see data_quality).
+    """
+    month: str = ""          # "YYYY-MM"
+    tranches: int = 0
+    disbursed: Decimal = Decimal("0")
+    earned: Decimal = Decimal("0")
+    collected: Decimal = Decimal("0")
+
+
+class LenderDebtRow(BaseModel):
+    """One lender's book. Ordered by what is outstanding, then by size."""
+    bank_name: str = ""
+    tranches: int = 0
+    disbursed_total: Decimal = Decimal("0")
+    earned_total: Decimal = Decimal("0")
+    collected_total: Decimal = Decimal("0")
+    outstanding_total: Decimal = Decimal("0")
+    collected_pct: float = 0.0
+
+
+class AgeingBucket(BaseModel):
+    """`bucket` is one of 0_30 | 31_60 | 61_90 | over_90 | no_date."""
+    bucket: str = ""
+    tranches: int = 0
+    outstanding: Decimal = Decimal("0")
+
+
+class AgeingOut(BaseModel):
+    """Outstanding commission by age. Settled rows are excluded entirely.
+
+    `no_date` is a real bucket, not a rounding error: a tranche with no
+    disbursement date cannot be aged, and on FMC's book that is the
+    majority of everything outstanding. Render it — a panel that hides it
+    understates the debt by more than half.
+
+    `total_outstanding` can exceed `funnel.outstanding_total` by a few
+    rupees and that is correct, not a bug: this sums per-row shortfall,
+    which floors at zero, so a lender that OVERPAID one tranche cannot
+    quietly cancel out what it owes on another. The funnel reports the net
+    position; this reports what is actually chaseable.
+    """
+    buckets: list[AgeingBucket] = []
+    total_outstanding: Decimal = Decimal("0")
+    undateable_outstanding: Decimal = Decimal("0")
+    undateable_pct: float = 0.0
+
+
+class DataQualityOut(BaseModel):
+    """Why a figure above might be wrong. Show it; do not tuck it away.
+
+    Three different things, kept apart on purpose:
+    `tranches_awaiting_payment` is nothing received at all;
+    `tranches_short` is paid but light; and `tranches_materially_short`
+    narrows that to over Rs 100 AND over 2% of what is due. The gap
+    between the last two is rounding between the lender's arithmetic and
+    ours, and it is usually most of the first number — collapsing all
+    three into one figure reads as "every lender underpaid us".
+
+    `files_on_aggregator` are files parked on UniCred / Nomad / Axis
+    rather than the specific route beneath. An aggregator fronts several
+    banks at different rates, so it has none of its own and such a file
+    can never earn until it is moved.
+    """
+    tranches: int = 0
+    tranches_without_date: int = 0
+    payments_without_receipt_date: int = 0
+    tranches_with_tds: int = 0
+    tranches_awaiting_payment: int = 0
+    tranches_short: int = 0
+    tranches_materially_short: int = 0
+    tranches_written_off: int = 0
+    tranches_earning_nothing: int = 0
+    live_files: int = 0
+    files_without_sanctioned_amount: int = 0
+    files_that_cannot_be_priced: int = 0
+    files_on_aggregator: int = 0
+
+
+class ReconciliationDashboardOut(BaseModel):
+    """The whole dashboard in one response.
+
+    Deliberately carries NO invoice figures. invoice_service never touches
+    bank_disbursements, so invoice_id is only ever set by a direct write
+    and the `billed` status is unreachable through the API — FMC raises
+    its bills outside the CRM. An "unbilled" number here would report a
+    gap that is really a workflow living elsewhere.
+    """
+    funnel: FunnelOut
+    pipeline_ahead: PipelineAheadOut
+    monthly: list[MonthPoint] = []
+    by_lender: list[LenderDebtRow] = []
+    ageing: AgeingOut
+    data_quality: DataQualityOut

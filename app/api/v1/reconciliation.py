@@ -24,7 +24,9 @@ from app.core.exceptions import BadRequestError, NotFoundError
 from app.models.profile import Profile
 from app.models.lead_bank import LeadBank
 from app.services.commission_service import CommissionService
+from app.services.commission_analytics_service import CommissionAnalyticsService
 from app.schemas.commission import (
+    ReconciliationDashboardOut,
     DisbursementCreate, DisbursementUpdate, DisbursementOut,
     ReconciliationOut, LenderSummaryRow, GrossTheoreticalOut,
     NetTheoreticalFactorIn, NetTheoreticalFactorOut,
@@ -122,6 +124,39 @@ async def gross_theoretical(
     """
     await _require_fmc(db, company_id)
     return await CommissionService(db, company_id).revenue_vs_theoretical()
+
+
+@router.get("/dashboard", response_model=ReconciliationDashboardOut)
+async def dashboard(
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+    months: int = Query(
+        12, ge=1, le=24,
+        description="How many months of the earned-vs-collected trend to return.",
+    ),
+):
+    """The commission book at a glance — six panels, one round trip.
+
+    funnel          approved -> PF confirmed -> disbursed -> earned -> collected
+    pipeline_ahead  commission on money approved but not yet released
+    monthly         earned by disbursement month vs collected by receipt month
+    by_lender       who owes what, biggest debt first
+    ageing          outstanding by age, with an explicit no-date bucket
+    data_quality    the counters that say why a figure might be wrong
+
+    No filters: every panel is the whole book by definition. Use
+    `GET /reconciliation` when you want to slice.
+
+    Read `data_quality` before quoting anything. Tranches with no
+    disbursement date sit in no month and in the `no_date` ageing bucket,
+    and on a book where that is most of the outstanding balance the trend
+    line alone will mislead.
+
+    Carries no invoice figures deliberately — see the response schema.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionAnalyticsService(db, company_id).dashboard(months)
 
 
 @router.get("/settings", response_model=NetTheoreticalFactorOut)
