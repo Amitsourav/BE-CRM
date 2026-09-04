@@ -47,6 +47,27 @@ class CommissionService:
         self.db = db
         self.company_id = company_id
 
+    # ── Deleted leads ──────────────────────────────────────────────────
+
+    def _live_leads(self):
+        """Ids of this tenant's leads that have not been deleted.
+
+        Leads are SOFT-deleted (`is_deleted`), so the CASCADE on
+        `bank_disbursements.lead_id` never fires and a deleted student's
+        money went on counting in every total. Deleting a lead and
+        watching the figures not move is how FMC ended up chasing a
+        Rs 3.22 L disbursement belonging to a student who had been
+        removed — three separate times in two days.
+
+        A subquery rather than a join so it can be dropped into an
+        existing `where` without disturbing the shape of the query it
+        guards.
+        """
+        return select(Lead.id).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+        )
+
     # ── Recording ──────────────────────────────────────────────────────
 
     async def record_disbursement(
@@ -92,6 +113,14 @@ class CommissionService:
                 f"rate for this one disbursement."
             )
 
+        # A lender cannot release more than it approved. Nothing stopped
+        # it before, and two files went out over their own sanction — one
+        # by Rs 1 L — because the "PF Paid" screen takes a typed figure
+        # and the sanctioned amount was never consulted. Skipped when the
+        # file carries no sanctioned amount, since there is then nothing
+        # to check against.
+        await self._assert_within_sanction(entry, Decimal(disbursed_amount))
+
         if tranche_no is None:
             tranche_no = (await self.db.execute(
                 select(func.coalesce(func.max(BankDisbursement.tranche_no), 0) + 1)
@@ -126,6 +155,33 @@ class CommissionService:
             await self.db.commit()
             await self.db.refresh(row)
         return row
+
+    async def _assert_within_sanction(
+        self, entry: LeadBank, adding: Decimal, exclude_id=None,
+    ) -> None:
+        """Refuse a tranche that would take the file past its sanction.
+
+        `exclude_id` is the row being edited, so correcting an existing
+        tranche is measured against the others rather than against itself.
+        """
+        if entry.loan_amount is None:
+            return
+        q = select(func.coalesce(func.sum(BankDisbursement.disbursed_amount), 0)).where(
+            BankDisbursement.lead_bank_id == entry.id
+        )
+        if exclude_id is not None:
+            q = q.where(BankDisbursement.id != exclude_id)
+        already = Decimal(str((await self.db.execute(q)).scalar() or 0))
+        total = already + adding
+        if total > Decimal(entry.loan_amount):
+            raise BadRequestError(
+                f"That would make {entry.bank_name} disburse "
+                f"Rs {total:,.2f} against a sanction of "
+                f"Rs {Decimal(entry.loan_amount):,.2f}. A lender cannot "
+                f"release more than it approved — check whether this is "
+                f"the amount actually released, or whether the sanctioned "
+                f"amount on the file needs correcting."
+            )
 
     async def has_disbursement(self, lead_bank_id: uuid.UUID) -> bool:
         """Whether this file already has any tranche recorded.
@@ -192,6 +248,17 @@ class CommissionService:
         if payload.get("disbursed_amount") is not None:
             if Decimal(payload["disbursed_amount"]) <= 0:
                 raise BadRequestError("Disbursed amount must be greater than 0.")
+            # Same ceiling the insert path enforces. Measured against the
+            # file's OTHER tranches, so raising this one is checked against
+            # what is left of the sanction rather than against itself.
+            entry = (await self.db.execute(
+                select(LeadBank).where(LeadBank.id == row.lead_bank_id)
+            )).scalar_one_or_none()
+            if entry is not None:
+                await self._assert_within_sanction(
+                    entry, Decimal(payload["disbursed_amount"]),
+                    exclude_id=row.id,
+                )
             row.disbursed_amount = Decimal(payload["disbursed_amount"])
         if payload.get("commission_rate") is not None:
             row.commission_rate = Decimal(payload["commission_rate"])
@@ -275,7 +342,10 @@ class CommissionService:
 
         base = (
             select(BankDisbursement)
-            .where(BankDisbursement.company_id == self.company_id)
+            .where(
+                BankDisbursement.company_id == self.company_id,
+                BankDisbursement.lead_id.in_(self._live_leads()),
+            )
         )
         if bank_name:
             base = base.where(BankDisbursement.bank_name.in_(bank_name))
@@ -383,7 +453,10 @@ class CommissionService:
                 # last so the existing positional indices don't shift.
                 func.coalesce(func.sum(BankDisbursement.gst_amount), 0),
             )
-            .where(BankDisbursement.company_id == self.company_id)
+            .where(
+                BankDisbursement.company_id == self.company_id,
+                BankDisbursement.lead_id.in_(self._live_leads()),
+            )
             .group_by(BankDisbursement.bank_name)
             .order_by(func.sum(BankDisbursement.commission_amount).desc())
         )).all()
@@ -405,6 +478,7 @@ class CommissionService:
             .where(
                 LeadBank.company_id == self.company_id,
                 LeadBank.bank_status.in_(self._REVENUE_ELIGIBLE_STATUSES),
+                LeadBank.lead_id.in_(self._live_leads()),
             )
             .group_by(LeadBank.bank_name)
         )).all()
@@ -502,6 +576,7 @@ class CommissionService:
         base = select(LeadBank).where(
             LeadBank.company_id == self.company_id,
             LeadBank.bank_status.in_(self._REVENUE_ELIGIBLE_STATUSES),
+            LeadBank.lead_id.in_(self._live_leads()),
         )
         if bank_name:
             base = base.where(LeadBank.bank_name.in_(bank_name))

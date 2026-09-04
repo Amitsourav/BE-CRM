@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bank import Bank
 from app.models.bank_disbursement import BankDisbursement
+from app.models.lead import Lead
 from app.models.lead_bank import LeadBank
 
 # A lender file only counts once the student has paid the processing fee.
@@ -109,6 +110,17 @@ class CommissionAnalyticsService:
         self.db = db
         self.company_id = company_id
 
+    def _live_leads(self):
+        """Ids of leads that still exist. See CommissionService._live_leads.
+
+        Leads are soft-deleted, so without this a removed student's money
+        keeps arriving in every panel.
+        """
+        return select(Lead.id).where(
+            Lead.company_id == self.company_id,
+            Lead.is_deleted == False,  # noqa: E712
+        )
+
     # ── The funnel: approved -> confirmed -> released -> earned -> banked
 
     async def funnel(self) -> dict:
@@ -131,6 +143,7 @@ class CommissionAnalyticsService:
             ).where(
                 LeadBank.company_id == self.company_id,
                 LeadBank.loan_amount.isnot(None),
+                LeadBank.lead_id.in_(self._live_leads()),
             )
         )).one()
         sanctioned, confirmed, n_live, n_confirmed = s
@@ -141,7 +154,10 @@ class CommissionAnalyticsService:
                 func.coalesce(func.sum(BankDisbursement.disbursed_amount), 0),
                 func.coalesce(func.sum(BankDisbursement.total_due), 0),
                 func.coalesce(func.sum(BankDisbursement.total_settled), 0),
-            ).where(BankDisbursement.company_id == self.company_id)
+            ).where(
+                BankDisbursement.company_id == self.company_id,
+                BankDisbursement.lead_id.in_(self._live_leads()),
+            )
         )).one()
         tranches, disbursed, earned, collected = d
 
@@ -182,7 +198,10 @@ class CommissionAnalyticsService:
                 BankDisbursement.lead_bank_id.label("lb"),
                 func.sum(BankDisbursement.disbursed_amount).label("drawn"),
             )
-            .where(BankDisbursement.company_id == self.company_id)
+            .where(
+                BankDisbursement.company_id == self.company_id,
+                BankDisbursement.lead_id.in_(self._live_leads()),
+            )
             .group_by(BankDisbursement.lead_bank_id)
             .subquery()
         )
@@ -208,6 +227,7 @@ class CommissionAnalyticsService:
                 LeadBank.company_id == self.company_id,
                 LeadBank.bank_status.in_(_CONFIRMED),
                 LeadBank.loan_amount.isnot(None),
+                LeadBank.lead_id.in_(self._live_leads()),
             )
         )).one()
         files, sanctioned, drawn_total, undrawn, future, no_rate = r
@@ -246,6 +266,7 @@ class CommissionAnalyticsService:
             )
             .where(
                 BankDisbursement.company_id == self.company_id,
+                BankDisbursement.lead_id.in_(self._live_leads()),
                 BankDisbursement.disbursed_on.isnot(None),
             )
             .group_by(m_disb)
@@ -259,6 +280,7 @@ class CommissionAnalyticsService:
             )
             .where(
                 BankDisbursement.company_id == self.company_id,
+                BankDisbursement.lead_id.in_(self._live_leads()),
                 BankDisbursement.received_on.isnot(None),
             )
             .group_by(m_recd)
@@ -297,7 +319,10 @@ class CommissionAnalyticsService:
                 func.coalesce(func.sum(BankDisbursement.total_settled), 0),
                 func.coalesce(func.sum(BankDisbursement.shortfall), 0),
             )
-            .where(BankDisbursement.company_id == self.company_id)
+            .where(
+                BankDisbursement.company_id == self.company_id,
+                BankDisbursement.lead_id.in_(self._live_leads()),
+            )
             .group_by(BankDisbursement.bank_name)
         )).all()
         return sorted(
@@ -348,6 +373,7 @@ class CommissionAnalyticsService:
             )
             .where(
                 BankDisbursement.company_id == self.company_id,
+                BankDisbursement.lead_id.in_(self._live_leads()),
                 BankDisbursement.shortfall > 0,
                 BankDisbursement.write_off_reason.is_(None),
             )
@@ -420,7 +446,10 @@ class CommissionAnalyticsService:
                 func.count().filter(
                     BankDisbursement.write_off_reason.isnot(None)),
                 func.count().filter(BankDisbursement.earns_commission.is_(False)),
-            ).where(BankDisbursement.company_id == self.company_id)
+            ).where(
+                BankDisbursement.company_id == self.company_id,
+                BankDisbursement.lead_id.in_(self._live_leads()),
+            )
         )).one()
 
         f = (await self.db.execute(
@@ -438,6 +467,7 @@ class CommissionAnalyticsService:
             .where(
                 LeadBank.company_id == self.company_id,
                 LeadBank.bank_status.in_(_LIVE),
+                LeadBank.lead_id.in_(self._live_leads()),
             )
         )).one()
 

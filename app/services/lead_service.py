@@ -1478,6 +1478,32 @@ class LeadService:
                 raise BadRequestError(
                     f"bank_status must be one of {sorted(self._BANK_VALID_STATUSES)} (got '{new_status}')."
                 )
+            # A file that has released money is not a file we lost.
+            #
+            # Marking one lost used to leave every tranche behind, still
+            # counting toward disbursement, commission and what a lender
+            # owes. It happened three times in two days on FMC's book —
+            # an Avanse file closed with Rs 13 L of disbursement still
+            # attached, and two more besides — and each time the figures
+            # simply did not move, so nobody noticed.
+            #
+            # Refused rather than cascaded: deleting someone's money as a
+            # side effect of a dropdown is worse than making them say what
+            # they meant. If the tranche was wrong, remove it first; if it
+            # was real, the file is not lost.
+            if new_status == "lost" and entry.bank_status != "lost":
+                from app.services.commission_service import CommissionService
+                if await CommissionService(
+                    self.db, self.company_id
+                ).has_disbursement(entry.id):
+                    raise BadRequestError(
+                        f"'{entry.bank_name}' has disbursements recorded "
+                        f"against it, so it cannot be marked lost — the "
+                        f"money would keep counting toward commission with "
+                        f"no live file behind it. Delete the tranches first "
+                        f"if they were recorded in error, or leave the file "
+                        f"as it is if the lender really did release funds."
+                    )
             # PF paid means a fee was paid against a specific sanctioned
             # amount, so the amount is part of the claim, not an optional
             # extra. Accepted from this payload OR already on the row, so
