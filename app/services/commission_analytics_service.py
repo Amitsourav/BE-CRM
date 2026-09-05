@@ -38,7 +38,7 @@ from dataclasses import dataclass, field as dc_field
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select, func, case, and_, or_
+from sqlalchemy import select, func, case, and_, or_, cast, literal, Date
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import BadRequestError
@@ -202,7 +202,16 @@ class CommissionAnalyticsService:
         return w
 
     def _as_of(self, f: Filters | None):
-        return func.cast(f.as_of, date) if (f and f.as_of) else func.current_date()
+        """The date ageing is measured from — the filter's, or today.
+
+        `cast(literal(...), Date)` rather than handing Postgres a bare
+        Python date: the value is subtracted from a DATE column, and
+        without the explicit cast the driver cannot tell what type it is
+        binding.
+        """
+        if f and f.as_of:
+            return cast(literal(f.as_of), Date)
+        return func.current_date()
 
     def _drawn_subq(self, f: Filters | None = None):
         """Tranche total per lender file. Every drawdown figure reads this."""
