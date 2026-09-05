@@ -133,7 +133,7 @@ it.**
 | `GET /reconciliation/drilldown?segment=&value=` | every clickable segment |
 
 All admin-only, FMC-only, all taking the same five filters:
-`bank_name` · `source_id` · `disbursed_from` · `disbursed_to` · `as_of`
+`bank_name` · `source_id` · `disbursed_from` · `disbursed_to`
 (the first two repeatable). Hold filter state in ONE object.
 
 **Build drill-down first.** It is the idea the whole design rests on, and

@@ -38,7 +38,7 @@ from dataclasses import dataclass, field as dc_field
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select, func, case, and_, or_, cast, literal, Date
+from sqlalchemy import select, func, case, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import BadRequestError
@@ -88,16 +88,12 @@ class Filters:
     source_id: list[uuid.UUID] = dc_field(default_factory=list)
     disbursed_from: date | None = None
     disbursed_to: date | None = None
-    # Ageing is measured against this rather than against today, so a
-    # month-end view can be reproduced later instead of drifting every
-    # time someone opens it.
-    as_of: date | None = None
 
     def cache_key(self) -> tuple:
         return (
             tuple(sorted(self.bank_name)),
             tuple(sorted(str(s) for s in self.source_id)),
-            self.disbursed_from, self.disbursed_to, self.as_of,
+            self.disbursed_from, self.disbursed_to,
         )
 
 
@@ -200,18 +196,6 @@ class CommissionAnalyticsService:
         if f and f.bank_name:
             w.append(LeadBank.bank_name.in_(f.bank_name))
         return w
-
-    def _as_of(self, f: Filters | None):
-        """The date ageing is measured from — the filter's, or today.
-
-        `cast(literal(...), Date)` rather than handing Postgres a bare
-        Python date: the value is subtracted from a DATE column, and
-        without the explicit cast the driver cannot tell what type it is
-        binding.
-        """
-        if f and f.as_of:
-            return cast(literal(f.as_of), Date)
-        return func.current_date()
 
     def _drawn_subq(self, f: Filters | None = None):
         """Tranche total per lender file. Every drawdown figure reads this."""
@@ -444,7 +428,7 @@ class CommissionAnalyticsService:
             everything outstanding, and a report that quietly omitted it
             would understate the debt by more than half.
         """
-        age = self._as_of(f) - BankDisbursement.disbursed_on
+        age = func.current_date() - BankDisbursement.disbursed_on
         bucket = case(
             (BankDisbursement.disbursed_on.is_(None), "no_date"),
             (age <= 30, "0_30"),
@@ -961,7 +945,7 @@ class CommissionAnalyticsService:
             )
 
         elif segment == "ageing_bucket":
-            age = self._as_of(f) - BankDisbursement.disbursed_on
+            age = func.current_date() - BankDisbursement.disbursed_on
             cond = {
                 "no_date": BankDisbursement.disbursed_on.is_(None),
                 "0_30": and_(BankDisbursement.disbursed_on.isnot(None), age <= 30),

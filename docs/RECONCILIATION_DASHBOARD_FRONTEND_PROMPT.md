@@ -39,14 +39,13 @@ crore of wrong figures before it was caught.
 
 ## 2. Global filters — one set, every tab
 
-Every endpoint below takes the same five, as repeatable query params:
+Every endpoint below takes the same four, as repeatable query params:
 
 | Param | |
 |---|---|
 | `bank_name` | repeatable — matches any of the supplied lenders |
 | `source_id` | repeatable — matches any of the supplied lead sources |
 | `disbursed_from` / `disbursed_to` | date range on the disbursement date |
-| `as_of` | ageing measured against this date instead of today |
 
 Hold the filter state in ONE object and spread it into every call. Passing
 none means the whole book.
@@ -321,6 +320,7 @@ lender's arithmetic and ours — 67 of the 71 are trivial. A tile reading
 ## Acceptance
 
 - [ ] One filter object drives every tab; no filter = whole book
+- [ ] Ageing is always measured from today — there is no as-of control
 - [ ] Month control is labelled **"Disbursement month"**, not closure
 - [ ] No invoiced column anywhere
 - [ ] Every segment is clickable and opens the drill-down drawer

@@ -68,14 +68,6 @@ def _filters(
     ),
     disbursed_from: date | None = Query(None),
     disbursed_to: date | None = Query(None),
-    as_of: date | None = Query(
-        None,
-        description=(
-            "Ageing is measured against this date instead of today, so a "
-            "month-end view can be reproduced later rather than drifting "
-            "every time it is opened."
-        ),
-    ),
 ) -> Filters:
     """The one filter set every analytics panel honours.
 
@@ -89,7 +81,6 @@ def _filters(
         source_id=source_id or [],
         disbursed_from=disbursed_from,
         disbursed_to=disbursed_to,
-        as_of=as_of,
     )
 
 
