@@ -386,6 +386,11 @@ class StageFunnelRow(BaseModel):
     Grouped by the LEAD's stage, not by lender-file status: the question
     is where a STUDENT sits, and a student with three lender files sits in
     exactly one place.
+
+    The last row is always `other` — every stage outside the four loan
+    stages. It is usually not empty and should be rendered, muted, below
+    the funnel: money on a lead at `created` or `lost` is real money the
+    funnel would otherwise drop. The rows always sum to the funnel totals.
     """
     stage: str = ""
     leads: int = 0
@@ -443,8 +448,16 @@ class SourceRow(BaseModel):
     students: int = 0
     tranches: int = 0
     disbursed_total: Decimal = Decimal("0")
+    # commission EX GST
     commission_total: Decimal = Decimal("0")
+    # commission + GST — the same definition LenderDebtRow.earned_total
+    # uses, so the two tabs can be compared. Both are returned because
+    # they answer different questions, but "revenue" must not silently
+    # mean one thing here and another there.
+    earned_total: Decimal = Decimal("0")
     collected_total: Decimal = Decimal("0")
+    # On commission ex GST — GST is collected for the government, not
+    # earned per student.
     revenue_per_student: Decimal = Decimal("0")
     collected_pct: float = 0.0
     share_of_disbursed_pct: float = 0.0

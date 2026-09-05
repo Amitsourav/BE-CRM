@@ -183,6 +183,14 @@ GET /api/v1/reconciliation/pipeline?limit=20&<filters>
 Counts STUDENTS by lead stage. Show value, not just headcount — a stalled
 stage matters as money. Each bar → `drilldown?segment=stage&value=pf_paid`.
 
+> **The last row is always `other`** — every stage outside the four loan
+> stages, and on this book it is not small: ₹1.41 cr disbursed and ₹4.86
+> cr sanctioned belonging to students still reading `created`, `dnp`,
+> `contacted` or `lost`. **Render it, muted, below the funnel.** The rows
+> always sum to the funnel totals, and dropping it would silently lose
+> real money from the chart. Those students also appear individually in
+> the exception register under `money_on_prestage`.
+
 ### Revenue bridge — booked vs unlockable
 
 ```jsonc
@@ -271,7 +279,9 @@ GET /api/v1/reconciliation/sources?<filters>
   "sources": [
     { "source_id": "...", "source_name": "Ankit DM", "students": 9,
       "tranches": 13, "disbursed_total": 13349780.00,
-      "commission_total": 143020.00, "collected_total": 131428.00,
+      "commission_total": 143020.00,   // EX GST
+      "earned_total": 168763.60,       // commission + GST, same as by_lender
+      "collected_total": 131428.00,
       "revenue_per_student": 15891.11, "collected_pct": 91.9,
       "share_of_disbursed_pct": 8.6 }
   ],
@@ -285,6 +295,13 @@ Two things about this tab:
 **`students` counts only students who have actually disbursed.** Not every
 lead carrying the source. Counting leads made unattributed read as 8,651
 students earning ₹83 each — useless.
+
+**Two revenue fields, on purpose.** `commission_total` is ex-GST — what
+FMC earns. `earned_total` is commission + GST — what the lender is
+billed, and the same definition `by_lender.earned_total` uses, so the two
+tabs can be compared. `revenue_per_student` is on commission, because GST
+is collected for the government rather than earned. Label whichever you
+show; do not let "revenue" mean different things on different tabs.
 
 **`unattributed` comes back in its own field, deliberately not ranked.**
 It is ~40% of disbursement — the single biggest bucket. Putting it top of

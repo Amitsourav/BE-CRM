@@ -560,6 +560,12 @@ class CommissionAnalyticsService:
         question is where a STUDENT sits, and a student with three lender
         files sits in exactly one place.
         """
+        # The four loan stages, plus an explicit "other" catching every
+        # remaining stage. Without it the funnel silently dropped Rs 1.41cr
+        # of disbursement and Rs 4.86cr of sanctions belonging to students
+        # parked at created / dnp / contacted / lost — money that exists,
+        # on a stage the funnel does not draw. A funnel that does not sum
+        # to the book is a funnel people stop believing.
         stages = ("logged_in", "sanctioned", "pf_paid", "disbursed")
         sanc = (
             select(
@@ -589,22 +595,26 @@ class CommissionAnalyticsService:
             .select_from(Lead)
             .outerjoin(sanc, sanc.c.lid == Lead.id)
             .outerjoin(disb, disb.c.lid == Lead.id)
-            .where(
-                Lead.id.in_(self._lead_scope(f)),
-                Lead.current_stage.in_(stages),
-            )
+            .where(Lead.id.in_(self._lead_scope(f)))
             .group_by(Lead.current_stage)
         )).all()
         found = {str(r[0]): r for r in rows}
         stage_funnel = [
             {
-                "stage": s,
-                "leads": found[s][1] if s in found else 0,
-                "sanctioned": found[s][2] if s in found else Decimal("0"),
-                "disbursed": found[s][3] if s in found else Decimal("0"),
+                "stage": st,
+                "leads": found[st][1] if st in found else 0,
+                "sanctioned": found[st][2] if st in found else Decimal("0"),
+                "disbursed": found[st][3] if st in found else Decimal("0"),
             }
-            for s in stages
+            for st in stages
         ]
+        other = [r for k, r in found.items() if k not in stages]
+        stage_funnel.append({
+            "stage": "other",
+            "leads": sum(r[1] for r in other),
+            "sanctioned": sum((r[2] for r in other), Decimal("0")),
+            "disbursed": sum((r[3] for r in other), Decimal("0")),
+        })
 
         ahead = await self.pipeline_ahead(f)
         booked = (await self.db.execute(
@@ -685,6 +695,7 @@ class CommissionAnalyticsService:
                 func.coalesce(func.sum(BankDisbursement.disbursed_amount), 0),
                 func.coalesce(func.sum(BankDisbursement.commission_amount), 0),
                 func.coalesce(func.sum(BankDisbursement.total_settled), 0),
+                func.coalesce(func.sum(BankDisbursement.total_due), 0),
             )
             .select_from(BankDisbursement)
             .join(Lead, Lead.id == BankDisbursement.lead_id)
@@ -695,7 +706,8 @@ class CommissionAnalyticsService:
 
         def shape(r):
             students = r[2] or 0
-            comm = r[5] or Decimal("0")
+            comm = r[5] or Decimal("0")      # commission, EX GST
+            earned = r[7] or Decimal("0")    # commission + GST
             return {
                 "source_id": r[0],
                 "source_name": r[1] if r[0] else "Unattributed",
@@ -703,12 +715,19 @@ class CommissionAnalyticsService:
                 "tranches": r[3],
                 "disbursed_total": r[4],
                 "commission_total": comm,
+                # Same definition by_lender.earned_total uses. Both are
+                # returned because the two answer different questions —
+                # commission is what FMC earns, earned is what the lender
+                # is billed — but a dashboard where "revenue" silently
+                # means commission on one tab and commission+GST on
+                # another is a dashboard nobody can reconcile.
+                "earned_total": earned,
                 "collected_total": r[6],
                 "revenue_per_student": (
                     (comm / students).quantize(Decimal("0.01"))
                     if students else Decimal("0")
                 ),
-                "collected_pct": _pct(r[6], comm),
+                "collected_pct": _pct(r[6], earned),
             }
 
         attributed = sorted(
@@ -743,6 +762,11 @@ class CommissionAnalyticsService:
         ("medium", "no_receipt_date", "Payment with no receipt date",
          "The money is counted but the month it arrived is unknown, so the "
          "collection trend understates every month."),
+        ("high", "money_on_prestage", "Money disbursed, lead still at an early stage",
+         "The bank has released funds but the lead never moved to "
+         "Disbursed — it still sits at created, contacted, dnp or lost. It "
+         "is invisible on the pipeline board, drops out of the stage "
+         "funnel, and nobody is chasing the remaining tranches."),
         ("low", "materially_short", "Lender paid materially less than owed",
          "Short by more than Rs 100 AND more than 2% — beyond rounding, so "
          "worth querying with the lender."),
@@ -825,6 +849,39 @@ class CommissionAnalyticsService:
                     "bank_name": r[3],
                     "amount": r[8] if code == "materially_short" else r[4],
                 })
+
+        # Students holding real disbursement while parked at a pre-loan
+        # stage. Found by the September audit: Rs 1.41cr of released money
+        # sits on leads at created / dnp / contacted / lost, including
+        # Kajal Saxena (Rs 31.4L) and Sayan Nandy (Rs 27.4L) both still
+        # reading "created". The money is counted everywhere except the
+        # one place a human looks — the pipeline board.
+        stray = (await self.db.execute(
+            select(
+                Lead.id, Lead.serial_no, Lead.full_name,
+                Lead.current_stage, Lead.bank_name,
+                func.sum(BankDisbursement.disbursed_amount),
+            )
+            .select_from(BankDisbursement)
+            .join(Lead, Lead.id == BankDisbursement.lead_id)
+            .where(
+                *self._disb_where(f),
+                Lead.current_stage.notin_(
+                    ("disbursed", "pf_paid", "sanctioned", "logged_in")
+                ),
+            )
+            .group_by(Lead.id, Lead.serial_no, Lead.full_name,
+                      Lead.current_stage, Lead.bank_name)
+        )).all()
+        sev, label, why = self._EX["money_on_prestage"]
+        for r in stray:
+            out.append({
+                "severity": sev, "code": "money_on_prestage",
+                "issue": label,
+                "why": f"{why} This lead reads '{r[3]}'.",
+                "lead_id": r[0], "serial_no": r[1], "full_name": r[2],
+                "bank_name": r[4], "amount": r[5],
+            })
 
         rank = {"high": 0, "medium": 1, "low": 2}
         out.sort(key=lambda x: (rank[x["severity"]], -float(x["amount"] or 0)))
