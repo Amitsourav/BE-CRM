@@ -65,6 +65,40 @@ none means the whole book.
 
 ---
 
+## 2b. Chart orientation — use HORIZONTAL bars
+
+**Every ranked or categorical chart on this dashboard is a horizontal bar
+chart.** Amit asked for this directly, and the data backs it up: these
+categories are long strings —
+
+```
+Axis Direct (UC Code)        UniCred Credila Domestic
+UniCred Propelld Connector   Nomad Axis Domestic
+```
+
+On vertical bars those labels either truncate or rotate 45°, and a
+17-lender chart becomes unreadable. Horizontal gives every label a full
+line at normal reading angle, and the eye compares bar lengths down a
+column far more easily than heights across a row.
+
+Applies to:
+
+| Chart | Bars |
+|---|---|
+| Flow of money | horizontal, one bar per funnel step |
+| Stage funnel | horizontal — a funnel reads top-to-bottom |
+| Lender pulse / portfolio mix / concentration | horizontal, sorted by value |
+| Top sources | horizontal, sorted by value |
+| Receivable ageing | horizontal, buckets oldest at the bottom |
+
+**The one exception is the monthly trend.** Time belongs on the X axis —
+months read left to right — so that stays vertical bars or lines.
+
+Sort every horizontal chart by value, longest bar at the top, and print
+the value at the end of each bar so nobody has to read it off an axis.
+
+---
+
 ## 3. Drill-down — build this first
 
 ```http
@@ -333,4 +367,6 @@ lender's arithmetic and ours — 67 of the 71 are trivial. A tile reading
 - [ ] Sources: unattributed is a separated footer row, never ranked
 - [ ] Exceptions show `why` in the row; `lead_id` opens the record
 - [ ] `tranches_materially_short` is the headline, not `tranches_short`
+- [ ] All ranked charts are HORIZONTAL bars, sorted by value, value printed on the bar
+- [ ] The monthly trend is the one exception — time stays on the X axis
 - [ ] Indian digit grouping throughout
