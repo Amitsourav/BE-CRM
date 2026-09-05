@@ -188,6 +188,16 @@ single month's two bars.
 Tranches with no date appear in **no month**. Footnote the chart with
 `data_quality.tranches_without_date`.
 
+> **A date filter does not clip the month axis.** Filter to "disbursed on
+> or before 30 June" and July and August still appear, with **zero earned
+> and real collected** — June money that arrived later. The filter chooses
+> which tranches; the collected series then plots when their cash actually
+> landed. It is correct, and it answers a useful question (how long a
+> lender takes to pay), but a June filter showing an August bar looks like
+> a bug unless you label it. Suggested caption when a date filter is
+> active: *"Collections shown in the month the money arrived, which may
+> fall outside the filtered range."*
+
 **Ageing:** buckets `0_30` `31_60` `61_90` `over_90` `no_date`. Only rows
 still owing appear.
 

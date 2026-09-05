@@ -340,6 +340,14 @@ class CommissionAnalyticsService:
 
         Rows with no date cannot sit in any month and are reported by
         `data_quality`, not silently dropped into the oldest bucket.
+
+        A date filter selects WHICH TRANCHES, and does not clip the month
+        axis. Filter to "disbursed on or before 30 June" and July still
+        appears, carrying zero earned and real collected — June money that
+        arrived in July. That is the honest answer, and clipping would
+        hide the useful question underneath it: how long after disbursement
+        does a lender actually pay? The frontend has to say so, because a
+        June filter showing an August bar looks like a bug otherwise.
         """
         m_disb = func.date_trunc("month", BankDisbursement.disbursed_on)
         earned = (await self.db.execute(
