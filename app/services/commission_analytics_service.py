@@ -41,6 +41,7 @@ from decimal import Decimal
 from sqlalchemy import select, func, case, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.constants import LEAD_STAGE_VALUES
 from app.core.exceptions import BadRequestError
 from app.models.bank import Bank
 from app.models.bank_disbursement import BankDisbursement
@@ -70,6 +71,11 @@ _MATERIAL_PCT = Decimal("0.02")
 # Used only for the forward "potential net revenue" on the opportunities
 # queue — a gross figure there would overstate what a drawdown is worth.
 _NET_FACTOR = Decimal("0.80")
+
+# The stages the stage funnel draws. Everything else lands in its `other`
+# bucket, which the drill-down has to be able to reopen.
+_STAGE_FUNNEL_STAGES = ("logged_in", "sanctioned", "pf_paid", "disbursed")
+_LEAD_STAGES = frozenset(LEAD_STAGE_VALUES)
 
 
 @dataclass
@@ -218,6 +224,13 @@ class CommissionAnalyticsService:
         `bank_disbursements`, and they cannot be summed in one pass
         without a fan-out multiplying every sanction by its tranche count.
         """
+        # The file COUNT covers every live file; the VALUE can only cover
+        # the ones carrying an amount. Filtering both together — which
+        # this did until 2026-09-05 — silently dropped 40 files from the
+        # count, so the funnel said "134 files" while the exception
+        # register said 40 live files have no sanctioned amount, and the
+        # two could not be reconciled by anyone reading them.
+        priced = LeadBank.loan_amount.isnot(None)
         s = (await self.db.execute(
             select(
                 func.coalesce(func.sum(case(
@@ -228,9 +241,14 @@ class CommissionAnalyticsService:
                 )), 0),
                 func.count().filter(LeadBank.bank_status.in_(_LIVE)),
                 func.count().filter(LeadBank.bank_status.in_(_CONFIRMED)),
-            ).where(*self._file_where(f), LeadBank.loan_amount.isnot(None))
+                func.count().filter(and_(
+                    LeadBank.bank_status.in_(_LIVE), ~priced)),
+                func.count().filter(and_(
+                    LeadBank.bank_status.in_(_CONFIRMED), ~priced)),
+            ).where(*self._file_where(f))
         )).one()
-        sanctioned, confirmed, n_live, n_confirmed = s
+        (sanctioned, confirmed, n_live, n_confirmed,
+         n_live_unpriced, n_confirmed_unpriced) = s
 
         d = (await self.db.execute(
             select(
@@ -238,20 +256,31 @@ class CommissionAnalyticsService:
                 func.coalesce(func.sum(BankDisbursement.disbursed_amount), 0),
                 func.coalesce(func.sum(BankDisbursement.total_due), 0),
                 func.coalesce(func.sum(BankDisbursement.total_settled), 0),
+                # Row by row, never earned-minus-collected: one lender
+                # overpaying must not cancel another's debt. Prit Jain's
+                # Credila row is ₹280.45 over, which used to shrink the
+                # whole book's outstanding by exactly that much and put
+                # this panel ₹280.45 below `ageing` and `by_lender`.
+                func.coalesce(func.sum(BankDisbursement.shortfall), 0),
             ).where(*self._disb_where(f))
         )).one()
-        tranches, disbursed, earned, collected = d
+        tranches, disbursed, earned, collected, outstanding = d
 
         return {
             "sanctioned_total": sanctioned,
             "sanctioned_files": n_live,
+            # Live files carrying no amount. `sanctioned_total` cannot
+            # include them, so this is how much of the funnel's head is
+            # unmeasured rather than zero.
+            "sanctioned_files_unpriced": n_live_unpriced,
             "confirmed_total": confirmed,
             "confirmed_files": n_confirmed,
+            "confirmed_files_unpriced": n_confirmed_unpriced,
             "disbursed_total": disbursed,
             "tranches": tranches,
             "earned_total": earned,
             "collected_total": collected,
-            "outstanding_total": (earned or 0) - (collected or 0),
+            "outstanding_total": outstanding,
             # Each step as a share of the one before it. A low drawdown
             # percentage is money approved and never taken, which no other
             # screen surfaces.
@@ -275,42 +304,61 @@ class CommissionAnalyticsService:
         committed to is not a forecast, it is a hope.
         """
         drawn = self._drawn_subq(f)
+        drawn_amt = func.coalesce(drawn.c.drawn, 0)
         # Never negative: a file can be over-drawn against a stale
         # sanction figure, and a negative "still to come" is nonsense.
-        remaining = func.greatest(
-            LeadBank.loan_amount - func.coalesce(drawn.c.drawn, 0), 0
+        # A file with no sanction figure yields no remaining at all —
+        # unknown is not zero, and inventing a ceiling from what has
+        # already been drawn would forecast revenue nobody promised.
+        remaining = case(
+            (LeadBank.loan_amount.is_(None), 0),
+            else_=func.greatest(LeadBank.loan_amount - drawn_amt, 0),
         )
+        unpriced = LeadBank.loan_amount.is_(None)
         r = (await self.db.execute(
             select(
                 func.count(),
                 func.coalesce(func.sum(LeadBank.loan_amount), 0),
-                func.coalesce(func.sum(func.coalesce(drawn.c.drawn, 0)), 0),
+                func.coalesce(func.sum(drawn_amt), 0),
+                func.coalesce(func.sum(case((unpriced, drawn_amt), else_=0)), 0),
                 func.coalesce(func.sum(remaining), 0),
                 func.coalesce(
                     func.sum(remaining * LeadBank.commission_rate / 100), 0
                 ),
                 func.count().filter(LeadBank.commission_rate.is_(None)),
+                func.count().filter(unpriced),
             )
             .select_from(LeadBank)
             .outerjoin(drawn, drawn.c.lb == LeadBank.id)
             .where(
                 *self._file_where(f),
                 LeadBank.bank_status.in_(_CONFIRMED),
-                LeadBank.loan_amount.isnot(None),
             )
         )).one()
-        files, sanctioned, drawn_total, undrawn, future, no_rate = r
+        (files, sanctioned, drawn_total, drawn_unpriced,
+         undrawn, future, no_rate, no_sanction) = r
         return {
             "confirmed_files": files,
             "sanctioned_total": sanctioned,
+            # Every rupee released against a confirmed file, so this ties
+            # to the book. Excluding unpriced files — which it did until
+            # 2026-09-05 — hid ₹26.95 L of real drawdown here and added
+            # the same amount to `undrawn_total`, overstating the
+            # forecast twice over.
             "drawn_total": drawn_total,
+            # Of that, money on files with no sanction figure. It cannot
+            # be set against a ceiling, so it is out of `drawn_pct`.
+            "drawn_unpriced_total": drawn_unpriced,
             "undrawn_total": undrawn,
             "future_commission": future,
-            "drawn_pct": _pct(drawn_total, sanctioned),
+            "drawn_pct": _pct(drawn_total - drawn_unpriced, sanctioned),
             # Files whose future commission cannot be computed because the
             # lender has no rate. Excluded from `future_commission` rather
             # than counted as zero, so the forecast is a floor.
             "files_missing_rate": no_rate,
+            # ...and files with no sanctioned amount, which are out of
+            # the forecast for the same reason.
+            "files_missing_sanction": no_sanction,
         }
 
     # ── Monthly: earning vs collecting ─────────────────────────────────
@@ -566,7 +614,7 @@ class CommissionAnalyticsService:
         # parked at created / dnp / contacted / lost — money that exists,
         # on a stage the funnel does not draw. A funnel that does not sum
         # to the book is a funnel people stop believing.
-        stages = ("logged_in", "sanctioned", "pf_paid", "disbursed")
+        stages = _STAGE_FUNNEL_STAGES
         sanc = (
             select(
                 LeadBank.lead_id.label("lid"),
@@ -617,10 +665,20 @@ class CommissionAnalyticsService:
         })
 
         ahead = await self.pipeline_ahead(f)
-        booked = (await self.db.execute(
-            select(func.coalesce(func.sum(BankDisbursement.total_due), 0))
-            .where(*self._disb_where(f))
-        )).scalar()
+        # Commission WITHOUT GST. The bridge sets what we have earned
+        # against what we can still earn, and the right-hand side is
+        # rate x remaining, which carries no GST — billing GST on top is
+        # not revenue, it is money collected for the government. Until
+        # 2026-09-05 this side was GST-inclusive, so the bridge added
+        # Rs 2.99 L of tax to earnings and compared it against a
+        # tax-free forecast.
+        b = (await self.db.execute(
+            select(
+                func.coalesce(func.sum(BankDisbursement.commission_amount), 0),
+                func.coalesce(func.sum(BankDisbursement.gst_amount), 0),
+            ).where(*self._disb_where(f))
+        )).one()
+        booked, booked_gst = b
 
         # Biggest opportunities: confirmed files with money still to draw,
         # ranked by what that money is worth to FMC after the net haircut.
@@ -653,12 +711,22 @@ class CommissionAnalyticsService:
             "revenue_bridge": {
                 # Earned on money that has already come out.
                 "booked": booked,
+                # Charged on top of it. Shown so the bridge still ties to
+                # `funnel.earned_total`, which is booked + booked_gst.
+                "booked_gst": booked_gst,
                 # Earnable on money approved and still to come. A floor —
                 # files with no lender rate are excluded, not zeroed.
                 "unlockable": ahead["future_commission"],
+                # The same forecast after the 80% haircut, which is the
+                # basis `opportunities[].potential_net_revenue` uses. Both
+                # appear on this panel, so both are stated.
+                "unlockable_net": (
+                    ahead["future_commission"] * _NET_FACTOR
+                ).quantize(Decimal("0.01")),
                 "undrawn_total": ahead["undrawn_total"],
                 "drawn_pct": ahead["drawn_pct"],
                 "files_missing_rate": ahead["files_missing_rate"],
+                "files_missing_sanction": ahead["files_missing_sanction"],
             },
             "opportunities": [
                 {
@@ -897,7 +965,8 @@ class CommissionAnalyticsService:
 
     # ── Drill-down ─────────────────────────────────────────────────────
 
-    _SEGMENTS = ("stage", "lender", "ageing_bucket", "source", "funnel_step")
+    _SEGMENTS = ("stage", "lender", "ageing_bucket", "source",
+                 "funnel_step", "exception")
 
     async def drilldown(
         self, segment: str, value: str, f: Filters | None = None,
@@ -909,61 +978,40 @@ class CommissionAnalyticsService:
         the same shape every time, and six near-copies would drift the way
         the outstanding formula did.
 
-        The row count MUST equal the number its segment advertised. A
-        clickable segment that opens a different set of students than it
-        claimed is worse than no drill-down at all.
+        The row count MUST equal the number its segment advertised, and so
+        must the money on the rows. A clickable segment that opens a
+        different set of students — or the same students carrying larger
+        figures — is worse than no drill-down at all.
         """
         if segment not in self._SEGMENTS:
             raise BadRequestError(
                 f"segment must be one of {list(self._SEGMENTS)} (got '{segment}')."
             )
 
-        sanc = (
-            select(
-                LeadBank.lead_id.label("lid"),
-                func.sum(LeadBank.loan_amount).label("sanc"),
-            )
-            .where(*self._file_where(f), LeadBank.bank_status.in_(_LIVE))
-            .group_by(LeadBank.lead_id)
-            .subquery()
-        )
-        money = (
-            select(
-                BankDisbursement.lead_id.label("lid"),
-                func.sum(BankDisbursement.disbursed_amount).label("disb"),
-                func.sum(BankDisbursement.total_due).label("due"),
-                func.sum(BankDisbursement.total_settled).label("settled"),
-                func.sum(BankDisbursement.shortfall).label("owed"),
-            )
-            .where(*self._disb_where(f))
-            .group_by(BankDisbursement.lead_id)
-            .subquery()
-        )
-
-        q = (
-            select(
-                Lead.id, Lead.serial_no, Lead.full_name, Lead.current_stage,
-                Lead.bank_name,
-                func.coalesce(sanc.c.sanc, 0),
-                func.coalesce(money.c.disb, 0),
-                func.coalesce(money.c.due, 0),
-                func.coalesce(money.c.settled, 0),
-                func.coalesce(money.c.owed, 0),
-            )
-            .select_from(Lead)
-            .outerjoin(sanc, sanc.c.lid == Lead.id)
-            .outerjoin(money, money.c.lid == Lead.id)
-            .where(Lead.id.in_(self._lead_scope(f)))
-        )
-
-        # Criteria that narrow the TRANCHE count to the same slice the
-        # segment describes. Without them a student picked for one ageing
-        # bucket would drag in their tranches from every other bucket, and
-        # the drill-down would report more tranches than the panel did.
-        tranche_extra: list = []
+        # Built first, because the money columns have to be narrowed to the
+        # same slice. Until 2026-09-05 they were not: every row carried the
+        # student's ENTIRE outstanding whatever bucket had been clicked, so
+        # a student with tranches in two ageing buckets was counted in full
+        # in both and the five buckets summed to Rs 7.97 L against a book
+        # of Rs 7.03 L.
+        lead_where: list = []      # which students belong in this segment
+        tranche_extra: list = []   # which of their tranches the segment covers
+        file_extra: list = []      # ...and which of their lender files
 
         if segment == "stage":
-            q = q.where(Lead.current_stage == value)
+            # `other` is the stage funnel's own synthetic bucket — every
+            # stage it does not draw. It is a clickable segment like any
+            # other, and until 2026-09-05 clicking it reached Postgres as
+            # a lead_stage enum literal and returned a raw 500.
+            if value == "other":
+                lead_where.append(Lead.current_stage.notin_(_STAGE_FUNNEL_STAGES))
+            elif value not in _LEAD_STAGES:
+                raise BadRequestError(
+                    f"'{value}' is not a lead stage. Use one of "
+                    f"{sorted(_LEAD_STAGES)} or 'other'."
+                )
+            else:
+                lead_where.append(Lead.current_stage == value)
 
         elif segment == "funnel_step":
             step = {
@@ -975,17 +1023,15 @@ class CommissionAnalyticsService:
                 raise BadRequestError(
                     "funnel_step must be sanctioned | confirmed | disbursed."
                 )
-            q = q.where(Lead.id.in_(
-                select(LeadBank.lead_id).where(
-                    *self._file_where(f),
-                    LeadBank.bank_status.in_(step),
-                    LeadBank.loan_amount.isnot(None),
-                )
+            file_extra = [LeadBank.bank_status.in_(step)]
+            lead_where.append(Lead.id.in_(
+                select(LeadBank.lead_id).where(*self._file_where(f), *file_extra)
             ))
 
         elif segment == "lender":
             tranche_extra = [BankDisbursement.bank_name == value]
-            q = q.where(Lead.id.in_(
+            file_extra = [LeadBank.bank_name == value]
+            lead_where.append(Lead.id.in_(
                 select(BankDisbursement.lead_id).where(
                     *self._disb_where(f), *tranche_extra
                 )
@@ -993,13 +1039,12 @@ class CommissionAnalyticsService:
 
         elif segment == "source":
             unattributed = value in ("", "unattributed", "none")
-            q = q.where(
+            lead_where += [
                 Lead.lead_source_id.is_(None) if unattributed
-                else Lead.lead_source_id == uuid.UUID(value)
-            ).where(
+                else Lead.lead_source_id == uuid.UUID(value),
                 Lead.id.in_(select(BankDisbursement.lead_id)
-                            .where(*self._disb_where(f)))
-            )
+                            .where(*self._disb_where(f))),
+            ]
 
         elif segment == "ageing_bucket":
             age = func.current_date() - BankDisbursement.disbursed_on
@@ -1019,11 +1064,97 @@ class CommissionAnalyticsService:
                 BankDisbursement.write_off_reason.is_(None),
                 cond,
             ]
-            q = q.where(Lead.id.in_(
+            lead_where.append(Lead.id.in_(
                 select(BankDisbursement.lead_id).where(
                     *self._disb_where(f), *tranche_extra
                 )
             ))
+
+        elif segment == "exception":
+            # The exception register is the panel most obviously worth
+            # clicking, and it was the one segment the drill-down did not
+            # accept. Each code narrows to exactly the rows the register
+            # counted under it, so the two can never disagree.
+            if value in ("no_disbursement_date", "no_receipt_date",
+                         "materially_short"):
+                tranche_extra = {
+                    "no_disbursement_date": [
+                        BankDisbursement.disbursed_on.is_(None)],
+                    "no_receipt_date": [
+                        BankDisbursement.amount_received.isnot(None),
+                        BankDisbursement.received_on.is_(None)],
+                    "materially_short": [
+                        BankDisbursement.total_settled > 0,
+                        BankDisbursement.shortfall > _MATERIAL_FLOOR,
+                        BankDisbursement.shortfall
+                        > BankDisbursement.total_due * _MATERIAL_PCT],
+                }[value]
+                lead_where.append(Lead.id.in_(
+                    select(BankDisbursement.lead_id).where(
+                        *self._disb_where(f), *tranche_extra
+                    )
+                ))
+            elif value in ("no_sanctioned_amount", "on_aggregator",
+                           "cannot_be_priced"):
+                file_extra = [LeadBank.bank_status.in_(_LIVE)] + {
+                    "no_sanctioned_amount": [LeadBank.loan_amount.is_(None)],
+                    # `banks` is a global catalogue keyed by name, not a
+                    # per-tenant table — the same join data_quality uses.
+                    "on_aggregator": [LeadBank.bank_name.in_(
+                        select(Bank.name).where(Bank.is_aggregator.is_(True)))],
+                    "cannot_be_priced": [LeadBank.bank_name.in_(
+                        select(Bank.name).where(
+                            or_(Bank.is_aggregator.is_(True),
+                                Bank.commission_rate.is_(None))))],
+                }[value]
+                lead_where.append(Lead.id.in_(
+                    select(LeadBank.lead_id).where(
+                        *self._file_where(f), *file_extra
+                    )
+                ))
+            else:
+                raise BadRequestError(
+                    f"'{value}' is not an exception code. Use one of the keys "
+                    "in the exception register's `by_code`."
+                )
+
+        sanc = (
+            select(
+                LeadBank.lead_id.label("lid"),
+                func.sum(LeadBank.loan_amount).label("sanc"),
+            )
+            .where(*self._file_where(f), LeadBank.bank_status.in_(_LIVE),
+                   *file_extra)
+            .group_by(LeadBank.lead_id)
+            .subquery()
+        )
+        money = (
+            select(
+                BankDisbursement.lead_id.label("lid"),
+                func.sum(BankDisbursement.disbursed_amount).label("disb"),
+                func.sum(BankDisbursement.total_due).label("due"),
+                func.sum(BankDisbursement.total_settled).label("settled"),
+                func.sum(BankDisbursement.shortfall).label("owed"),
+            )
+            .where(*self._disb_where(f), *tranche_extra)
+            .group_by(BankDisbursement.lead_id)
+            .subquery()
+        )
+        q = (
+            select(
+                Lead.id, Lead.serial_no, Lead.full_name, Lead.current_stage,
+                Lead.bank_name,
+                func.coalesce(sanc.c.sanc, 0),
+                func.coalesce(money.c.disb, 0),
+                func.coalesce(money.c.due, 0),
+                func.coalesce(money.c.settled, 0),
+                func.coalesce(money.c.owed, 0),
+            )
+            .select_from(Lead)
+            .outerjoin(sanc, sanc.c.lid == Lead.id)
+            .outerjoin(money, money.c.lid == Lead.id)
+            .where(Lead.id.in_(self._lead_scope(f)), *lead_where)
+        )
 
         sub = q.subquery()
         total = (await self.db.execute(

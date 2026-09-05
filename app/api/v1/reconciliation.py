@@ -261,9 +261,18 @@ async def drilldown(
     db: AsyncSession = Depends(get_db),
     segment: str = Query(
         ...,
-        description="stage | lender | ageing_bucket | source | funnel_step",
+        description=(
+            "stage | lender | ageing_bucket | source | funnel_step | exception"
+        ),
     ),
-    value: str = Query(..., description="The segment's value, e.g. 'UC Axis' or 'over_90'."),
+    value: str = Query(
+        ...,
+        description=(
+            "The segment's value: a stage name (or 'other'), a lender, an "
+            "ageing bucket, a lead_source id, a funnel step, or an "
+            "exception code from the register's `by_code`."
+        ),
+    ),
     f: Filters = Depends(_filters),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),

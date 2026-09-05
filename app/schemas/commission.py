@@ -246,13 +246,24 @@ class FunnelOut(BaseModel):
     not against the top — that is what makes a weak step visible.
     """
     sanctioned_total: Decimal = Decimal("0")
+    #: Every live lender file, priced or not.
     sanctioned_files: int = 0
+    #: ...of which this many carry no amount, so they are counted in
+    #: `sanctioned_files` but contribute nothing to `sanctioned_total`.
+    #: Show it — otherwise the average sanction per file reads low and
+    #: nobody can tell why.
+    sanctioned_files_unpriced: int = 0
     confirmed_total: Decimal = Decimal("0")
     confirmed_files: int = 0
+    confirmed_files_unpriced: int = 0
     disbursed_total: Decimal = Decimal("0")
     tranches: int = 0
+    #: Commission plus GST on everything disbursed.
     earned_total: Decimal = Decimal("0")
+    #: Cash received plus TDS withheld — both discharge the debt.
     collected_total: Decimal = Decimal("0")
+    #: Summed row by row, so an overpaying lender never cancels out
+    #: another's debt. This is why it can exceed earned - collected.
     outstanding_total: Decimal = Decimal("0")
     confirmed_pct_of_sanctioned: float = 0.0
     disbursed_pct_of_confirmed: float = 0.0
@@ -268,12 +279,21 @@ class PipelineAheadOut(BaseModel):
     rather than counted as zero, and `files_missing_rate` says how many.
     """
     confirmed_files: int = 0
+    #: Priced files only — an unpriced file adds nothing to sanction.
     sanctioned_total: Decimal = Decimal("0")
+    #: EVERY rupee released against a confirmed file, so this ties to the
+    #: book's disbursed total.
     drawn_total: Decimal = Decimal("0")
+    #: Of that, money on files with no sanction figure. It has no ceiling
+    #: to be measured against, so `drawn_pct` leaves it out.
+    drawn_unpriced_total: Decimal = Decimal("0")
     undrawn_total: Decimal = Decimal("0")
     future_commission: Decimal = Decimal("0")
     drawn_pct: float = 0.0
     files_missing_rate: int = 0
+    #: Confirmed files with no sanctioned amount. Out of the forecast for
+    #: the same reason as `files_missing_rate`: unknown is not zero.
+    files_missing_sanction: int = 0
 
 
 class MonthPoint(BaseModel):
@@ -296,10 +316,18 @@ class LenderDebtRow(BaseModel):
     bank_name: str = ""
     tranches: int = 0
     disbursed_total: Decimal = Decimal("0")
+    #: Commission plus GST on everything disbursed.
     earned_total: Decimal = Decimal("0")
+    #: Cash received plus TDS withheld — both discharge the debt.
     collected_total: Decimal = Decimal("0")
+    #: Summed row by row, so an overpaying lender never cancels out
+    #: another's debt. This is why it can exceed earned - collected.
     outstanding_total: Decimal = Decimal("0")
     collected_pct: float = 0.0
+    #: This lender's share of everything disbursed. The concentration
+    #: view is built on it, and the service computed it from the start —
+    #: it was simply missing from this schema, so it never left the API.
+    share_of_disbursed_pct: float = 0.0
 
 
 class AgeingBucket(BaseModel):
@@ -405,11 +433,19 @@ class RevenueBridgeOut(BaseModel):
     excluded rather than counted as zero, and `files_missing_rate` says
     how many. Say "at least" in front of it when that count is non-zero.
     """
+    #: Commission only, EXCLUDING GST — the same basis as `unlockable`,
+    #: which is rate x remaining and carries no tax. `booked +
+    #: booked_gst` equals `funnel.earned_total`.
     booked: Decimal = Decimal("0")
+    booked_gst: Decimal = Decimal("0")
     unlockable: Decimal = Decimal("0")
+    #: `unlockable` after the 80% haircut — the basis
+    #: `opportunities[].potential_net_revenue` uses.
+    unlockable_net: Decimal = Decimal("0")
     undrawn_total: Decimal = Decimal("0")
     drawn_pct: float = 0.0
     files_missing_rate: int = 0
+    files_missing_sanction: int = 0
 
 
 class OpportunityRow(BaseModel):
