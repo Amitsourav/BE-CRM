@@ -93,6 +93,16 @@ class BankDisbursement(Base, TimestampMixin):
     # computed without it. New disbursements still require a date:
     # CommissionService.record_disbursement refuses one without.
     disbursed_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # The date above was DERIVED, not recorded: from the invoice date on
+    # the sheet row, the receipt date, or the disbursement month. It is a
+    # latest-possible date, so ageing understates rather than invents
+    # urgency. Never set through the API — `record_disbursement` demands
+    # a real date — only by the 2026-09 recovery of the tracker's 36
+    # dateless rows. Reports MUST surface it: a figure that looks exact
+    # and is not is worse than a blank.
+    disbursed_on_estimated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     tranche_no: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     # The lender's own payout reference, when they give one. The single
     # most useful field when arguing about whether a file was ever paid.

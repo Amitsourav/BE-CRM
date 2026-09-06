@@ -562,6 +562,14 @@ class CommissionAnalyticsService:
                 func.count().filter(
                     BankDisbursement.write_off_reason.isnot(None)),
                 func.count().filter(BankDisbursement.earns_commission.is_(False)),
+                # Dated, but the date was DERIVED from an invoice or a
+                # month rather than recorded. They age and they appear in
+                # monthly totals, so the count has to travel with them —
+                # otherwise a recovered figure is indistinguishable from a
+                # captured one, which is the whole reason blanks were
+                # safer than guesses.
+                func.count().filter(
+                    BankDisbursement.disbursed_on_estimated.is_(True)),
             ).where(*self._disb_where(f))
         )).one()
 
@@ -590,6 +598,7 @@ class CommissionAnalyticsService:
             "tranches_materially_short": d[6],
             "tranches_written_off": d[7],
             "tranches_earning_nothing": d[8],
+            "tranches_with_estimated_date": d[9],
             "live_files": fq[0],
             "files_without_sanctioned_amount": fq[1],
             "files_that_cannot_be_priced": fq[2],
@@ -835,6 +844,11 @@ class CommissionAnalyticsService:
          "Disbursed — it still sits at created, contacted, dnp or lost. It "
          "is invisible on the pipeline board, drops out of the stage "
          "funnel, and nobody is chasing the remaining tranches."),
+        ("low", "estimated_disbursement_date", "Disbursement date is an estimate",
+         "The tracker never recorded this date. It was derived from the "
+         "invoice date, the receipt or the month, so it is the LATEST the "
+         "money could have moved — the row ages younger than it really is. "
+         "Replace it when the lender confirms."),
         ("low", "materially_short", "Lender paid materially less than owed",
          "Short by more than Rs 100 AND more than 2% — beyond rounding, so "
          "worth querying with the lender."),
@@ -897,17 +911,22 @@ class CommissionAnalyticsService:
                 Lead.id, Lead.serial_no, Lead.full_name,
                 BankDisbursement.bank_name, BankDisbursement.disbursed_amount,
                 no_date, no_receipt, short, BankDisbursement.shortfall,
+                BankDisbursement.disbursed_on_estimated,
             )
             .select_from(BankDisbursement)
             .join(Lead, Lead.id == BankDisbursement.lead_id)
-            .where(*self._disb_where(f), or_(no_date, no_receipt, short))
+            .where(*self._disb_where(f), or_(
+                no_date, no_receipt, short,
+                BankDisbursement.disbursed_on_estimated.is_(True),
+            ))
         )).all()
         for r in tr:
             # One tranche can trip more than one rule, and each is a
             # separate thing to fix, so each becomes its own row.
             for flag, code in ((r[5], "no_disbursement_date"),
                                (r[6], "no_receipt_date"),
-                               (r[7], "materially_short")):
+                               (r[7], "materially_short"),
+                               (r[9], "estimated_disbursement_date")):
                 if not flag:
                     continue
                 sev, label, why = self._EX[code]
@@ -1089,6 +1108,14 @@ class CommissionAnalyticsService:
                         BankDisbursement.shortfall
                         > BankDisbursement.total_due * _MATERIAL_PCT],
                 }[value]
+                lead_where.append(Lead.id.in_(
+                    select(BankDisbursement.lead_id).where(
+                        *self._disb_where(f), *tranche_extra
+                    )
+                ))
+            elif value == "estimated_disbursement_date":
+                tranche_extra = [
+                    BankDisbursement.disbursed_on_estimated.is_(True)]
                 lead_where.append(Lead.id.in_(
                     select(BankDisbursement.lead_id).where(
                         *self._disb_where(f), *tranche_extra

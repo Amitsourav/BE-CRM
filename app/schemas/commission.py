@@ -382,6 +382,11 @@ class DataQualityOut(BaseModel):
     tranches_materially_short: int = 0
     tranches_written_off: int = 0
     tranches_earning_nothing: int = 0
+    #: Dated, but the date was DERIVED (from an invoice, a receipt or a
+    #: month) rather than recorded. They DO age and DO appear in monthly
+    #: totals — show this count beside those panels so a recovered figure
+    #: is never mistaken for a captured one.
+    tranches_with_estimated_date: int = 0
     live_files: int = 0
     files_without_sanctioned_amount: int = 0
     files_that_cannot_be_priced: int = 0
