@@ -368,6 +368,61 @@ async def update_disbursement(
     )
 
 
+@router.post("/disbursements/{disbursement_id}/invoice", tags=["Commission"])
+async def invoice_disbursement(
+    disbursement_id: uuid.UUID,
+    invoice_date: date | None = Query(
+        None, description="Defaults to today. Sets the financial year."
+    ),
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bill one tranche's commission to the lender that owes it.
+
+    One invoice per tranche, because that is how commission is earned —
+    a loan releases semester by semester and each release is billed as it
+    happens.
+
+    Refused when the tranche is already invoiced, written off, or earns
+    nothing; and when the lender has no GSTIN or billing address, because
+    the state code decides CGST+SGST against IGST and guessing it would
+    put the wrong tax on a legal document. The message names the missing
+    field.
+    """
+    await _require_fmc(db, company_id)
+    invoice = await CommissionService(db, company_id).raise_invoice(
+        disbursement_id, admin, invoice_date=invoice_date,
+    )
+    return {
+        "invoice_id": invoice.id,
+        "invoice_number": invoice.invoice_number,
+        "invoice_date": invoice.invoice_date,
+        "customer_name": invoice.customer_name,
+        "subtotal": invoice.subtotal,
+        "total_tax": invoice.total_tax,
+        "grand_total": invoice.grand_total,
+        "pdf_url": invoice.pdf_url,
+    }
+
+
+@router.delete("/disbursements/{disbursement_id}/invoice", tags=["Commission"])
+async def unlink_disbursement_invoice(
+    disbursement_id: uuid.UUID,
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Detach a bill raised in error — only while it is still a draft.
+
+    An issued invoice number is burned: GST numbering is sequential and
+    gapless, so an issued bill is voided, never unpicked.
+    """
+    await _require_fmc(db, company_id)
+    await CommissionService(db, company_id).unlink_invoice(disbursement_id, admin)
+    return {"message": "Invoice unlinked from this disbursement"}
+
+
 @router.delete("/disbursements/{disbursement_id}")
 async def delete_disbursement(
     disbursement_id: uuid.UUID,

@@ -325,6 +325,11 @@ async def list_banks_for_management(
             "commission_rate": b.commission_rate,
             "is_aggregator": b.is_aggregator,
             "partner_code": b.partner_code,
+            "gstin": b.gstin,
+            "state_code": b.state_code,
+            "billing_name": b.billing_name,
+            "billing_address": b.billing_address,
+            "billing_email": b.billing_email,
             "created_at": b.created_at, "updated_at": b.updated_at,
         }
         for b in rows
@@ -376,6 +381,11 @@ async def add_bank_to_list(
         commission_rate=body.commission_rate,
         is_aggregator=bool(body.is_aggregator),
         partner_code=body.partner_code,
+        gstin=body.gstin,
+        state_code=body.state_code,
+        billing_name=body.billing_name,
+        billing_address=body.billing_address,
+        billing_email=body.billing_email,
     )
     db.add(bank)
     await db.commit()
@@ -388,6 +398,11 @@ async def add_bank_to_list(
         "commission_rate": bank.commission_rate,
         "is_aggregator": bank.is_aggregator,
         "partner_code": bank.partner_code,
+        "gstin": bank.gstin,
+        "state_code": bank.state_code,
+        "billing_name": bank.billing_name,
+        "billing_address": bank.billing_address,
+        "billing_email": bank.billing_email,
         "created_at": bank.created_at, "updated_at": bank.updated_at,
     }
 
@@ -446,6 +461,14 @@ async def update_bank_in_list(
         bank.is_aggregator = data["is_aggregator"]
     if "partner_code" in data:
         bank.partner_code = data["partner_code"]
+    for _f in ("gstin", "state_code", "billing_name", "billing_address",
+               "billing_email"):
+        if _f in data:
+            setattr(bank, _f, (data[_f] or None))
+    # GSTINs are quoted in upper case everywhere and a lower-case one
+    # would fail every downstream comparison.
+    if bank.gstin:
+        bank.gstin = bank.gstin.upper().strip()
 
     await db.commit()
     await db.refresh(bank)
@@ -465,6 +488,11 @@ async def update_bank_in_list(
         "commission_rate": bank.commission_rate,
         "is_aggregator": bank.is_aggregator,
         "partner_code": bank.partner_code,
+        "gstin": bank.gstin,
+        "state_code": bank.state_code,
+        "billing_name": bank.billing_name,
+        "billing_address": bank.billing_address,
+        "billing_email": bank.billing_email,
         "created_at": bank.created_at, "updated_at": bank.updated_at,
     }
 

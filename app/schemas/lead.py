@@ -686,6 +686,16 @@ class BankCreate(BaseModel):
     #: The DSA / partner code this lender issued us — PNB's PCSLDSA9229.
     #: A commission claim is filed under it.
     partner_code: str | None = Field(default=None, max_length=60)
+    #: Billing details, needed before a commission invoice can be
+    #: raised. `gstin` alone is usually enough — the state code is
+    #: derived from its first two digits and decides CGST+SGST against
+    #: IGST. `billing_name` is the LEGAL name, often not the short one in
+    #: the dropdown; it falls back to `name`.
+    gstin: str | None = Field(default=None, max_length=15)
+    state_code: str | None = Field(default=None, min_length=2, max_length=2)
+    billing_name: str | None = Field(default=None, max_length=200)
+    billing_address: str | None = None
+    billing_email: str | None = Field(default=None, max_length=255)
 
     model_config = {"extra": "forbid"}
 
@@ -702,6 +712,16 @@ class BankUpdate(BaseModel):
     commission_rate: Decimal | None = Field(default=None, ge=0, le=100)
     is_aggregator: bool | None = None
     partner_code: str | None = Field(default=None, max_length=60)
+    #: Billing details, needed before a commission invoice can be
+    #: raised. `gstin` alone is usually enough — the state code is
+    #: derived from its first two digits and decides CGST+SGST against
+    #: IGST. `billing_name` is the LEGAL name, often not the short one in
+    #: the dropdown; it falls back to `name`.
+    gstin: str | None = Field(default=None, max_length=15)
+    state_code: str | None = Field(default=None, min_length=2, max_length=2)
+    billing_name: str | None = Field(default=None, max_length=200)
+    billing_address: str | None = None
+    billing_email: str | None = Field(default=None, max_length=255)
 
     model_config = {"extra": "forbid"}
 
@@ -728,6 +748,14 @@ class BankOut(BaseModel):
     #: be visible and editable on the lender row — it lived only in the
     #: revenue tracker's `Bank code` tab until 2026-09-06.
     partner_code: str | None = None
+    #: Billing details. `can_invoice` is false until a GSTIN exists, and
+    #: `invoice_blocked_reason` says what to fill in — render it on the
+    #: lender row so the gap is visible before someone tries to bill.
+    gstin: str | None = None
+    state_code: str | None = None
+    billing_name: str | None = None
+    billing_address: str | None = None
+    billing_email: str | None = None
     created_at: datetime
     updated_at: datetime
 

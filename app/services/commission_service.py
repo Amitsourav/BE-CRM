@@ -14,6 +14,7 @@ lender; this is the record of the money that came out of it.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -29,6 +30,8 @@ from app.core.constants import LAKH_IN_RUPEES
 from app.core.exceptions import BadRequestError, NotFoundError
 from app.services.bank_registry import get_commission_rate
 from app.services.invoice_tax import _round2
+
+logger = logging.getLogger(__name__)
 from app.utils.date_helpers import now_utc
 
 
@@ -225,6 +228,143 @@ class CommissionService:
         "received_on", "payment_reference", "write_off_reason", "notes",
         "gst_amount",
     )
+
+
+    async def raise_invoice(
+        self, disbursement_id: uuid.UUID, user: Profile,
+        invoice_date=None,
+    ):
+        """Bill one tranche's commission to the lender that owes it.
+
+        One invoice per tranche, which is how the commission is actually
+        earned: a loan releases semester by semester and each release is
+        billed as it happens.
+
+        This is what makes `to_bill` and `billed` mean anything. Until it
+        existed `invoice_id` was only ever set by a direct database write,
+        so `billed` was unreachable through the API and all 126 of FMC's
+        tranches read `to_bill` regardless of what had been sent out.
+
+        Refuses rather than guesses. A lender with no GSTIN cannot be
+        invoiced at all — the state code decides CGST+SGST against IGST
+        and inventing it would put the wrong tax on a legal document.
+        """
+        from app.models.bank import Bank
+        from app.services.invoice_service import InvoiceService
+
+        row = await self.get(disbursement_id)
+        if row.invoice_id is not None:
+            raise BadRequestError(
+                "This tranche is already on an invoice. Unlink it first if "
+                "the bill was raised in error."
+            )
+        if row.write_off_reason:
+            raise BadRequestError(
+                "This tranche is written off, so there is nothing to bill."
+            )
+        if not row.earns_commission or (row.commission_amount or 0) <= 0:
+            raise BadRequestError(
+                "This tranche earns no commission, so there is nothing to bill."
+            )
+
+        bank = (await self.db.execute(
+            select(Bank).where(Bank.name == row.bank_name)
+        )).scalar_one_or_none()
+        if bank is None:
+            raise BadRequestError(
+                f"'{row.bank_name}' is not in the lender list, so it has no "
+                "billing details. Add it under Settings -> Lenders first."
+            )
+        missing = [
+            label for label, value in (
+                ("GSTIN", bank.gstin),
+                ("billing address", bank.billing_address),
+            ) if not (value or "").strip()
+        ]
+        if missing:
+            raise BadRequestError(
+                f"'{bank.name}' cannot be invoiced yet — no "
+                f"{' and no '.join(missing)} on file. Add it on the lender "
+                "and try again. Guessing the tax details would put the "
+                "wrong GST split on a legal document."
+            )
+
+        lead = (await self.db.execute(
+            select(Lead).where(Lead.id == row.lead_id)
+        )).scalar_one_or_none()
+        who = (lead.full_name if lead else "").strip() or "student"
+        ref = f" (UTR {row.utr_reference})" if row.utr_reference else ""
+        when = (
+            f" disbursed {row.disbursed_on:%d-%b-%Y}" if row.disbursed_on else ""
+        )
+        description = (
+            f"Referral commission @ {row.commission_rate}% on "
+            f"Rs {row.disbursed_amount:,.2f} education loan{when} to "
+            f"{who} (#{lead.serial_no if lead else '-'}), tranche "
+            f"{row.tranche_no}{ref}"
+        )
+
+        invoice = await InvoiceService(self.db, self.company_id).create(
+            {
+                "invoice_date": invoice_date,
+                "customer_name": (bank.billing_name or bank.name),
+                "customer_gstin": bank.gstin,
+                "customer_state_code": bank.state_code,
+                "customer_address": bank.billing_address,
+                "customer_email": bank.billing_email,
+                "lead_id": row.lead_id,
+                # qty 1 x the commission: the line IS the commission, and
+                # splitting it into a rate-times-amount would invite the
+                # PDF to re-derive a figure that is already agreed.
+                "line_items": [{
+                    "description": description,
+                    "qty": 1,
+                    "rate": row.commission_amount,
+                    "lead_id": row.lead_id,
+                }],
+            },
+            created_by=user.id,
+        )
+        row.invoice_id = invoice.id
+        # The invoice's own tax math is authoritative — it knows the
+        # rate from invoice_settings and the CGST/SGST vs IGST split.
+        # Carrying it back keeps the tranche's `total_due` equal to what
+        # the lender was actually asked for.
+        row.gst_amount = invoice.total_tax
+        await self.db.commit()
+        await self.db.refresh(row)
+        logger.info(
+            "COMMISSION_INVOICED disbursement=%s invoice=%s lender=%s amount=%s by=%s",
+            row.id, invoice.invoice_number, bank.name, row.commission_amount,
+            user.email,
+        )
+        return invoice
+
+    async def unlink_invoice(self, disbursement_id: uuid.UUID, user: Profile):
+        """Detach a bill raised in error. Only while it is still a draft.
+
+        An issued invoice number is burned — GST numbering is sequential
+        and gapless, so an issued bill is voided, never unpicked.
+        """
+        from app.models.invoice import Invoice
+
+        row = await self.get(disbursement_id)
+        if row.invoice_id is None:
+            raise BadRequestError("This tranche is not on an invoice.")
+        inv = (await self.db.execute(
+            select(Invoice).where(Invoice.id == row.invoice_id)
+        )).scalar_one_or_none()
+        if inv is not None and inv.status != "draft":
+            raise BadRequestError(
+                f"Invoice {inv.invoice_number} is already {inv.status}. Void "
+                "it instead — an issued invoice number cannot be reused."
+            )
+        row.invoice_id = None
+        await self.db.commit()
+        await self.db.refresh(row)
+        logger.info("COMMISSION_INVOICE_UNLINKED disbursement=%s by=%s",
+                    row.id, user.email)
+        return row
 
     async def update(
         self, disbursement_id: uuid.UUID, payload: dict, user: Profile,

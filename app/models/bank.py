@@ -4,7 +4,7 @@ import uuid
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Boolean, Integer, Numeric, String, ForeignKey, text
+from sqlalchemy import Boolean, Integer, Numeric, String, Text, ForeignKey, text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -96,6 +96,19 @@ class Bank(Base, TimestampMixin):
     # breaks the moment a sub-product is renamed or a real lender's name
     # is a prefix of another. A file sitting on an aggregator earns
     # nothing, so the UI has to be able to say so with certainty.
+    # ── Billing ────────────────────────────────────────────────────────
+    # What a GST invoice needs about the party being billed. The state
+    # code decides CGST+SGST against IGST and is normally derived from
+    # the GSTIN's first two digits, so `gstin` alone is usually enough.
+    # `billing_name` is the lender's LEGAL name, which is often not the
+    # short name used in the dropdown ("Credila" vs "HDFC Credila
+    # Financial Services Limited"); falls back to `name` when unset.
+    gstin: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)
+    state_code: Mapped[Optional[str]] = mapped_column(String(2), nullable=True)
+    billing_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    billing_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    billing_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     # The DSA / partner code this lender issued FMC — PNB's PCSLDSA9229,
     # BOI's BOISL/DEL/202606/EL-…. A commission claim is filed under it,
     # so losing it means losing the ability to bill. It lived only in the
