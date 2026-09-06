@@ -17,6 +17,8 @@ from app.core.tenant import get_current_company_id
 from app.models.profile import Profile
 from app.models.lead import Lead
 from app.models.campaign_lead import CampaignLead
+from app.models.company import Company
+from app.core.constants import PIPELINE_AI, get_initial_stage_for_brand
 from app.services.campaign_service import CampaignService
 from app.schemas.campaign import (
     CampaignCreate, CampaignUpdate, AssignLeadsRequest,
@@ -292,6 +294,18 @@ _COL_ALIASES = {
 }
 
 
+async def _company_slug(db: AsyncSession, company_id: uuid.UUID) -> str | None:
+    """Brand slug for this tenant, used to pick the initial lead stage.
+
+    Both brands currently start at CREATED, so this changes nothing today —
+    it exists so the call site stays correct if the brands ever diverge,
+    rather than hardcoding a stage name here a second time.
+    """
+    return (await db.execute(
+        select(Company.slug).where(Company.id == company_id)
+    )).scalar_one_or_none()
+
+
 def _map_columns(raw_headers: list[str]) -> dict[str, str]:
     """Map CSV column headers to our field names using aliases.
 
@@ -436,6 +450,29 @@ async def upload_leads_csv(
     # Only rows whose phone is NOT already in the CRM get created as
     # new leads + added to the campaign. Pre-existing phones are
     # bucketed under existing_in_crm_skipped for the response stats.
+    # Every lead created here is, by construction, about to be enrolled in
+    # this campaign — so it belongs on the AI board. Two things this fixes:
+    #
+    #   current_stage: was hardcoded to the legacy "lead" stage, which the
+    #   May 2026 revamp retired. It has no Kanban column and no valid
+    #   transitions, so uploaded leads landed somewhere nothing could move
+    #   them out of (the same state 1,575 FMC leads had to be repaired from).
+    #
+    #   pipeline: was never set, so it took the column default 'normal'.
+    #   The dialer filters on Lead.pipeline == 'ai' (campaign_worker.py),
+    #   which meant every lead uploaded through this endpoint was enrolled,
+    #   counted in total_leads, and then silently skipped forever.
+    initial_stage = get_initial_stage_for_brand(await _company_slug(db, company_id)).value
+    # This path builds Lead rows directly rather than going through
+    # LeadService, so it never picked up the mandatory-source rule and
+    # every campaign lead landed unattributed. Named after the campaign
+    # itself, so the source scorecard can tell one campaign from another
+    # instead of lumping them under a single "Campaign" label.
+    from app.services.lead_service import LeadService
+    source_id = await LeadService(db, company_id).resolve_source(
+        f"AI Campaign — {campaign.name}"[:100],
+        source_type="csv",  # closest existing type; campaign uploads ARE CSVs
+    )
     new_leads = []
     fresh_phones: set[str] = set()
     for r in parsed:
@@ -445,13 +482,22 @@ async def upload_leads_csv(
         lead = Lead(
             company_id=company_id, full_name=r["name"], phone=r["phone"],
             email=r["email"], city=r["city"], state=r["state"],
-            notes=r["notes"], current_stage="lead",
+            notes=r["notes"], current_stage=initial_stage,
+            pipeline=PIPELINE_AI, lead_source_id=source_id,
         )
         db.add(lead)
         new_leads.append(lead)
         fresh_phones.add(r["phone"])
 
     if new_leads:
+        # Reserve one serial per lead BEFORE the flush. This path skipped
+        # it entirely, so every lead a campaign upload created landed with
+        # serial_no NULL — 1,578 of them by Sep 2026. A lead with no
+        # number cannot be quoted, searched for, or referred to.
+        from app.services.lead_service import reserve_serial_numbers
+        start = await reserve_serial_numbers(db, company_id, len(new_leads))
+        for i, lead in enumerate(new_leads):
+            lead.serial_no = start + i
         await db.flush()  # single flush for all new leads
         for lead in new_leads:
             existing_leads[lead.phone] = lead

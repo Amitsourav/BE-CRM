@@ -56,9 +56,10 @@ async def admin_user(db_session: AsyncSession) -> Profile:
 async def agent_user(db_session: AsyncSession) -> Profile:
     result = await db_session.execute(select(Profile).where(Profile.id == AGENT_USER_ID))
     user = result.scalar_one()
-    # The live DB row has drifted to role=admin; tests assume a telecaller.
+    # The live DB row has drifted to role=admin; tests assume a
+    # Pre-Counsellor (the role TELECALLER was renamed to in May 2026).
     # The fixture rolls back its transaction, so this mutation doesn't escape.
-    user.role = UserRole.TELECALLER
+    user.role = UserRole.PRE_COUNSELLOR
     await db_session.flush()
     return user
 
@@ -67,7 +68,7 @@ async def agent_user(db_session: AsyncSession) -> Profile:
 async def agent2_user(db_session: AsyncSession) -> Profile:
     result = await db_session.execute(select(Profile).where(Profile.id == AGENT2_USER_ID))
     user = result.scalar_one()
-    user.role = UserRole.TELECALLER
+    user.role = UserRole.PRE_COUNSELLOR
     await db_session.flush()
     return user
 

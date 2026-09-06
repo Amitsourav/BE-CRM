@@ -33,7 +33,12 @@ class CSVImportService:
         if size_mb > self.settings.csv_max_size_mb:
             raise BadRequestError(f"File too large. Max {self.settings.csv_max_size_mb}MB")
 
-        headers, rows = parse_csv_content(content, self.settings.csv_max_rows)
+        # The parser refuses an oversized file rather than truncating it.
+        # Translate that into a 400 the uploader can read, not a 500.
+        try:
+            headers, rows = parse_csv_content(content, self.settings.csv_max_rows)
+        except ValueError as e:
+            raise BadRequestError(str(e))
         if not headers:
             raise BadRequestError("CSV file has no headers")
 
@@ -114,7 +119,12 @@ class CSVImportService:
         assigned_agent_id: uuid.UUID | None,
         lead_source_id: uuid.UUID | None,
     ) -> CSVImport:
-        headers, rows = parse_csv_content(content, self.settings.csv_max_rows)
+        # The parser refuses an oversized file rather than truncating it.
+        # Translate that into a 400 the uploader can read, not a 500.
+        try:
+            headers, rows = parse_csv_content(content, self.settings.csv_max_rows)
+        except ValueError as e:
+            raise BadRequestError(str(e))
 
         slug_result = await self.db.execute(
             select(Company.slug).where(Company.id == self.company_id)
@@ -320,6 +330,17 @@ class CSVImportService:
                         lead_data["lead_source_id"] = lead_source_id
                 else:
                     lead_data["lead_source_id"] = lead_source_id
+
+                # A source is mandatory. The row fails rather than
+                # landing unattributed: 34 students carrying Rs 5.97 cr
+                # arrived with no source and could not be credited to any
+                # channel afterwards. Failing here names the row number,
+                # which is fixable; a silent NULL is not.
+                if not lead_data.get("lead_source_id"):
+                    raise ValueError(
+                        "No lead source. Add a 'source' column to the CSV, "
+                        "or pick one from the dropdown before importing."
+                    )
 
                 lead_data["company_id"] = self.company_id
                 lead_data["current_stage"] = initial_stage

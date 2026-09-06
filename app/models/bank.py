@@ -96,6 +96,11 @@ class Bank(Base, TimestampMixin):
     # breaks the moment a sub-product is renamed or a real lender's name
     # is a prefix of another. A file sitting on an aggregator earns
     # nothing, so the UI has to be able to say so with certainty.
+    # The DSA / partner code this lender issued FMC — PNB's PCSLDSA9229,
+    # BOI's BOISL/DEL/202606/EL-…. A commission claim is filed under it,
+    # so losing it means losing the ability to bill. It lived only in the
+    # tracker's `Bank code` tab until 2026-09-06.
+    partner_code: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
     is_aggregator: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )

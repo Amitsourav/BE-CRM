@@ -72,7 +72,18 @@ def parse_csv_content(content: str | bytes, max_rows: int = 5000) -> tuple[list[
     rows = []
     for i, row in enumerate(reader):
         if i >= max_rows:
-            break
+            # REFUSE, never truncate. This used to `break`, so a
+            # 19,688-row upload imported the first 5,000 and reported
+            # success — the missing 14,688 students were only discovered
+            # days later, and re-uploading created duplicates of the
+            # 5,000 that had landed. A file that is too big must fail
+            # loudly enough that someone splits it.
+            raise ValueError(
+                f"This file has more than {max_rows:,} rows. Nothing was "
+                f"imported. Split it into files of {max_rows:,} rows or "
+                "fewer and upload them one at a time — importing part of "
+                "a file silently is how leads go missing."
+            )
         rows.append(row)
     return headers, rows
 

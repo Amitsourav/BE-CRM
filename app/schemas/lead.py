@@ -660,6 +660,14 @@ class BankCreate(BaseModel):
     # Where it sits in the dropdown / grid columns. Omitted = appended.
     sort_order: int | None = None
     commission_rate: Decimal | None = Field(default=None, ge=0, le=100)
+    # An aggregator (UniCred, Nomad, Axis) fronts several lenders at
+    # different rates, so it carries none of its own. The route has read
+    # this since Sep 2026; the field was never added here, so adding ANY
+    # lender raised AttributeError -> 500.
+    is_aggregator: bool = False
+    #: The DSA / partner code this lender issued us — PNB's PCSLDSA9229.
+    #: A commission claim is filed under it.
+    partner_code: str | None = Field(default=None, max_length=60)
 
     model_config = {"extra": "forbid"}
 
@@ -675,6 +683,7 @@ class BankUpdate(BaseModel):
     # never rewrite what was already earned.
     commission_rate: Decimal | None = Field(default=None, ge=0, le=100)
     is_aggregator: bool | None = None
+    partner_code: str | None = Field(default=None, max_length=60)
 
     model_config = {"extra": "forbid"}
 
@@ -696,6 +705,11 @@ class BankOut(BaseModel):
     # a file left on it can never earn commission — render it as needing
     # a specific sub-product rather than as a 0% lender.
     is_aggregator: bool = False
+    #: The DSA / partner code this lender issued us (PNB PCSLDSA9229,
+    #: BOI BOISL/DEL/…). A commission claim is filed under it, so it must
+    #: be visible and editable on the lender row — it lived only in the
+    #: revenue tracker's `Bank code` tab until 2026-09-06.
+    partner_code: str | None = None
     created_at: datetime
     updated_at: datetime
 

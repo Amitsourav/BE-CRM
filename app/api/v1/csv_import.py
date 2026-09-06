@@ -50,8 +50,14 @@ async def preview_csv(
     content = _upload_cache.get(str(import_id))
     if content:
         from app.utils.csv_parser import parse_csv_content
-        headers, rows = parse_csv_content(content)
-        preview["preview_rows"] = rows[:5]
+        # An oversized file now raises rather than truncating. Upload
+        # already rejected it, so this can only be a stale cache entry —
+        # the preview shows no sample rows instead of 500ing.
+        try:
+            headers, rows = parse_csv_content(content)
+            preview["preview_rows"] = rows[:5]
+        except ValueError:
+            preview["preview_rows"] = []
 
     return preview
 

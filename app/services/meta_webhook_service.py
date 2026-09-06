@@ -216,7 +216,13 @@ class MetaWebhookService:
         )).scalar_one_or_none()
         creator_id = admin.id if admin else None
         try:
-            lead = await svc.create_lead(data, creator_id, creator_role=None)
+            # routing.source_id is set per form when configured; this
+            # names the channel when it is not, so a Meta lead is never
+            # dropped for want of a source.
+            lead = await svc.create_lead(
+                data, creator_id, creator_role=None,
+                source_fallback="Meta Ads",
+            )
             logger.info("Meta: created lead %s (#%s) on tenant %s from form %s",
                         lead.id, lead.serial_no, company_id, payload["form_id"])
         except Exception:

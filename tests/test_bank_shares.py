@@ -6,7 +6,7 @@ exactly one row per (lead, bank) and two structures recording the same
 relationship would drift.
 
 Uses admin_client only — the agent_* fixtures are broken by the stale
-UserRole.TELECALLER reference in conftest.
+UserRole.PRE_COUNSELLOR reference in conftest.
 """
 import uuid
 

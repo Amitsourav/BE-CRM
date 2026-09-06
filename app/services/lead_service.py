@@ -54,6 +54,7 @@ def invalidate_kanban_cache_for_company(company_id) -> None:
         _kanban_cache.pop(k, None)
 from sqlalchemy.orm import selectinload
 from app.models.lead import Lead
+from app.core.constants import LeadSourceType
 from app.models.lead_source import LeadSource
 from app.models.profile import Profile
 from app.models.lead_stage_log import LeadStageLog
@@ -216,8 +217,103 @@ class LeadService:
         """
         return await reserve_serial_numbers(self.db, self.company_id, count)
 
-    async def create_lead(self, data: dict, created_by: uuid.UUID, creator_role: str | None = None) -> Lead:
+    async def _require_source(
+        self, data: dict, created_by: uuid.UUID, fallback: str | None,
+    ) -> None:
+        """Every lead must say where it came from.
+
+        Source was optional until 2026-09-06 and 34 students carrying
+        Rs 5.97 crore of disbursement — 38% of the book — ended up with
+        none. "Unattributed" was the largest channel on the source
+        scorecard, which made the question "which channel makes money"
+        unanswerable. A blank in a spreadsheet is visible; a NULL in a
+        database is not, so the database has to refuse it.
+
+        An automated caller cannot pick a source, so it names its channel
+        and gets a row created on demand. A person gets a 400 — they can
+        see the dropdown.
+        """
+        sid = data.get("lead_source_id")
+        if sid:
+            exists = (await self.db.execute(
+                select(LeadSource.id).where(
+                    LeadSource.id == sid,
+                    LeadSource.company_id == self.company_id,
+                )
+            )).scalar_one_or_none()
+            if exists is None:
+                # Also closes a cross-tenant hole: nothing checked that
+                # the id belonged to this company.
+                raise BadRequestError(
+                    "That lead source does not exist on this account."
+                )
+            return
+        if not fallback:
+            raise BadRequestError(
+                "A lead source is required. Pick where this lead came "
+                "from — without it the lead is invisible to every "
+                "channel report."
+            )
+        # The channel decides the type, so the Sources page can still
+        # tell a WhatsApp channel from a website form.
+        kind = {
+            "WhatsApp": LeadSourceType.WHATSAPP.value,
+            "Meta Ads": LeadSourceType.META_ADS.value,
+            "Website": LeadSourceType.WEBSITE.value,
+        }.get(fallback, LeadSourceType.MANUAL.value)
+        data["lead_source_id"] = await self.resolve_source(
+            fallback, created_by, source_type=kind,
+        )
+
+    async def resolve_source(
+        self, name: str, created_by: uuid.UUID | None = None,
+        source_type: str = LeadSourceType.MANUAL.value,
+    ) -> uuid.UUID:
+        """A lead_sources id for `name`, creating the row if new.
+
+        Case-insensitive, so "WhatsApp" and "whatsapp" stay one channel
+        rather than splitting the scorecard in two.
+
+        `source_type` is a DB enum — passing anything outside
+        `LeadSourceType` fails at the insert, not at the call, so callers
+        must use the enum's values.
+        """
+        if source_type not in {t.value for t in LeadSourceType}:
+            raise BadRequestError(
+                f"'{source_type}' is not a lead source type. Use one of "
+                f"{sorted(t.value for t in LeadSourceType)}."
+            )
+        clean = name.strip()
+        row = (await self.db.execute(
+            select(LeadSource.id).where(
+                LeadSource.company_id == self.company_id,
+                func.lower(LeadSource.name) == clean.lower(),
+            )
+        )).scalar_one_or_none()
+        if row:
+            return row
+        src = LeadSource(
+            company_id=self.company_id, name=clean,
+            source_type=source_type, is_active=True,
+        )
+        self.db.add(src)
+        await self.db.flush()
+        return src.id
+
+    async def create_lead(
+        self, data: dict, created_by: uuid.UUID,
+        creator_role: str | None = None,
+        source_fallback: str | None = None,
+    ) -> Lead:
+        """Create a lead. A source is mandatory — see `_require_source`.
+
+        `source_fallback` names the channel for automated callers
+        (webhooks, the website form, Meta). A human-facing caller passes
+        nothing and gets a 400 instead, because a person can pick the
+        right source and a webhook cannot.
+        """
         data["company_id"] = self.company_id
+        await self._require_source(data, created_by, source_fallback)
 
         # Auto-own rule (FMC, May 2026):
         #   • Pre-Counsellor creates a lead → set pre_counsellor_id = self

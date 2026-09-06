@@ -332,6 +332,9 @@ class WebsiteSubmissionService:
         from app.services.lead_service import LeadService
         lead = await LeadService(self.db, self.company_id).create_lead(
             data, user.id, creator_role=None,
+            # The form usually carries its own source; this names the
+            # channel for a form that does not.
+            source_fallback="Website",
         )
 
         submission.status = "converted"

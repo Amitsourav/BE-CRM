@@ -272,7 +272,7 @@ async def test_create_lead_source_agent_forbidden(agent_client):
 # silently produce two live leads for one person. These pin the fix.
 #
 # Uses only admin_client (no agent_* fixtures — those are broken by the
-# stale UserRole.TELECALLER reference in conftest).
+# stale UserRole.PRE_COUNSELLOR reference in conftest).
 
 def _phone() -> str:
     return f"+91{uuid.uuid4().int % 10**10:010d}"

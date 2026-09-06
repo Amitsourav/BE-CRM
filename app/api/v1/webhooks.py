@@ -350,7 +350,12 @@ async def internal_meta_ingest(
             **(body.extra_fields or {}),
         },
     }
-    lead = await svc.create_lead(data, creator_id, creator_role=None)
+    # A webhook cannot pick a source, so it names its own channel. It
+    # must never be REFUSED one — losing an inbound lead is far worse
+    # than a coarse source label.
+    lead = await svc.create_lead(
+        data, creator_id, creator_role=None, source_fallback="WhatsApp",
+    )
     logger.info("Internal meta ingest: created lead %s (#%s) on tenant %s from form %s",
                 lead.id, lead.serial_no, company_id, body.form_id)
     return {"status": "ok", "lead_id": str(lead.id), "serial_no": lead.serial_no}
