@@ -413,6 +413,18 @@ class LeadBankUpdate(BaseModel):
     first_tranche_amount: Decimal | None = None
     no_of_tranches: int | None = None
     pf_status: str | None = None  # 'paid' | 'pending'
+    # ── What we give away on this deal ────────────────────────────────
+    # A lead from an outside connector (Altera, MBA Aspire, arman) costs
+    # a share of the commission. Recorded on the FILE because that is how
+    # it is agreed — off the sanction, not off a single release.
+    payout_to: str | None = Field(default=None, max_length=100)
+    #: Owed on the whole deal. MAY exceed commission earned so far when
+    #: only part of the loan has been drawn — that is expected, not an
+    #: error.
+    payout_due: Decimal | None = Field(default=None, ge=0)
+    #: What has actually gone out. Two numbers because a payout is often
+    #: part-paid and one column cannot say so.
+    payout_paid: Decimal | None = Field(default=None, ge=0)
 
 
 class LeadBankOut(BaseModel):
@@ -430,6 +442,12 @@ class LeadBankOut(BaseModel):
     first_tranche_amount: Decimal | None = None
     no_of_tranches: int | None = None
     pf_status: str | None = None
+    #: Who supplied the lead and takes a share of the commission, what is
+    #: owed to them on this deal, and what has been paid. Revenue net of
+    #: `payout_due` is the only figure that is FMC's own money.
+    payout_to: str | None = None
+    payout_due: Decimal | None = None
+    payout_paid: Decimal | None = None
     created_at: datetime
     updated_at: datetime
 

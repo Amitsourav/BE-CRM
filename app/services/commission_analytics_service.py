@@ -262,9 +262,26 @@ class CommissionAnalyticsService:
                 # whole book's outstanding by exactly that much and put
                 # this panel ₹280.45 below `ageing` and `by_lender`.
                 func.coalesce(func.sum(BankDisbursement.shortfall), 0),
+                # Commission alone, without GST — the base a payout is
+                # taken out of.
+                func.coalesce(func.sum(BankDisbursement.commission_amount), 0),
             ).where(*self._disb_where(f))
         )).one()
-        tranches, disbursed, earned, collected, outstanding = d
+        tranches, disbursed, earned, collected, outstanding, commission = d
+
+        # Payout lives on the FILE, not the tranche — it is agreed on the
+        # deal and computed off the sanction. A third query rather than a
+        # join, because joining files to tranches fans every sanction out
+        # by its tranche count. Every revenue figure was GROSS until this
+        # existed, which is what the tracker's month tabs corrected by
+        # hand.
+        p = (await self.db.execute(
+            select(
+                func.coalesce(func.sum(LeadBank.payout_due), 0),
+                func.coalesce(func.sum(LeadBank.payout_paid), 0),
+            ).where(*self._file_where(f), LeadBank.bank_status.in_(_LIVE))
+        )).one()
+        payout_due, payout_paid = p
 
         return {
             "sanctioned_total": sanctioned,
@@ -281,6 +298,14 @@ class CommissionAnalyticsService:
             "earned_total": earned,
             "collected_total": collected,
             "outstanding_total": outstanding,
+            # Commission ex-GST, what is shared away out of it, and what
+            # is actually kept. `net_commission_total` is the only one of
+            # the three that is FMC's own money.
+            "commission_total": commission,
+            "payout_due_total": payout_due,
+            "payout_paid_total": payout_paid,
+            "payout_outstanding_total": (payout_due or 0) - (payout_paid or 0),
+            "net_commission_total": (commission or 0) - (payout_due or 0),
             # Each step as a share of the one before it. A low drawdown
             # percentage is money approved and never taken, which no other
             # screen surfaces.
@@ -688,6 +713,10 @@ class CommissionAnalyticsService:
             ).where(*self._disb_where(f))
         )).one()
         booked, booked_gst = b
+        payout = (await self.db.execute(
+            select(func.coalesce(func.sum(LeadBank.payout_due), 0))
+            .where(*self._file_where(f), LeadBank.bank_status.in_(_LIVE))
+        )).scalar()
 
         # Biggest opportunities: confirmed files with money still to draw,
         # ranked by what that money is worth to FMC after the net haircut.
@@ -723,6 +752,12 @@ class CommissionAnalyticsService:
                 # Charged on top of it. Shown so the bridge still ties to
                 # `funnel.earned_total`, which is booked + booked_gst.
                 "booked_gst": booked_gst,
+                # Booked commission that goes back out to whoever
+                # supplied the lead, and what is left after it. `kept` is
+                # the number to put in front of anyone asking what the
+                # business earned.
+                "shared_away": payout,
+                "kept": (booked or 0) - (payout or 0),
                 # Earnable on money approved and still to come. A floor —
                 # files with no lender rate are excluded, not zeroed.
                 "unlockable": ahead["future_commission"],

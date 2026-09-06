@@ -70,6 +70,26 @@ class LeadBank(Base):
     # and the other the rate captured at disbursement, the gap between
     # them would include a rate change that has nothing to do with how
     # much of the loan was actually drawn.
+    # ── What we give away on this deal ─────────────────────────────────
+    # A lead from an outside connector costs a share of the commission.
+    # On the FILE, not on a tranche: the payout is agreed on the deal and
+    # computed off the SANCTION, while commission is earned per tranche
+    # off what is actually drawn. Paris Joshi's Rs 8,832 is 0.4% of his
+    # whole Rs 27.6 L deal and belongs to neither of his two tranches.
+    #
+    # Free text rather than an FK: these are ad-hoc individuals, not a
+    # managed list.
+    payout_to: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # Owed on the whole deal. CAN exceed commission earned so far — Aftar
+    # is owed Rs 4,870 against Rs 15.22 L sanctioned while only Rs 4.55 L
+    # has been drawn, earning Rs 3,185. That is not an error; the rest of
+    # the loan has simply not been released yet.
+    payout_due: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
+    # ...and what has actually gone out. Two amounts because they differ:
+    # Rs 3,653 of Aftar's Rs 4,870 is paid. The tracker kept two rival
+    # columns for this and they disagreed on exactly the part-paid rows.
+    payout_paid: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
+
     commission_rate: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(5, 2), nullable=True
     )

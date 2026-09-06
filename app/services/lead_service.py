@@ -1687,6 +1687,24 @@ class LeadService:
                 if f in payload and payload[f] is not None:
                     setattr(entry, f, payload[f])
 
+        # Connector payout. NOT gated on sanction status — an agreement
+        # with whoever supplied the lead exists from the moment the deal
+        # is agreed, and can be recorded before the bank confirms
+        # anything. Deliberately not checked against commission earned:
+        # the payout is owed on the SANCTION while commission accrues per
+        # tranche, so Aftar is legitimately owed Rs 4,870 against Rs 3,185
+        # earned so far. The exception register reports that; it is not
+        # an error.
+        for f in ("payout_to", "payout_due", "payout_paid"):
+            if f in payload and payload[f] is not None:
+                setattr(entry, f, payload[f])
+        if (entry.payout_due or entry.payout_paid) and not (entry.payout_to or "").strip():
+            # Money leaving the book that nobody can be asked about.
+            raise BadRequestError(
+                "Say who the payout goes to. A share of commission with "
+                "no name against it cannot be chased or reconciled."
+            )
+
         # Snapshot the lender's commission rate onto the file the first
         # time it reaches sanctioned-or-later. Gross theoretical revenue
         # is computed from this, not from the lender's current rate, so

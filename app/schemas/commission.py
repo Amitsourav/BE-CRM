@@ -92,6 +92,9 @@ class DisbursementOut(BaseModel):
     # | paid | written_off.
     status: str
     shortfall: Decimal
+    #: True when the date was derived rather than recorded. Show it —
+    #: the row ages as though it were exact and it is not.
+    disbursed_on_estimated: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -265,6 +268,16 @@ class FunnelOut(BaseModel):
     #: Summed row by row, so an overpaying lender never cancels out
     #: another's debt. This is why it can exceed earned - collected.
     outstanding_total: Decimal = Decimal("0")
+    #: Commission WITHOUT GST — `earned_total` minus the tax.
+    commission_total: Decimal = Decimal("0")
+    #: Commission that goes back to whoever supplied the lead, what has
+    #: actually gone out, and what is still owed to them.
+    payout_due_total: Decimal = Decimal("0")
+    payout_paid_total: Decimal = Decimal("0")
+    payout_outstanding_total: Decimal = Decimal("0")
+    #: `commission_total - payout_due_total`. THE revenue figure: what
+    #: FMC keeps. Every other number on this panel is gross.
+    net_commission_total: Decimal = Decimal("0")
     confirmed_pct_of_sanctioned: float = 0.0
     disbursed_pct_of_confirmed: float = 0.0
     collected_pct_of_earned: float = 0.0
@@ -443,6 +456,10 @@ class RevenueBridgeOut(BaseModel):
     #: booked_gst` equals `funnel.earned_total`.
     booked: Decimal = Decimal("0")
     booked_gst: Decimal = Decimal("0")
+    #: Of `booked`, what goes back to whoever supplied the lead.
+    shared_away: Decimal = Decimal("0")
+    #: `booked - shared_away` — what the business actually keeps.
+    kept: Decimal = Decimal("0")
     unlockable: Decimal = Decimal("0")
     #: `unlockable` after the 80% haircut — the basis
     #: `opportunities[].potential_net_revenue` uses.
