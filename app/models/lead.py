@@ -50,6 +50,15 @@ class Lead(Base, TimestampMixin):
     preferred_universities: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String), nullable=True)
 
     # Pipeline
+    # The month we EXPECT this deal to close. A forward-looking TARGET,
+    # set early and revisable, not a record of anything that happened —
+    # a dropped student keeps the month they were expected to close in.
+    # Pinned to the 1st so date_trunc and range filters work directly.
+    #
+    # Do NOT date a disbursement or a sanction from this. Doing so put
+    # Rajwardhan's second tranche in March, before the tranche existed.
+    expected_closure_month: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+
     current_stage: Mapped[str] = mapped_column(ENUM(*LEAD_STAGE_VALUES, name='lead_stage', create_type=False), nullable=False, server_default=text("'lead'"))
     assigned_agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)
     pre_counsellor_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)

@@ -77,6 +77,19 @@ from app.utils.date_helpers import now_utc
 logger = logging.getLogger(__name__)
 
 
+def _pin_closure_month(data: dict) -> None:
+    """Snap `expected_closure_month` to the 1st of its month.
+
+    It is a MONTH, and storing a real date keeps date_trunc and range
+    filters working without string parsing. Pinning on write means the
+    stored value never implies a precision the field does not have — a
+    target of "some time in July" must not read as 17-Jul.
+    """
+    v = data.get("expected_closure_month")
+    if v is not None and getattr(v, "day", 1) != 1:
+        data["expected_closure_month"] = v.replace(day=1)
+
+
 async def reserve_serial_numbers(
     db: AsyncSession, company_id: uuid.UUID, count: int = 1,
 ) -> int:
@@ -314,6 +327,7 @@ class LeadService:
         """
         data["company_id"] = self.company_id
         await self._require_source(data, created_by, source_fallback)
+        _pin_closure_month(data)
 
         # Auto-own rule (FMC, May 2026):
         #   • Pre-Counsellor creates a lead → set pre_counsellor_id = self
@@ -464,6 +478,7 @@ class LeadService:
 
     async def update_lead(self, lead_id: uuid.UUID, data: dict, user: Profile) -> Lead:
         lead = await self.get_lead(lead_id, user)
+        _pin_closure_month(data)
         prev_due_date = lead.due_date
         prev_stage = lead.current_stage
 

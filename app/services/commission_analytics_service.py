@@ -1258,6 +1258,95 @@ class CommissionAnalyticsService:
             ],
         }
 
+
+    async def by_expected_month(self, f: Filters | None = None) -> dict:
+        """What we expect to close each month, against what actually did.
+
+        The forecast the CRM never had: every other panel reports history.
+        `expected_closure_month` is a TARGET set at sanction, so a month
+        in the past with money still undrawn is a target that slipped —
+        which is the only thing on this dashboard that looks forward.
+
+        Students, not files: a student with three lender files is one
+        deal expected to close once.
+        """
+        sanc = (
+            select(
+                LeadBank.lead_id.label("lid"),
+                func.sum(LeadBank.loan_amount).label("sanc"),
+            )
+            .where(*self._file_where(f), LeadBank.bank_status.in_(_LIVE))
+            .group_by(LeadBank.lead_id)
+            .subquery()
+        )
+        disb = (
+            select(
+                BankDisbursement.lead_id.label("lid"),
+                func.sum(BankDisbursement.disbursed_amount).label("disb"),
+                func.sum(BankDisbursement.commission_amount).label("comm"),
+            )
+            .where(*self._disb_where(f))
+            .group_by(BankDisbursement.lead_id)
+            .subquery()
+        )
+        rows = (await self.db.execute(
+            select(
+                Lead.expected_closure_month,
+                func.count(),
+                func.coalesce(func.sum(func.coalesce(sanc.c.sanc, 0)), 0),
+                func.coalesce(func.sum(func.coalesce(disb.c.disb, 0)), 0),
+                func.coalesce(func.sum(func.coalesce(disb.c.comm, 0)), 0),
+            )
+            .select_from(Lead)
+            .outerjoin(sanc, sanc.c.lid == Lead.id)
+            .outerjoin(disb, disb.c.lid == Lead.id)
+            .where(
+                Lead.id.in_(self._lead_scope(f)),
+                Lead.expected_closure_month.isnot(None),
+            )
+            .group_by(Lead.expected_closure_month)
+            .order_by(Lead.expected_closure_month)
+        )).all()
+
+        today = date.today()
+        months = []
+        for m, n, sanctioned, drawn, comm in rows:
+            pending = (sanctioned or Decimal("0")) - (drawn or Decimal("0"))
+            months.append({
+                "month": m,
+                "students": n,
+                "sanctioned": sanctioned,
+                "disbursed": drawn,
+                "commission": comm,
+                # Approved money the month came and went without drawing.
+                # A past month with pending money is a slipped target,
+                # and it is the number this panel exists to surface.
+                "pending": pending if pending > 0 else Decimal("0"),
+                "is_past": bool(m and m < today.replace(day=1)),
+            })
+
+        # Everyone with money or a live sanction but no target date. They
+        # are absent from the forecast entirely, so the count travels with
+        # it rather than the forecast quietly reading low.
+        no_month = (await self.db.execute(
+            select(func.count())
+            .select_from(Lead)
+            .where(
+                Lead.id.in_(self._lead_scope(f)),
+                Lead.expected_closure_month.is_(None),
+                Lead.id.in_(select(LeadBank.lead_id).where(
+                    *self._file_where(f), LeadBank.bank_status.in_(_LIVE))),
+            )
+        )).scalar() or 0
+
+        slipped = [m for m in months if m["is_past"] and m["pending"] > 0]
+        return {
+            "months": months,
+            "students_without_month": no_month,
+            "slipped_months": len(slipped),
+            "slipped_pending": sum((m["pending"] for m in slipped), Decimal("0")),
+        }
+
     # ── Assembly ───────────────────────────────────────────────────────
 
     async def dashboard(self, months: int = 12, f: Filters | None = None) -> dict:

@@ -29,6 +29,7 @@ from app.services.commission_analytics_service import (
 )
 from app.schemas.commission import (
     ReconciliationDashboardOut,
+    ExpectedMonthOut,
     PipelineOut, SourcesOut, ExceptionsOut, DrilldownOut,
     DisbursementCreate, DisbursementUpdate, DisbursementOut,
     ReconciliationOut, LenderSummaryRow, GrossTheoreticalOut,
@@ -186,6 +187,28 @@ async def dashboard(
     """
     await _require_fmc(db, company_id)
     return await CommissionAnalyticsService(db, company_id).dashboard(months, f)
+
+
+@router.get("/expected-months", response_model=ExpectedMonthOut)
+async def expected_months(
+    f: Filters = Depends(_filters),
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """The forecast: what we expect to close each month, against what did.
+
+    `expected_closure_month` is a TARGET set at sanction and revisable at
+    any time — not a record of anything that happened. A past month with
+    money still pending is a target that slipped, and that is the number
+    worth acting on.
+
+    `students_without_month` counts live deals carrying no target at all.
+    They are outside the forecast, so show it: otherwise the total reads
+    low for no visible reason.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionAnalyticsService(db, company_id).by_expected_month(f)
 
 
 @router.get("/pipeline", response_model=PipelineOut)

@@ -28,6 +28,10 @@ class LeadCreate(BaseModel):
     preferred_countries: list[str] | None = None
     preferred_universities: list[str] | None = None
     lead_source_id: uuid.UUID | None = None
+    #: The month we EXPECT this deal to close — a TARGET, revisable at
+    #: any stage, not a record of anything that happened. Send any date
+    #: in the month; it is pinned to the 1st. Send null to clear it.
+    expected_closure_month: date | None = None
     assigned_agent_id: uuid.UUID | None = None
     custom_fields: dict | None = None
     tags: list[str] | None = None
@@ -69,6 +73,10 @@ class LeadUpdate(BaseModel):
     assigned_agent_id: uuid.UUID | None = None
     pre_counsellor_id: uuid.UUID | None = None
     current_stage: str | None = None
+    #: The month we EXPECT this deal to close — a TARGET, revisable at
+    #: any stage, not a record of anything that happened. Send any date
+    #: in the month; it is pinned to the 1st.
+    expected_closure_month: date | None = None
     is_important: bool | None = None
     # FMC enhanced tile fields — editable from the lead form.
     loan_amount: str | None = None
@@ -131,6 +139,10 @@ class LeadOut(BaseModel):
     assigned_agent_id: uuid.UUID | None = None
     pre_counsellor_id: uuid.UUID | None = None
     lead_source_id: uuid.UUID | None = None
+    #: The month we EXPECT this deal to close — a TARGET, revisable at
+    #: any stage, not a record of anything that happened. Send any date
+    #: in the month; it is pinned to the 1st. Send null to clear it.
+    expected_closure_month: date | None = None
     call_attempt_count: int = 0
     due_date: datetime | None = None
     connected_time: datetime | None = None
@@ -205,6 +217,10 @@ class LeadCardOut(BaseModel):
     assigned_agent_id: uuid.UUID | None = None
     pre_counsellor_id: uuid.UUID | None = None
     lead_source_id: uuid.UUID | None = None
+    #: The month we EXPECT this deal to close — a TARGET, revisable at
+    #: any stage, not a record of anything that happened. Send any date
+    #: in the month; it is pinned to the 1st. Send null to clear it.
+    expected_closure_month: date | None = None
     due_date: datetime | None = None
     last_contacted_at: datetime | None = None
     call_attempt_count: int = 0

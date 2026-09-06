@@ -406,6 +406,38 @@ class DataQualityOut(BaseModel):
     files_on_aggregator: int = 0
 
 
+
+class ExpectedMonthRow(BaseModel):
+    """One month of the forecast."""
+    #: First of the month. The field is a target, so only the month is
+    #: meaningful — render it as "Jul 2026", never as a date.
+    month: date
+    students: int = 0
+    sanctioned: Decimal = Decimal("0")
+    disbursed: Decimal = Decimal("0")
+    commission: Decimal = Decimal("0")
+    #: Approved but not yet drawn. On a PAST month this is a target that
+    #: slipped — highlight it; that is what the panel is for.
+    pending: Decimal = Decimal("0")
+    is_past: bool = False
+
+
+class ExpectedMonthOut(BaseModel):
+    """What we expect to close by month, against what actually did.
+
+    The only forward-looking panel on the dashboard. Everything else
+    reports history.
+    """
+    months: list[ExpectedMonthRow] = []
+    #: Students with a live sanction but NO target month. They are absent
+    #: from the forecast entirely, so show this beside it — otherwise the
+    #: forecast quietly reads low and nobody can tell why.
+    students_without_month: int = 0
+    slipped_months: int = 0
+    #: Approved money sitting in months that have already gone.
+    slipped_pending: Decimal = Decimal("0")
+
+
 class ReconciliationDashboardOut(BaseModel):
     """The whole dashboard in one response.
 
