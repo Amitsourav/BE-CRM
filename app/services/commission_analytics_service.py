@@ -1380,6 +1380,62 @@ class CommissionAnalyticsService:
             "slipped_pending": sum((m["pending"] for m in slipped), Decimal("0")),
         }
 
+
+    async def ready_to_bill(self, f: Filters | None = None) -> dict:
+        """Commission earned and never invoiced, grouped by lender.
+
+        FMC has Rs 7.78 lakh of it — 38% of everything lenders owe — sitting
+        in releases nobody has billed. It is invisible on every other panel
+        because they all measure what is OWED, and an unbilled release is
+        owed just the same. This is the one screen that says "you have not
+        asked for this money yet".
+
+        Grouped by lender because that is the unit of an invoice: one
+        customer, one GSTIN, one bill covering several students.
+        """
+        rows = (await self.db.execute(
+            select(
+                BankDisbursement.bank_name,
+                func.count(),
+                func.coalesce(func.sum(BankDisbursement.disbursed_amount), 0),
+                func.coalesce(func.sum(BankDisbursement.commission_amount), 0),
+                func.min(BankDisbursement.disbursed_on),
+                # A lender with no GSTIN cannot be invoiced at all, so the
+                # screen must say why rather than offering a button that
+                # will be refused.
+                func.count().filter(Bank.gstin.is_(None)),
+            )
+            .select_from(BankDisbursement)
+            .outerjoin(Bank, Bank.name == BankDisbursement.bank_name)
+            .where(
+                *self._disb_where(f),
+                BankDisbursement.invoice_id.is_(None),
+                BankDisbursement.write_off_reason.is_(None),
+                BankDisbursement.earns_commission.is_(True),
+                BankDisbursement.commission_amount > 0,
+            )
+            .group_by(BankDisbursement.bank_name)
+        )).all()
+        lenders = [
+            {
+                "bank_name": r[0],
+                "releases": r[1],
+                "disbursed_total": r[2],
+                "commission_total": r[3],
+                "oldest_release": r[4],
+                "can_invoice": r[5] == 0,
+            }
+            for r in rows
+        ]
+        lenders.sort(key=lambda x: -float(x["commission_total"]))
+        return {
+            "lenders": lenders,
+            "releases": sum(x["releases"] for x in lenders),
+            "commission_total": sum(
+                (x["commission_total"] for x in lenders), Decimal("0")),
+            "blocked_lenders": sum(1 for x in lenders if not x["can_invoice"]),
+        }
+
     # ── Assembly ───────────────────────────────────────────────────────
 
     async def dashboard(self, months: int = 12, f: Filters | None = None) -> dict:

@@ -400,6 +400,154 @@ class CommissionService:
         )
         return invoice
 
+
+    async def record_invoice_payment(
+        self, invoice_id: uuid.UUID, payload: dict, user: Profile,
+    ) -> dict:
+        """A lender paid against an invoice — spread it over its releases.
+
+        The lender settles the BILL, not the students. One payment arrives
+        for an invoice covering five releases, and every reconciled figure
+        in the CRM — outstanding, ageing, collection %, the lender
+        scorecard — reads settlement per release. So the payment has to be
+        allocated, not stored as a flag.
+
+        ADDITIVE. A part-payment now and the balance next month are two
+        calls, and the second adds to the first rather than replacing it.
+        That is how lenders actually pay: 4 of FMC's releases are already
+        materially short.
+
+        Allocation is PRO-RATA by what each release STILL OWES, not by
+        its share of the invoice. That distinction matters: splitting by
+        share sends money to releases that are already settled, so paying
+        the exact outstanding balance leaves the invoice short — the first
+        version of this did precisely that, and paying Rs 13,154.31
+        against Rs 13,154.31 owed left Rs 7,572.13 outstanding. Weighting
+        by shortfall means a payment of the outstanding amount clears it.
+
+        The last release absorbs the rounding remainder so the parts sum
+        to the payment exactly. A per-release override is available for
+        the cases where a lender itemises.
+        """
+        from app.models.invoice import Invoice
+
+        inv = (await self.db.execute(
+            select(Invoice).where(
+                Invoice.id == invoice_id, Invoice.company_id == self.company_id,
+            )
+        )).scalar_one_or_none()
+        if inv is None:
+            raise NotFoundError("Invoice not found")
+        if inv.status == "void":
+            raise BadRequestError(
+                f"Invoice {inv.invoice_number} is void, so a payment cannot "
+                "be recorded against it."
+            )
+
+        rows = (await self.db.execute(
+            select(BankDisbursement)
+            .where(
+                BankDisbursement.company_id == self.company_id,
+                BankDisbursement.invoice_id == invoice_id,
+            )
+            .order_by(BankDisbursement.disbursed_on, BankDisbursement.id)
+        )).scalars().all()
+        if not rows:
+            raise BadRequestError(
+                f"Invoice {inv.invoice_number} has no releases attached, so "
+                "there is nothing to allocate a payment to. This is normal "
+                "for the invoices imported from before the CRM billed — "
+                "record the payment on the release itself."
+            )
+
+        amount = _round2(Decimal(str(payload.get("amount_received") or 0)))
+        tds = _round2(Decimal(str(payload.get("tds_deducted") or 0)))
+        if amount <= 0 and tds <= 0:
+            raise BadRequestError(
+                "Enter what arrived — an amount, the TDS withheld, or both."
+            )
+        received_on = payload.get("received_on")
+        if received_on and inv.invoice_date and received_on < inv.invoice_date:
+            raise BadRequestError(
+                "Payment date is before the invoice date. One of the two "
+                "is wrong."
+            )
+        reference = (payload.get("payment_reference") or "").strip() or None
+
+        # Explicit per-release split, when the lender itemised.
+        split = payload.get("allocation") or {}
+        if split:
+            keys = {str(k) for k in split}
+            known = {str(r.id) for r in rows}
+            if keys - known:
+                raise BadRequestError(
+                    "The allocation names releases that are not on this "
+                    "invoice."
+                )
+            total = _round2(sum(Decimal(str(v)) for v in split.values()))
+            if total != amount:
+                raise BadRequestError(
+                    f"The allocation adds up to Rs {total:,.2f} but the "
+                    f"payment is Rs {amount:,.2f}."
+                )
+
+        # Weight by what is STILL OWED. Falls back to the full amount due
+        # only when nothing is owed at all — an overpayment on a settled
+        # invoice has to land somewhere, and spreading it by size is the
+        # least surprising place.
+        owed = {r.id: (r.shortfall or Decimal("0")) for r in rows}
+        base = sum(owed.values())
+        if base <= 0:
+            owed = {r.id: (r.total_due or Decimal("0")) for r in rows}
+            base = sum(owed.values())
+        allocated_amt = allocated_tds = Decimal("0")
+        touched = []
+        for i, row in enumerate(rows):
+            if split:
+                a = _round2(Decimal(str(split.get(str(row.id), 0))))
+                t = _round2(tds * a / amount) if amount else Decimal("0")
+            elif i == len(rows) - 1:
+                a = amount - allocated_amt
+                t = tds - allocated_tds
+            else:
+                w = owed[row.id] / base if base else Decimal("0")
+                a = _round2(amount * w)
+                t = _round2(tds * w)
+                allocated_amt += a
+                allocated_tds += t
+            row.amount_received = (row.amount_received or Decimal("0")) + a
+            row.tds_deducted = (row.tds_deducted or Decimal("0")) + t
+            if received_on:
+                row.received_on = received_on
+            if reference:
+                row.payment_reference = reference
+            touched.append((row, a, t))
+
+        await self.db.commit()
+        for row, _, _ in touched:
+            await self.db.refresh(row)
+        settled = sum((r.total_settled or Decimal("0")) for r, _, _ in touched)
+        due = sum((r.total_due or Decimal("0")) for r, _, _ in touched)
+        logger.info(
+            "INVOICE_PAYMENT invoice=%s amount=%s tds=%s releases=%s by=%s",
+            inv.invoice_number, amount, tds, len(rows), user.email,
+        )
+        return {
+            "invoice_number": inv.invoice_number,
+            "releases": len(rows),
+            "amount_received": amount,
+            "tds_deducted": tds,
+            "billed_total": due,
+            "received_total": settled,
+            "outstanding_total": max(due - settled, Decimal("0")),
+            "allocation": [
+                {"disbursement_id": r.id, "amount_received": a,
+                 "tds_deducted": t, "now_settled": r.total_settled,
+                 "still_owed": r.shortfall}
+                for r, a, t in touched
+            ],
+        }
+
     async def unlink_invoice(self, disbursement_id: uuid.UUID, user: Profile):
         """Detach a bill raised in error. Only while it is still a draft.
 

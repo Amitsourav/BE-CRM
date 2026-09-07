@@ -251,6 +251,55 @@ class BulkInvoiceIn(BaseModel):
     invoice_date: date | None = None
 
 
+
+class InvoicePaymentIn(BaseModel):
+    """A lender paid against an invoice.
+
+    ADDITIVE — a part-payment now and the balance later are two calls,
+    and the second adds to the first. Split PRO-RATA across the releases
+    the invoice bills unless `allocation` says otherwise.
+    """
+    amount_received: Decimal = Field(default=Decimal("0"), ge=0)
+    #: Withheld under s.194H. NOT a shortfall — it is paid to the tax
+    #: department on FMC's behalf and reclaimed, so a receipt entered net
+    #: of TDS with this left blank makes the release look underpaid.
+    tds_deducted: Decimal = Field(default=Decimal("0"), ge=0)
+    received_on: date | None = None
+    payment_reference: str | None = Field(default=None, max_length=100)
+    #: Optional per-release split, {disbursement_id: amount}. Must sum to
+    #: `amount_received`. For the cases where a lender itemises; leave it
+    #: out and the pro-rata default applies.
+    allocation: dict[uuid.UUID, Decimal] | None = None
+
+
+
+class ReadyToBillRow(BaseModel):
+    """One lender's unbilled commission."""
+    bank_name: str = ""
+    releases: int = 0
+    disbursed_total: Decimal = Decimal("0")
+    #: Commission ex-GST. The GST is added when the invoice is raised, so
+    #: it does not exist yet.
+    commission_total: Decimal = Decimal("0")
+    oldest_release: date | None = None
+    #: False when the lender has no GSTIN — billing would be refused, so
+    #: show why instead of a button that fails.
+    can_invoice: bool = True
+
+
+class ReadyToBillOut(BaseModel):
+    """Commission earned and never invoiced.
+
+    Invisible on every other panel: they measure what is OWED, and an
+    unbilled release is owed just the same. This is the only screen that
+    says "you have not asked for this money yet".
+    """
+    lenders: list[ReadyToBillRow] = []
+    releases: int = 0
+    commission_total: Decimal = Decimal("0")
+    blocked_lenders: int = 0
+
+
 class FunnelOut(BaseModel):
     """Sanctioned -> confirmed -> disbursed -> earned -> collected.
 

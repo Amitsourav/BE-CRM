@@ -402,6 +402,61 @@ class InvoiceService:
                 "Invoice %s PDF render/upload UNEXPECTED failure", invoice.invoice_number,
             )
 
+
+    async def _settlement(self, invoice_ids) -> dict:
+        """Money settled against each invoice, read off its releases.
+
+        The invoice is a DOCUMENT; the money lives on the releases it
+        bills, and every reconciled figure in the CRM reads it there.
+        Deriving here rather than storing a second copy is what stops the
+        two screens disagreeing — which they did until 2026-09-08, when
+        every invoice said unpaid while Rs 13.1 L had demonstrably
+        arrived.
+        """
+        from app.models.bank_disbursement import BankDisbursement
+        ids = [i for i in invoice_ids if i]
+        if not ids:
+            return {}
+        rows = (await self.db.execute(
+            select(
+                BankDisbursement.invoice_id,
+                func.count(),
+                func.coalesce(func.sum(BankDisbursement.total_due), 0),
+                func.coalesce(func.sum(BankDisbursement.total_settled), 0),
+                func.coalesce(func.sum(BankDisbursement.shortfall), 0),
+            )
+            .where(
+                BankDisbursement.company_id == self.company_id,
+                BankDisbursement.invoice_id.in_(ids),
+            )
+            .group_by(BankDisbursement.invoice_id)
+        )).all()
+        return {r[0]: {"linked_releases": r[1], "billed_total": r[2],
+                       "received_total": r[3], "outstanding_total": r[4]}
+                for r in rows}
+
+    def _decorate(self, inv, s: Optional[dict]):
+        """Attach the derived settlement fields to an invoice instance."""
+        inv.linked_releases = s["linked_releases"] if s else 0
+        inv.billed_total = s["billed_total"] if s else Decimal("0")
+        inv.received_total = s["received_total"] if s else Decimal("0")
+        inv.outstanding_total = s["outstanding_total"] if s else Decimal("0")
+        if inv.status == "void":
+            inv.effective_status = "void"
+        elif not s:
+            # NOTHING LINKED — keep what is stored. An empty set satisfies
+            # "every release settled" vacuously, and deriving `paid` from
+            # it would invent collections. FMC's 27 historical invoices are
+            # all in this state deliberately.
+            inv.effective_status = inv.status
+        elif s["outstanding_total"] <= 0:
+            inv.effective_status = "paid"
+        elif s["received_total"] > 0:
+            inv.effective_status = "part_paid"
+        else:
+            inv.effective_status = "issued"
+        return inv
+
     async def list(
         self, *, page: int = 1, page_size: int = 25,
         q: Optional[str] = None, status: Optional[str] = None,
@@ -430,6 +485,8 @@ class InvoiceService:
         rows = (await self.db.execute(
             query.limit(page_size).offset((page - 1) * page_size)
         )).scalars().all()
+        settled = await self._settlement([r.id for r in rows])
+        rows = [self._decorate(r, settled.get(r.id)) for r in rows]
         return {
             "items": rows,
             "total": total,
@@ -447,6 +504,17 @@ class InvoiceService:
         if not inv:
             raise NotFoundError("Invoice not found")
         return inv
+
+    async def get_detailed(self, invoice_id: uuid.UUID) -> Invoice:
+        """`get` plus the derived settlement fields, for the API.
+
+        Kept separate from `get` because download, regenerate and
+        update_status all call that one and none of them needs the extra
+        query.
+        """
+        inv = await self.get(invoice_id)
+        settled = await self._settlement([inv.id])
+        return self._decorate(inv, settled.get(inv.id))
 
     async def download_url(self, invoice_id: uuid.UUID, ttl_seconds: int = 300) -> str:
         inv = await self.get(invoice_id)
@@ -470,6 +538,18 @@ class InvoiceService:
         inv = await self.get(invoice_id)
         if inv.status == "void":
             raise BadRequestError("Voided invoices cannot be updated")
+        if new_status == "paid":
+            # Paid is DERIVED from the releases this invoice bills, so
+            # setting it by hand would put a flag in front of the money
+            # and let the two disagree. Record the payment instead — that
+            # is what moves it.
+            linked = (await self._settlement([inv.id])).get(inv.id)
+            if linked:
+                raise BadRequestError(
+                    f"This invoice bills {linked['linked_releases']} release(s), "
+                    "so whether it is paid comes from them. Record the payment "
+                    "against the invoice instead of setting the status."
+                )
         if new_status == "void":
             inv.status = "void"
             inv.voided_at = now_utc()

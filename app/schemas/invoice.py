@@ -207,6 +207,19 @@ class InvoiceOut(BaseModel):
     void_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    #: ── Settlement, derived from the releases this invoice bills ──
+    #: Empty on an invoice with no linked releases — FMC's 27 historical
+    #: bills are like that, and they keep their STORED status. An invoice
+    #: with nothing attached must never derive as "paid": an empty set
+    #: satisfies "every release is settled" vacuously, which would have
+    #: invented Rs 12.5 L of collections it never received.
+    linked_releases: int = 0
+    billed_total: Decimal = Decimal("0")
+    received_total: Decimal = Decimal("0")
+    outstanding_total: Decimal = Decimal("0")
+    #: `status` when nothing is linked; otherwise issued / part_paid /
+    #: paid computed from the releases. `void` always wins.
+    effective_status: str = ""
 
     model_config = {"from_attributes": True}
 
@@ -224,6 +237,19 @@ class InvoiceListOut(BaseModel):
     status: str
     pdf_url: Optional[str] = None
     created_at: datetime
+    #: ── Settlement, derived from the releases this invoice bills ──
+    #: Empty on an invoice with no linked releases — FMC's 27 historical
+    #: bills are like that, and they keep their STORED status. An invoice
+    #: with nothing attached must never derive as "paid": an empty set
+    #: satisfies "every release is settled" vacuously, which would have
+    #: invented Rs 12.5 L of collections it never received.
+    linked_releases: int = 0
+    billed_total: Decimal = Decimal("0")
+    received_total: Decimal = Decimal("0")
+    outstanding_total: Decimal = Decimal("0")
+    #: `status` when nothing is linked; otherwise issued / part_paid /
+    #: paid computed from the releases. `void` always wins.
+    effective_status: str = ""
 
     model_config = {"from_attributes": True}
 

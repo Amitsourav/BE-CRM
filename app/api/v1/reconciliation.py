@@ -31,6 +31,8 @@ from app.schemas.commission import (
     ReconciliationDashboardOut,
     ExpectedMonthOut,
     BulkInvoiceIn,
+    InvoicePaymentIn,
+    ReadyToBillOut,
     PipelineOut, SourcesOut, ExceptionsOut, DrilldownOut,
     DisbursementCreate, DisbursementUpdate, DisbursementOut,
     ReconciliationOut, LenderSummaryRow, GrossTheoreticalOut,
@@ -188,6 +190,27 @@ async def dashboard(
     """
     await _require_fmc(db, company_id)
     return await CommissionAnalyticsService(db, company_id).dashboard(months, f)
+
+
+@router.get("/ready-to-bill", response_model=ReadyToBillOut)
+async def ready_to_bill(
+    f: Filters = Depends(_filters),
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Commission earned and never invoiced, grouped by lender.
+
+    Every other panel measures what lenders OWE, and an unbilled release
+    is owed just the same — so this money is invisible everywhere else.
+    Grouped by lender because that is the unit of an invoice: tick the
+    releases, raise one bill.
+
+    `can_invoice` is false where the lender has no GSTIN. Show the reason
+    rather than a button that will be refused.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionAnalyticsService(db, company_id).ready_to_bill(f)
 
 
 @router.get("/expected-months", response_model=ExpectedMonthOut)
@@ -467,6 +490,34 @@ async def invoice_many_disbursements(
         "grand_total": invoice.grand_total,
         "pdf_url": invoice.pdf_url,
     }
+
+
+@router.post("/invoices/{invoice_id}/payment", tags=["Commission"])
+async def record_invoice_payment(
+    invoice_id: uuid.UUID,
+    body: InvoicePaymentIn,
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record what a lender paid against an invoice.
+
+    The lender settles the BILL; the CRM tracks money per RELEASE, because
+    that is what every reconciled figure reads. So the payment is spread
+    across the releases this invoice covers — pro-rata by each one's share,
+    with the last absorbing the rounding remainder so the parts sum to the
+    payment exactly. Send `allocation` to override when a lender itemises.
+
+    ADDITIVE: call it again for the balance and it adds to what is there.
+
+    Enter TDS separately rather than netting it off. It is not a
+    shortfall — it is tax paid on FMC's behalf and reclaimable — and a
+    receipt entered net with TDS blank makes the release look underpaid.
+    """
+    await _require_fmc(db, company_id)
+    return await CommissionService(db, company_id).record_invoice_payment(
+        invoice_id, body.model_dump(exclude_unset=True), admin,
+    )
 
 
 @router.delete("/disbursements/{disbursement_id}/invoice", tags=["Commission"])

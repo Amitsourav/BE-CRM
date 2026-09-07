@@ -154,7 +154,7 @@ async def get_invoice(
     db: AsyncSession = Depends(get_db),
 ):
     svc = InvoiceService(db, company_id)
-    return await svc.get(invoice_id)
+    return await svc.get_detailed(invoice_id)
 
 
 @router.get("/{invoice_id}/download", response_model=dict)
