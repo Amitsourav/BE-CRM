@@ -30,6 +30,7 @@ from app.services.commission_analytics_service import (
 from app.schemas.commission import (
     ReconciliationDashboardOut,
     ExpectedMonthOut,
+    BulkInvoiceIn,
     PipelineOut, SourcesOut, ExceptionsOut, DrilldownOut,
     DisbursementCreate, DisbursementUpdate, DisbursementOut,
     ReconciliationOut, LenderSummaryRow, GrossTheoreticalOut,
@@ -415,13 +416,52 @@ async def invoice_disbursement(
     """
     await _require_fmc(db, company_id)
     invoice = await CommissionService(db, company_id).raise_invoice(
-        disbursement_id, admin, invoice_date=invoice_date,
+        [disbursement_id], admin, invoice_date=invoice_date,
     )
     return {
         "invoice_id": invoice.id,
         "invoice_number": invoice.invoice_number,
         "invoice_date": invoice.invoice_date,
         "customer_name": invoice.customer_name,
+        "subtotal": invoice.subtotal,
+        "total_tax": invoice.total_tax,
+        "grand_total": invoice.grand_total,
+        "pdf_url": invoice.pdf_url,
+    }
+
+
+@router.post("/invoices/bulk", tags=["Commission"])
+async def invoice_many_disbursements(
+    body: BulkInvoiceIn,
+    admin: Profile = Depends(get_current_admin),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bill several releases to one lender on a single invoice.
+
+    This is what a real FMC invoice looks like: invoice 010 bills
+    Digdarshini Panda twice, Tanisha Gupta, Rajwardhan and Rohit Pradhan
+    together. Billing one release at a time cannot express that, and
+    would have meant 60-odd separate bills to clear the current backlog.
+
+    Every release must be on the SAME lender — an invoice has one
+    customer, one GSTIN and one tax split. Refused, naming the lenders,
+    if they span more than one.
+
+    The invoice's tax is apportioned back onto the releases by each
+    one's share, with the last absorbing the rounding remainder so the
+    releases sum to the invoice exactly.
+    """
+    await _require_fmc(db, company_id)
+    invoice = await CommissionService(db, company_id).raise_invoice(
+        body.disbursement_ids, admin, invoice_date=body.invoice_date,
+    )
+    return {
+        "invoice_id": invoice.id,
+        "invoice_number": invoice.invoice_number,
+        "invoice_date": invoice.invoice_date,
+        "customer_name": invoice.customer_name,
+        "releases": len(body.disbursement_ids),
         "subtotal": invoice.subtotal,
         "total_tax": invoice.total_tax,
         "grand_total": invoice.grand_total,

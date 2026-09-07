@@ -231,19 +231,22 @@ class CommissionService:
 
 
     async def raise_invoice(
-        self, disbursement_id: uuid.UUID, user: Profile,
-        invoice_date=None,
+        self, disbursement_ids, user: Profile, invoice_date=None,
     ):
-        """Bill one tranche's commission to the lender that owes it.
+        """Bill one or more releases to the lender that owes them.
 
-        One invoice per tranche, which is how the commission is actually
-        earned: a loan releases semester by semester and each release is
-        billed as it happens.
+        A real FMC invoice bills FIVE OR SIX students at once — invoice
+        010 covers Digdarshini Panda twice, Tanisha Gupta, Rajwardhan and
+        Rohit Pradhan on a single bill. Billing one release at a time
+        could not express that, so this takes a list.
+
+        Every release must be on the SAME lender: an invoice has one
+        customer, one GSTIN and one tax split.
 
         This is what makes `to_bill` and `billed` mean anything. Until it
-        existed `invoice_id` was only ever set by a direct database write,
-        so `billed` was unreachable through the API and all 126 of FMC's
-        tranches read `to_bill` regardless of what had been sent out.
+        existed `invoice_id` was only ever set by a direct database
+        write, so `billed` was unreachable through the API and all of
+        FMC's tranches read `to_bill` regardless of what had been sent.
 
         Refuses rather than guesses. A lender with no GSTIN cannot be
         invoiced at all — the state code decides CGST+SGST against IGST
@@ -252,27 +255,60 @@ class CommissionService:
         from app.models.bank import Bank
         from app.services.invoice_service import InvoiceService
 
-        row = await self.get(disbursement_id)
-        if row.invoice_id is not None:
-            raise BadRequestError(
-                "This tranche is already on an invoice. Unlink it first if "
-                "the bill was raised in error."
+        if isinstance(disbursement_ids, uuid.UUID):
+            disbursement_ids = [disbursement_ids]
+        ids = list(dict.fromkeys(disbursement_ids))
+        if not ids:
+            raise BadRequestError("Pick at least one release to bill.")
+
+        rows = (await self.db.execute(
+            select(BankDisbursement).where(
+                BankDisbursement.id.in_(ids),
+                BankDisbursement.company_id == self.company_id,
             )
-        if row.write_off_reason:
+        )).scalars().all()
+        found = {r.id for r in rows}
+        missing_ids = [str(i) for i in ids if i not in found]
+        if missing_ids:
             raise BadRequestError(
-                "This tranche is written off, so there is nothing to bill."
+                f"{len(missing_ids)} of these releases are not on this "
+                "account and cannot be billed."
             )
-        if not row.earns_commission or (row.commission_amount or 0) <= 0:
+        # Keep the caller's order so the invoice lines read the way the
+        # person ticked them.
+        rows = sorted(rows, key=lambda r: ids.index(r.id))
+
+        for row in rows:
+            if row.invoice_id is not None:
+                raise BadRequestError(
+                    "One of these releases is already on an invoice. Unlink "
+                    "it first if the bill was raised in error."
+                )
+            if row.write_off_reason:
+                raise BadRequestError(
+                    "One of these releases is written off, so there is "
+                    "nothing to bill."
+                )
+            if not row.earns_commission or (row.commission_amount or 0) <= 0:
+                raise BadRequestError(
+                    "One of these releases earns no commission, so there is "
+                    "nothing to bill."
+                )
+        lenders = {r.bank_name for r in rows}
+        if len(lenders) > 1:
             raise BadRequestError(
-                "This tranche earns no commission, so there is nothing to bill."
+                "An invoice has one customer. These releases span "
+                f"{len(lenders)} lenders ({', '.join(sorted(lenders))}) — "
+                "raise one invoice per lender."
             )
+        lender = rows[0].bank_name
 
         bank = (await self.db.execute(
-            select(Bank).where(Bank.name == row.bank_name)
+            select(Bank).where(Bank.name == lender)
         )).scalar_one_or_none()
         if bank is None:
             raise BadRequestError(
-                f"'{row.bank_name}' is not in the lender list, so it has no "
+                f"'{lender}' is not in the lender list, so it has no "
                 "billing details. Add it under Settings -> Lenders first."
             )
         missing = [
@@ -289,20 +325,34 @@ class CommissionService:
                 "wrong GST split on a legal document."
             )
 
-        lead = (await self.db.execute(
-            select(Lead).where(Lead.id == row.lead_id)
-        )).scalar_one_or_none()
-        who = (lead.full_name if lead else "").strip() or "student"
-        ref = f" (UTR {row.utr_reference})" if row.utr_reference else ""
-        when = (
-            f" disbursed {row.disbursed_on:%d-%b-%Y}" if row.disbursed_on else ""
-        )
-        description = (
-            f"Referral commission @ {row.commission_rate}% on "
-            f"Rs {row.disbursed_amount:,.2f} education loan{when} to "
-            f"{who} (#{lead.serial_no if lead else '-'}), tranche "
-            f"{row.tranche_no}{ref}"
-        )
+        leads = {
+            l.id: l for l in (await self.db.execute(
+                select(Lead).where(Lead.id.in_({r.lead_id for r in rows}))
+            )).scalars().all()
+        }
+        line_items = []
+        for row in rows:
+            lead = leads.get(row.lead_id)
+            who = (lead.full_name if lead else "").strip() or "student"
+            ref = f" (UTR {row.utr_reference})" if row.utr_reference else ""
+            when = (
+                f" disbursed {row.disbursed_on:%d-%b-%Y}"
+                if row.disbursed_on else ""
+            )
+            line_items.append({
+                "description": (
+                    f"Referral commission @ {row.commission_rate}% on "
+                    f"Rs {row.disbursed_amount:,.2f} education loan{when} to "
+                    f"{who} (#{lead.serial_no if lead else '-'}), tranche "
+                    f"{row.tranche_no}{ref}"
+                ),
+                # qty 1 x the commission: the line IS the commission, and
+                # splitting it into rate-times-amount would invite the PDF
+                # to re-derive a figure that is already agreed.
+                "qty": 1,
+                "rate": row.commission_amount,
+                "lead_id": row.lead_id,
+            })
 
         invoice = await InvoiceService(self.db, self.company_id).create(
             {
@@ -312,31 +362,41 @@ class CommissionService:
                 "customer_state_code": bank.state_code,
                 "customer_address": bank.billing_address,
                 "customer_email": bank.billing_email,
-                "lead_id": row.lead_id,
-                # qty 1 x the commission: the line IS the commission, and
-                # splitting it into a rate-times-amount would invite the
-                # PDF to re-derive a figure that is already agreed.
-                "line_items": [{
-                    "description": description,
-                    "qty": 1,
-                    "rate": row.commission_amount,
-                    "lead_id": row.lead_id,
-                }],
+                # Only meaningful on a single-student bill; a five-student
+                # invoice belongs to no one lead.
+                "lead_id": rows[0].lead_id if len(rows) == 1 else None,
+                "line_items": line_items,
             },
             created_by=user.id,
         )
-        row.invoice_id = invoice.id
-        # The invoice's own tax math is authoritative — it knows the
-        # rate from invoice_settings and the CGST/SGST vs IGST split.
-        # Carrying it back keeps the tranche's `total_due` equal to what
-        # the lender was actually asked for.
-        row.gst_amount = invoice.total_tax
+
+        # Push the invoice's own tax back onto the releases, apportioned
+        # by each one's share of the bill. The invoice knows the rate and
+        # the CGST/SGST-vs-IGST split; recomputing 18% here would drift
+        # from it. The LAST line absorbs the rounding remainder so the
+        # tranches sum to total_tax exactly — otherwise `earned` on the
+        # dashboard would disagree with the invoice by a few paise, which
+        # is exactly the class of gap that took two days to chase.
+        subtotal = sum((r.commission_amount or Decimal("0")) for r in rows)
+        allocated = Decimal("0")
+        for i, row in enumerate(rows):
+            if i == len(rows) - 1:
+                share = (invoice.total_tax or Decimal("0")) - allocated
+            else:
+                share = _round2(
+                    (invoice.total_tax or Decimal("0"))
+                    * (row.commission_amount or Decimal("0")) / subtotal
+                ) if subtotal else Decimal("0")
+                allocated += share
+            row.invoice_id = invoice.id
+            row.gst_amount = share
+
         await self.db.commit()
-        await self.db.refresh(row)
+        for row in rows:
+            await self.db.refresh(row)
         logger.info(
-            "COMMISSION_INVOICED disbursement=%s invoice=%s lender=%s amount=%s by=%s",
-            row.id, invoice.invoice_number, bank.name, row.commission_amount,
-            user.email,
+            "COMMISSION_INVOICED invoice=%s lender=%s releases=%s amount=%s by=%s",
+            invoice.invoice_number, bank.name, len(rows), subtotal, user.email,
         )
         return invoice
 

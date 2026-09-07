@@ -238,6 +238,19 @@ class NetTheoreticalFactorOut(BaseModel):
 # a whole dashboard over one empty table.
 
 
+
+class BulkInvoiceIn(BaseModel):
+    """Bill several releases to one lender on a single invoice.
+
+    All must belong to the SAME lender: an invoice has one customer, one
+    GSTIN and one tax split. Order is preserved, so the invoice lines
+    read in the order they were ticked.
+    """
+    disbursement_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    #: Defaults to today. Sets the financial year the number comes from.
+    invoice_date: date | None = None
+
+
 class FunnelOut(BaseModel):
     """Sanctioned -> confirmed -> disbursed -> earned -> collected.
 

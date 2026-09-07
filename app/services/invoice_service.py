@@ -157,6 +157,18 @@ class InvoiceService:
         in-progress FY is unaffected. (Stored `next_number` == the number
         that will be issued next: seed at `start_number + 1` so the first
         RETURNING `next_number - 1` yields `start_number`.)
+
+        The GREATEST clamp is the same self-heal `reserve_serial_numbers`
+        carries, and for the same reason. The counter is only
+        authoritative while EVERY writer goes through this function;
+        anything inserting into `invoices` directly leaves it behind, and
+        the next call then collides on `uniq_invoices_number_per_company`.
+        That is not a bad row — it is an outage, because the failed INSERT
+        rolls the counter increment back too, so every later attempt
+        reserves the same doomed number forever. Lead creation was down
+        for 24 hours on 2026-09-01 for exactly this, and importing FMC's
+        27 historical invoices on 2026-09-08 reproduced it here within
+        minutes: the counter sat at 25 while invoices ran to 026.
         """
         result = (await self.db.execute(
             sa_text(
@@ -164,7 +176,12 @@ class InvoiceService:
                 INSERT INTO invoice_counters (company_id, financial_year, next_number)
                 VALUES (:cid, :fy, :start + 1)
                 ON CONFLICT (company_id, financial_year) DO UPDATE
-                  SET next_number = invoice_counters.next_number + 1,
+                  SET next_number = GREATEST(
+                        invoice_counters.next_number,
+                        coalesce((SELECT max(sequence_number) + 1 FROM invoices
+                                  WHERE company_id = :cid
+                                    AND financial_year = :fy), 1)
+                      ) + 1,
                       updated_at = now()
                 RETURNING next_number - 1 AS issued_number
                 """
