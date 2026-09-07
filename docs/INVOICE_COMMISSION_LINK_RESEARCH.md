@@ -223,3 +223,32 @@ not debt at all — it is tax already paid on FMC's behalf and reclaimable.
 but not when it arrived, so the collection-speed figures on the dashboard
 are built on 11 data points. Recording a payment through §3c would fix
 this going forward by making the date part of the same action.
+
+---
+
+## 7. PARKED — OCR inside the CRM (Amit, 2026-09-08 evening)
+
+His idea, to be picked up separately. Worth recording why it is a good
+one rather than a gadget: **it targets exactly the gaps that took two
+days to fill by hand this week**, and every one of them arrives as a
+document FMC already receives.
+
+| Gap still open | The document that carries it |
+|---|---|
+| sanction date — 1 of 149 files | sanction letter |
+| sanctioned amount — 15 files | sanction letter |
+| 36 estimated disbursement dates | disbursement advice |
+| 61 payments with no receipt date | payment advice / bank statement |
+| TDS — 0 of 127 tranches | payment advice |
+
+Two things to get right when it is built:
+
+1. **OCR is the easy half.** Most of these arrive as text PDFs where no
+   OCR is needed at all — `pdftotext` read 23 of FMC's 27 invoices. The
+   hard half is EXTRACTION (text to fields) and MATCHING (which student,
+   which tranche). An LLM does extraction well and FMC already has
+   OpenRouter wired for the voice agent.
+2. **Human-in-the-loop, never auto-save.** Reading those 27 invoices by
+   hand today produced real matching errors — Rs 5,00,000 matched inside
+   Rs 45,00,000, and Angel Varghese and Anushka Purwar share an amount
+   exactly. Extraction should propose; a person confirms.
