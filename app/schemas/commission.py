@@ -307,6 +307,12 @@ class PipelineAheadOut(BaseModel):
     #: Confirmed files with no sanctioned amount. Out of the forecast for
     #: the same reason as `files_missing_rate`: unknown is not zero.
     files_missing_sanction: int = 0
+    #: DISTINCT files left out of the forecast — **this is the one to
+    #: display.** It is not the sum of the two above: a file can be
+    #: missing BOTH a rate and a sanctioned amount, so adding them
+    #: overstates and quoting either alone understates. On FMC's book
+    #: rate=3 and sanction=3, but only 5 distinct files are excluded.
+    files_excluded: int = 0
 
 
 class MonthPoint(BaseModel):
@@ -511,6 +517,12 @@ class RevenueBridgeOut(BaseModel):
     drawn_pct: float = 0.0
     files_missing_rate: int = 0
     files_missing_sanction: int = 0
+    #: DISTINCT files left out of the forecast — **this is the one to
+    #: display.** It is not the sum of the two above: a file can be
+    #: missing BOTH a rate and a sanctioned amount, so adding them
+    #: overstates and quoting either alone understates. On FMC's book
+    #: rate=3 and sanction=3, but only 5 distinct files are excluded.
+    files_excluded: int = 0
 
 
 class OpportunityRow(BaseModel):

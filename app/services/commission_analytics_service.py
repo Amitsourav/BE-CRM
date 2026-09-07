@@ -352,6 +352,14 @@ class CommissionAnalyticsService:
                 ),
                 func.count().filter(LeadBank.commission_rate.is_(None)),
                 func.count().filter(unpriced),
+                # DISTINCT files excluded, which is neither of the two
+                # above and cannot be derived from them. A file can fail
+                # both tests — Soumya Goswami's PNB file has no rate AND
+                # no sanctioned amount — so 3 + 3 was 5, not 6, and the
+                # dashboard caption said 3. Without this the frontend has
+                # no way to state the exclusion honestly.
+                func.count().filter(or_(
+                    LeadBank.commission_rate.is_(None), unpriced)),
             )
             .select_from(LeadBank)
             .outerjoin(drawn, drawn.c.lb == LeadBank.id)
@@ -361,7 +369,7 @@ class CommissionAnalyticsService:
             )
         )).one()
         (files, sanctioned, drawn_total, drawn_unpriced,
-         undrawn, future, no_rate, no_sanction) = r
+         undrawn, future, no_rate, no_sanction, excluded) = r
         return {
             "confirmed_files": files,
             "sanctioned_total": sanctioned,
@@ -384,6 +392,11 @@ class CommissionAnalyticsService:
             # ...and files with no sanctioned amount, which are out of
             # the forecast for the same reason.
             "files_missing_sanction": no_sanction,
+            # The number to PUT ON SCREEN. Distinct files missing either,
+            # so it double-counts nothing: `files_missing_rate +
+            # files_missing_sanction` overstates whenever a file fails
+            # both, and quoting just one of them understates.
+            "files_excluded": excluded,
         }
 
     # ── Monthly: earning vs collecting ─────────────────────────────────
@@ -790,6 +803,7 @@ class CommissionAnalyticsService:
                 "drawn_pct": ahead["drawn_pct"],
                 "files_missing_rate": ahead["files_missing_rate"],
                 "files_missing_sanction": ahead["files_missing_sanction"],
+                "files_excluded": ahead["files_excluded"],
             },
             "opportunities": [
                 {
