@@ -176,16 +176,37 @@ converts the biggest number in this document into invoices.
 
 ## 5. Order of work
 
+**Scope decided by Amit, 2026-09-08: build it for FUTURE invoices.**
+Retro-linking the 27 historical ones is welcome if it falls out, but is
+explicitly not required. That removes what I had called the blocker, and
+reorders everything:
+
 | | | Why |
 |---|---|---|
-| **1** | Link the 27 invoices to their tranches | Everything else is inert without it. ~3 h |
-| **2** | Derived invoice status | Removes the contradiction between the two screens. Small |
-| **3** | Record-payment endpoint with pro-rata | The action Amit asked for |
-| **4** | Bulk billing + "ready to bill" panel | Clears the ₹7.78 L |
+| **1** | Bulk billing — raise one invoice from N releases | Real invoices bill 5-6 students. The single-tranche endpoint cannot express one |
+| **2** | Derived invoice status | Kills the contradiction between the two screens |
+| **3** | Record-payment with pro-rata allocation | The action Amit asked for |
+| **4** | "Ready to bill" panel | Turns the ₹7.78 L backlog into invoices |
 | **5** | Email to lender | Convenience, no reconciliation value |
+| — | Retro-link the 27 | Optional. Nice, not needed |
 
-**1 and 2 are the ones that make the CRM honest.** 3 and 4 are what make
-it useful.
+### ⚠️ The trap this scope creates
+
+The 27 historical invoices have **no linked tranches**. If status is
+derived as *"paid when every linked tranche is settled"*, then an invoice
+with zero links satisfies that vacuously and **all 27 would flip to
+paid** — inventing ₹12.5 L of collections.
+
+So the rule is:
+
+```
+linked tranches?  ──yes──▶  status DERIVED from them
+                  ──no───▶  status STORED, as it is today
+```
+
+Historical invoices keep behaving exactly as they do now, and every
+invoice raised from the CRM gets the live status. No migration, no
+backfill, and the two eras coexist without either lying.
 
 ---
 
