@@ -424,6 +424,52 @@ FMC's top three lenders are ~48% of the book. That is worth showing.
 
 ---
 
+---
+
+## 11b. With GST and without — every money panel now carries both
+
+Added 2026-09-07. `funnel` and `sources` already split GST; **`by_lender`
+and `monthly` did not**, so the Lender Performance and Revenue tabs could
+only ever draw one basis and could not be compared against the others.
+
+Both now return the split:
+
+```jsonc
+// LenderDebtRow
+{ "earned_total":     "344812.00",   // commission + GST — what the lender is BILLED
+  "commission_total": "292214.00",   // NEW — what FMC earns
+  "gst_total":         "52598.00" }  // NEW — collected for the government
+
+// MonthPoint
+{ "earned":     "455868.00",
+  "commission": "386329.00",   // NEW
+  "gst":         "69539.00" }  // NEW
+```
+
+`commission + gst == earned` on every row, and the column totals tie to
+`funnel.commission_total`.
+
+### What to build
+
+A **single toggle at the top of the page**, not per-widget:
+
+```
+   Show amounts:  ( ) Including GST     (•) Excluding GST
+```
+
+- **Excluding GST is the default.** GST is not FMC's money.
+- The toggle switches `earned_total`/`earned` for
+  `commission_total`/`commission` everywhere on the page at once.
+- **`collected` and `outstanding` never change** — cash arrives with GST
+  in it and the debt is the GST-inclusive figure. Label those columns
+  "incl. GST" so the difference is deliberate, not confusing.
+- Show the GST column itself when "Including GST" is selected, so the
+  three numbers visibly add up.
+
+**Do not put a toggle on each card.** Two cards on the same screen showing
+different bases is exactly how "revenue" came to mean two different things
+in this system.
+
 ## 12. Errors and gating
 
 | Situation | Response |
@@ -458,6 +504,8 @@ decimal library, never `parseFloat`, before summing.
 - [ ] Estimated dates visually marked wherever a disbursement date appears
 - [ ] `segment=exception` and `segment=stage&value=other` drill-downs work
 - [ ] Concentration view built on `share_of_disbursed_pct`
+- [ ] ONE page-level GST toggle, defaulting to **excluding**;
+      collected/outstanding stay GST-inclusive and are labelled so
 
 When every box is ticked, nothing in the tracker is unavailable in the
 CRM, and the spreadsheet can be closed.

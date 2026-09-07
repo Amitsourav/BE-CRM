@@ -320,7 +320,13 @@ class MonthPoint(BaseModel):
     month: str = ""          # "YYYY-MM"
     tranches: int = 0
     disbursed: Decimal = Decimal("0")
+    #: Commission PLUS GST — what the lender was billed for this month.
     earned: Decimal = Decimal("0")
+    #: `earned` split. `commission + gst == earned`. Chart whichever the
+    #: question needs: commission to see what FMC earns, earned to see
+    #: what it invoices.
+    commission: Decimal = Decimal("0")
+    gst: Decimal = Decimal("0")
     collected: Decimal = Decimal("0")
 
 
@@ -336,6 +342,11 @@ class LenderDebtRow(BaseModel):
     #: Summed row by row, so an overpaying lender never cancels out
     #: another's debt. This is why it can exceed earned - collected.
     outstanding_total: Decimal = Decimal("0")
+    #: `earned_total` split into its two parts. Commission is what FMC
+    #: earns; GST is collected for the government and is not revenue.
+    #: `commission_total + gst_total == earned_total`.
+    commission_total: Decimal = Decimal("0")
+    gst_total: Decimal = Decimal("0")
     collected_pct: float = 0.0
     #: This lender's share of everything disbursed. The concentration
     #: view is built on it, and the service computed it from the start —

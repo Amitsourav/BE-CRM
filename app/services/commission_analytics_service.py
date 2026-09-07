@@ -413,6 +413,12 @@ class CommissionAnalyticsService:
                 func.count(),
                 func.coalesce(func.sum(BankDisbursement.disbursed_amount), 0),
                 func.coalesce(func.sum(BankDisbursement.total_due), 0),
+                # Split out, same reason as by_lender: `earned` is what
+                # the lender is billed, `commission` is what FMC keeps of
+                # it. A month chart that can only draw one of them cannot
+                # be set against a panel drawing the other.
+                func.coalesce(func.sum(BankDisbursement.commission_amount), 0),
+                func.coalesce(func.sum(BankDisbursement.gst_amount), 0),
             )
             .where(*self._disb_where(f), BankDisbursement.disbursed_on.isnot(None))
             .group_by(m_disb)
@@ -437,6 +443,8 @@ class CommissionAnalyticsService:
                 "tranches": e[k][1] if k in e else 0,
                 "disbursed": e[k][2] if k in e else Decimal("0"),
                 "earned": e[k][3] if k in e else Decimal("0"),
+                "commission": e[k][4] if k in e else Decimal("0"),
+                "gst": e[k][5] if k in e else Decimal("0"),
                 "collected": g.get(k, Decimal("0")),
             }
             for k in keys
@@ -461,6 +469,15 @@ class CommissionAnalyticsService:
                 func.coalesce(func.sum(BankDisbursement.total_due), 0),
                 func.coalesce(func.sum(BankDisbursement.total_settled), 0),
                 func.coalesce(func.sum(BankDisbursement.shortfall), 0),
+                # Both bases, because they answer different questions.
+                # `earned_total` is what the lender is BILLED (commission
+                # + GST) and is what a collection chases; `commission_total`
+                # is what FMC actually earns, since GST is collected for
+                # the government. A panel carrying only one of them cannot
+                # be compared against the other panels that carry the
+                # other — which is how "revenue" came to mean two things.
+                func.coalesce(func.sum(BankDisbursement.commission_amount), 0),
+                func.coalesce(func.sum(BankDisbursement.gst_amount), 0),
             )
             .where(*self._disb_where(f))
             .group_by(BankDisbursement.bank_name)
@@ -473,6 +490,8 @@ class CommissionAnalyticsService:
                 "earned_total": r[3],
                 "collected_total": r[4],
                 "outstanding_total": r[5],
+                "commission_total": r[6],
+                "gst_total": r[7],
                 "collected_pct": _pct(r[4], r[3]),
             }
             for r in rows
