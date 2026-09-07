@@ -23,7 +23,16 @@ class Settings(BaseSettings):
     #   invoices/{company_id}/{fy}/{invoice_number_safe}.pdf
     #   assets/{company_id}/logo.<ext>
     #   assets/{company_id}/signature.<ext>
-    supabase_storage_bucket: str = "invoices"
+    # The bucket is literally named "Invoices" with a capital I, and
+    # Supabase bucket names are CASE-SENSITIVE. The default was
+    # lowercase, so every deployment worked only because its env var
+    # happened to spell it correctly — and the failure mode is silent:
+    # `_render_and_store_pdf` swallows upload errors by design (the
+    # invoice number is already burned), so a wrong bucket produces
+    # invoices with no PDF and nothing in the API response to say so.
+    # Discovered 2026-09-07 when a local run wrote two invoices with no
+    # document. Default now matches the bucket that actually exists.
+    supabase_storage_bucket: str = "Invoices"
 
     # Meta Lead Ads
     meta_verify_token: str = ""
@@ -71,6 +80,24 @@ class Settings(BaseSettings):
     plivo_auth_id: str = ""
     plivo_auth_token: str = ""
     plivo_phone_number: str = ""
+
+    # Plivo webhook signature verification mode:
+    #   "enforce" — reject bad/missing signatures with 403
+    #   "log"     — verify, log the outcome, but always allow (default)
+    #   "off"     — skip verification entirely
+    #
+    # Deliberately defaults to "log" rather than "enforce". Verification
+    # depends on reconstructing the exact public URL Plivo signed, and
+    # behind Railway's proxy request.url is the internal address — a
+    # mismatch would 403 every /answer webhook and fail EVERY call, which
+    # is a worse outage than the thing it protects against.
+    #
+    # Until now this was gated on app_env == "development", and Railway
+    # runs with APP_ENV=development, so verification has been off in
+    # production entirely. "log" closes the visibility gap with no risk:
+    # watch for PLIVO_SIG_OK / PLIVO_SIG_FAIL, and once passes are
+    # consistent, set PLIVO_WEBHOOK_MODE=enforce.
+    plivo_webhook_mode: str = "log"
 
     # Voice engine — HMAC secret for WebSocket stream tokens
     voice_stream_secret: str = ""
