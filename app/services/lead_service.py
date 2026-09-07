@@ -73,6 +73,7 @@ from app.core.constants import (
 )
 from app.utils.pagination import paginate
 from app.utils.date_helpers import now_utc
+from app.utils.filters import clean_multi, as_key
 
 logger = logging.getLogger(__name__)
 
@@ -678,11 +679,14 @@ class LeadService:
         user: Profile,
         page: int = 1,
         page_size: int = 25,
-        stage: str | None = None,
-        agent_id: uuid.UUID | None = None,
-        source_id: uuid.UUID | None = None,
-        csv_import_id: uuid.UUID | None = None,
-        campaign_id: uuid.UUID | None = None,
+        # Every one of these is repeatable: values within a filter OR
+        # together, different filters AND with each other. A single value
+        # produces the same SQL as before.
+        stage: list[str] | None = None,
+        agent_id: list[uuid.UUID] | None = None,
+        source_id: list[uuid.UUID] | None = None,
+        csv_import_id: list[uuid.UUID] | None = None,
+        campaign_id: list[uuid.UUID] | None = None,
         tags: list[str] | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
@@ -692,6 +696,13 @@ class LeadService:
         # always see only their own leads regardless of this param.
         lead_segment: str | None = None,
     ) -> dict:
+        stage = clean_multi(stage)
+        agent_id = clean_multi(agent_id)
+        source_id = clean_multi(source_id)
+        csv_import_id = clean_multi(csv_import_id)
+        campaign_id = clean_multi(campaign_id)
+        tags = clean_multi(tags)
+
         query = select(Lead).where(Lead.company_id == self.company_id, Lead.is_deleted == False).order_by(Lead.created_at.desc())
 
         if user.role in RESTRICTED_VIEW_ROLES:
@@ -700,14 +711,17 @@ class LeadService:
             query = query.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
         elif agent_id:
             # Admin/manager filtering by "agent" — match either role on FMC.
-            query = query.where(or_(Lead.assigned_agent_id == agent_id, Lead.pre_counsellor_id == agent_id))
+            query = query.where(or_(
+                Lead.assigned_agent_id.in_(agent_id),
+                Lead.pre_counsellor_id.in_(agent_id),
+            ))
 
         if stage:
-            query = query.where(Lead.current_stage == stage)
+            query = query.where(Lead.current_stage.in_(stage))
         if source_id:
-            query = query.where(Lead.lead_source_id == source_id)
+            query = query.where(Lead.lead_source_id.in_(source_id))
         if csv_import_id:
-            query = query.where(Lead.csv_import_id == csv_import_id)
+            query = query.where(Lead.csv_import_id.in_(csv_import_id))
         if campaign_id:
             # JOIN with campaign_leads — every lead enrolled in a campaign
             # has a campaign_leads row. distinct() guards the rare case a
@@ -715,7 +729,7 @@ class LeadService:
             # constraint, but defensive against historical dirty data).
             query = query.join(
                 CampaignLead, CampaignLead.lead_id == Lead.id
-            ).where(CampaignLead.campaign_id == campaign_id).distinct()
+            ).where(CampaignLead.campaign_id.in_(campaign_id)).distinct()
         if tags:
             query = query.where(Lead.tags.overlap(tags))
         if date_from:
@@ -764,13 +778,13 @@ class LeadService:
         query,
         *,
         q: str | None = None,
-        source_id: uuid.UUID | None = None,
+        source_id: list[uuid.UUID] | None = None,
         loan_min: float | None = None,
         loan_max: float | None = None,
-        bank_name: str | None = None,
-        bank_status: str | None = None,
-        target_country: str | None = None,
-        target_intake: str | None = None,
+        bank_name: list[str] | None = None,
+        bank_status: list[str] | None = None,
+        target_country: list[str] | None = None,
+        target_intake: list[str] | None = None,
         tags: list[str] | None = None,
         created_from=None,
         created_to=None,
@@ -778,8 +792,8 @@ class LeadService:
         due_to=None,
         dnp_min: int | None = None,
         dnp_max: int | None = None,
-        application_status: str | None = None,
-        university: str | None = None,
+        application_status: list[str] | None = None,
+        university: list[str] | None = None,
         budget_min: float | None = None,
         budget_max: float | None = None,
         budget_currency: str = "INR",
@@ -800,8 +814,8 @@ class LeadService:
                 Lead.phone.ilike(term),
                 Lead.email.ilike(term),
             ))
-        if source_id is not None:
-            query = query.where(Lead.lead_source_id == source_id)
+        if source_id:
+            query = query.where(Lead.lead_source_id.in_(source_id))
         is_av = (slug or "").lower() == "admitverse"
         # FMC-only filters (loan / bank). Ignored on Admitverse — those
         # columns are always NULL there, so applying them would wrongly
@@ -812,15 +826,20 @@ class LeadService:
             if loan_max is not None:
                 query = query.where(Lead.loan_amount_lakh <= loan_max)
             if bank_name:
-                query = query.where(Lead.bank_name == bank_name)
+                query = query.where(Lead.bank_name.in_(bank_name))
             if bank_status:
-                query = query.where(Lead.bank_status == bank_status)
+                query = query.where(Lead.bank_status.in_(bank_status))
         # Admitverse-only filters (application + budget).
         else:
             if application_status:
-                query = query.where(Lead.application_status == application_status)
+                query = query.where(Lead.application_status.in_(application_status))
             if university:
-                query = query.where(Lead.primary_university.ilike(f"%{university.strip()}%"))
+                # ILIKE per value, ORed — universities are typed free-form
+                # so an exact IN would miss "Univ of Toronto" against
+                # "University of Toronto".
+                query = query.where(or_(*[
+                    Lead.primary_university.ilike(f"%{u}%") for u in university
+                ]))
             if budget_min is not None or budget_max is not None:
                 query = query.where(Lead.budget_currency == (budget_currency or "INR"))
                 if budget_min is not None:
@@ -828,10 +847,13 @@ class LeadService:
                 if budget_max is not None:
                     query = query.where(Lead.budget_amount <= budget_max)
         if target_country:
-            # preferred_countries is text[] — `any` checks membership.
-            query = query.where(Lead.preferred_countries.any(target_country))
+            # preferred_countries is text[] — `any` checks membership of
+            # ONE value, so several countries OR together.
+            query = query.where(or_(*[
+                Lead.preferred_countries.any(tc) for tc in target_country
+            ]))
         if target_intake:
-            query = query.where(Lead.target_intake == target_intake)
+            query = query.where(Lead.target_intake.in_(target_intake))
         if tags:
             # tags is text[] — `overlap` is "any tag in the filter matches",
             # which is the standard "OR-of-tags" UX. Use `contains` if you
@@ -898,8 +920,8 @@ class LeadService:
     async def list_leads_by_stage(
         self,
         user: Profile,
-        agent_id: uuid.UUID | None = None,
-        campaign_id: uuid.UUID | None = None,
+        agent_id: list[uuid.UUID] | None = None,
+        campaign_id: list[uuid.UUID] | None = None,
         per_stage_limit: int = 50,
         # Filter set added May 2026 for the FMC pipeline page. All
         # optional; FE drops them when not in use. Filters apply to BOTH
@@ -962,16 +984,29 @@ class LeadService:
         # arg. 15-second TTL — short enough that edits propagate quickly,
         # long enough that the second/third Pipeline click is instant.
         # tags is converted to a frozen tuple so it's hashable.
+        agent_id = clean_multi(agent_id)
+        campaign_id = clean_multi(campaign_id)
+        source_id = clean_multi(source_id)
+        bank_name = clean_multi(bank_name)
+        bank_status = clean_multi(bank_status)
+        target_country = clean_multi(target_country)
+        target_intake = clean_multi(target_intake)
+        application_status = clean_multi(application_status)
+        university = clean_multi(university)
+        tags = clean_multi(tags)
+
         slug = await self._get_slug()
         cache_key = (
             self.company_id, user.id, user.role,
-            agent_id, campaign_id, per_stage_limit,
-            q, source_id, loan_min, loan_max,
-            bank_name, bank_status, target_country, target_intake,
-            tuple(tags) if tags else None,
+            as_key(agent_id), as_key(campaign_id), per_stage_limit,
+            q, as_key(source_id), loan_min, loan_max,
+            as_key(bank_name), as_key(bank_status),
+            as_key(target_country), as_key(target_intake),
+            as_key(tags),
             created_from, created_to, due_from, due_to,
             dnp_min, dnp_max,
-            application_status, university, budget_min, budget_max, budget_currency,
+            as_key(application_status), as_key(university),
+            budget_min, budget_max, budget_currency,
             important_only,
             lead_segment,
             # MUST be in the key: the AI and normal boards differ only by
@@ -1024,14 +1059,17 @@ class LeadService:
         if user.role in RESTRICTED_VIEW_ROLES:
             base = base.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
         elif agent_id:
-            base = base.where(or_(Lead.assigned_agent_id == agent_id, Lead.pre_counsellor_id == agent_id))
+            base = base.where(or_(
+                Lead.assigned_agent_id.in_(agent_id),
+                Lead.pre_counsellor_id.in_(agent_id),
+            ))
         if campaign_id:
             # Kanban scoped to a single campaign. Window function still
             # partitions by stage and caps at per_stage_limit — so the FE
             # shows the most-recent N leads from THIS campaign per column.
             base = base.join(
                 CampaignLead, CampaignLead.lead_id == Lead.id
-            ).where(CampaignLead.campaign_id == campaign_id)
+            ).where(CampaignLead.campaign_id.in_(campaign_id))
 
         # Apply the Kanban filter set on top of the visibility + scope WHEREs.
         base = self._apply_kanban_filters(
@@ -1087,11 +1125,14 @@ class LeadService:
         if user.role in RESTRICTED_VIEW_ROLES:
             count_query = count_query.where(or_(Lead.assigned_agent_id == user.id, Lead.pre_counsellor_id == user.id))
         elif agent_id:
-            count_query = count_query.where(or_(Lead.assigned_agent_id == agent_id, Lead.pre_counsellor_id == agent_id))
+            count_query = count_query.where(or_(
+                Lead.assigned_agent_id.in_(agent_id),
+                Lead.pre_counsellor_id.in_(agent_id),
+            ))
         if campaign_id:
             count_query = count_query.join(
                 CampaignLead, CampaignLead.lead_id == Lead.id
-            ).where(CampaignLead.campaign_id == campaign_id)
+            ).where(CampaignLead.campaign_id.in_(campaign_id))
         # Same filter helper feeds the count query so the column headers
         # always reflect the rendered card set. Drift here = "Qualified ·
         # 23" header with only 4 cards inside, which is the bug we're

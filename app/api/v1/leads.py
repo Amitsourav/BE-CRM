@@ -55,11 +55,27 @@ async def list_leads(
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
-    stage: str | None = Query(None, alias="current_stage"),
-    agent_id: uuid.UUID | None = Query(None),
-    source_id: uuid.UUID | None = Query(None),
-    csv_import_id: uuid.UUID | None = Query(None),
-    campaign_id: uuid.UUID | None = Query(None),
+    # Repeatable filters — a multi-select sends the param once per checked
+    # box (?current_stage=created&current_stage=dnp). Values within one
+    # filter OR together; different filters AND with each other. A single
+    # value behaves exactly as before, so an existing single-select
+    # frontend keeps working untouched.
+    stage: list[str] | None = Query(
+        None, alias="current_stage",
+        description="Repeatable; matches any of the supplied stages",
+    ),
+    agent_id: list[uuid.UUID] | None = Query(
+        None, description="Repeatable; matches any of the supplied owners",
+    ),
+    source_id: list[uuid.UUID] | None = Query(
+        None, description="Repeatable; matches any of the supplied sources",
+    ),
+    csv_import_id: list[uuid.UUID] | None = Query(
+        None, description="Repeatable; matches any of the supplied imports",
+    ),
+    campaign_id: list[uuid.UUID] | None = Query(
+        None, description="Repeatable; matches any of the supplied campaigns",
+    ),
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
     lead_segment: str | None = Query(
@@ -99,21 +115,21 @@ async def list_leads_by_stage(
     current_user: Profile = Depends(get_current_user),
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
-    agent_id: uuid.UUID | None = Query(None),
-    campaign_id: uuid.UUID | None = Query(None),
+    agent_id: list[uuid.UUID] | None = Query(None, description="Repeatable; any of these owners"),
+    campaign_id: list[uuid.UUID] | None = Query(None, description="Repeatable; any of these campaigns"),
     per_stage_limit: int = Query(50, ge=1, le=200),
     # FMC pipeline filter set. Every filter is optional; if all are None
     # the endpoint behaves exactly as before. Filters apply to BOTH the
     # card list and the per-column counters so the Kanban stays self-
     # consistent.
     q: str | None = Query(None, description="Search name/phone/email (ILIKE)"),
-    source_id: uuid.UUID | None = Query(None),
+    source_id: list[uuid.UUID] | None = Query(None, description="Repeatable; any of these sources"),
     loan_min: float | None = Query(None, ge=0, description="Min loan amount in lakhs"),
     loan_max: float | None = Query(None, ge=0, description="Max loan amount in lakhs"),
-    bank_name: str | None = Query(None, description="Exact bank name (use FMC_BANKS values)"),
-    bank_status: str | None = Query(None, description="applied/sanctioned/disbursed/etc."),
-    target_country: str | None = Query(None, description="Preferred study destination"),
-    target_intake: str | None = Query(None, description="e.g. Jan-2026, Sep-2026"),
+    bank_name: list[str] | None = Query(None, description="Repeatable; any of these lenders. See GET /leads/banks"),
+    bank_status: list[str] | None = Query(None, description="Repeatable; applied/sanctioned/disbursed/etc."),
+    target_country: list[str] | None = Query(None, description="Repeatable; preferred study destinations"),
+    target_intake: list[str] | None = Query(None, description="Repeatable; e.g. Jan-2026, Sep-2026"),
     tags: list[str] | None = Query(None, description="Repeatable; matches any of the supplied tags"),
     created_from: date | None = Query(None),
     created_to: date | None = Query(None),
@@ -124,8 +140,8 @@ async def list_leads_by_stage(
     # Admitverse-only filters. Ignored on FMC. application_status/university
     # filter the per-university application data; budget_* filter the parsed
     # numeric budget within a currency.
-    application_status: str | None = Query(None, description="AV: filter by a university-application status"),
-    university: str | None = Query(None, description="AV: ILIKE match on primary_university"),
+    application_status: list[str] | None = Query(None, description="AV: repeatable; any of these application statuses"),
+    university: list[str] | None = Query(None, description="AV: repeatable; ILIKE match on primary_university"),
     budget_min: float | None = Query(None, ge=0, description="AV: min budget (in budget_currency units)"),
     budget_max: float | None = Query(None, ge=0, description="AV: max budget (in budget_currency units)"),
     budget_currency: str = Query("INR", description="AV: currency the budget_min/max are expressed in"),

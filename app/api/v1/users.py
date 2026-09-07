@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.dependencies import get_current_user, get_current_admin
 from app.core.tenant import get_current_company_id
+from app.utils.filters import clean_multi
 from app.models.profile import Profile
 from app.models.lead import Lead
 from app.models.call_attempt import CallAttempt
@@ -42,12 +43,13 @@ async def list_users(
     admin: Profile = Depends(get_current_admin),
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
-    role: str | None = Query(None),
+    role: list[str] | None = Query(None, description="Repeatable; any of these roles"),
     is_active: bool | None = Query(None),
 ):
     query = select(Profile).where(Profile.company_id == company_id).order_by(Profile.created_at.desc())
+    role = clean_multi(role)
     if role:
-        query = query.where(Profile.role == role)
+        query = query.where(Profile.role.in_(role))
     if is_active is not None:
         query = query.where(Profile.is_active == is_active)
     result = await db.execute(query)

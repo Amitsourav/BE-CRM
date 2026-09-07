@@ -6,6 +6,7 @@ from datetime import timedelta
 from sqlalchemy import select, func, and_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.task import Task
+from app.utils.filters import clean_multi
 from app.models.lead import Lead
 from app.models.profile import Profile
 from app.models.notification import Notification
@@ -184,7 +185,7 @@ class TaskService:
         user: Profile,
         page: int = 1,
         page_size: int = 25,
-        status: str | None = None,
+        status: list[str] | None = None,
         assigned_to: uuid.UUID | None = None,
     ) -> dict:
         query = select(Task).where(Task.company_id == self.company_id).order_by(Task.due_date.asc())
@@ -194,8 +195,9 @@ class TaskService:
         elif assigned_to:
             query = query.where(Task.assigned_to == assigned_to)
 
+        status = clean_multi(status)
         if status:
-            query = query.where(Task.status == status)
+            query = query.where(Task.status.in_(status))
 
         return await paginate(self.db, query, page, page_size)
 

@@ -21,7 +21,7 @@ async def list_tasks(
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
-    status: str | None = Query(None),
+    status: list[str] | None = Query(None, description="Repeatable; any of these statuses"),
     assigned_to: uuid.UUID | None = Query(None),
 ):
     service = TaskService(db, company_id)

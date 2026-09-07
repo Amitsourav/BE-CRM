@@ -18,6 +18,7 @@ from app.core.constants import (
     TaskType, TaskStatus,
     ADMITVERSE_TERMINAL, RESTRICTED_VIEW_ROLES,
 )
+from app.utils.filters import clean_multi
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
 from app.utils.date_helpers import now_utc, add_business_days
 from app.config import get_settings
@@ -347,14 +348,22 @@ class CallService:
         skip: int = 0,
         limit: int = 50,
         search: str | None = None,
-        telecaller_id: uuid.UUID | None = None,
-        call_status: str | None = None,
-        call_type: str | None = None,
-        sentiment: str | None = None,
+        telecaller_id: list[uuid.UUID] | None = None,
+        call_status: list[str] | None = None,
+        call_type: list[str] | None = None,
+        sentiment: list[str] | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
     ) -> list[CallAttempt]:
-        """List all calls for the company with optional filters."""
+        """List all calls for the company with optional filters.
+
+        The four categorical filters are repeatable: values within one OR
+        together, different filters AND with each other.
+        """
+        telecaller_id = clean_multi(telecaller_id)
+        call_status = clean_multi(call_status)
+        call_type = clean_multi(call_type)
+        sentiment = clean_multi(sentiment)
         query = (
             select(CallAttempt)
             .where(CallAttempt.company_id == self.company_id)
@@ -365,7 +374,7 @@ class CallService:
         if user.role in RESTRICTED_VIEW_ROLES:
             query = query.where(CallAttempt.telecaller_id == user.id)
         elif telecaller_id:
-            query = query.where(CallAttempt.telecaller_id == telecaller_id)
+            query = query.where(CallAttempt.telecaller_id.in_(telecaller_id))
 
         if search:
             from sqlalchemy import or_
@@ -378,11 +387,11 @@ class CallService:
                 )
             )
         if call_status:
-            query = query.where(CallAttempt.call_status == call_status)
+            query = query.where(CallAttempt.call_status.in_(call_status))
         if call_type:
-            query = query.where(CallAttempt.call_type == call_type)
+            query = query.where(CallAttempt.call_type.in_(call_type))
         if sentiment:
-            query = query.where(CallAttempt.sentiment == sentiment)
+            query = query.where(CallAttempt.sentiment.in_(sentiment))
         if date_from:
             query = query.where(func.date(CallAttempt.created_at) >= date_from)
         if date_to:

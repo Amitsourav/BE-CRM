@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.dependencies import get_current_user
 from app.core.tenant import get_current_company_id
+from app.utils.filters import clean_multi
 from app.models.activity_log import ActivityLog
 from app.models.profile import Profile
 
@@ -19,8 +20,8 @@ async def list_activities(
     current_user: Profile = Depends(get_current_user),
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
-    entity_type: str | None = Query(None, description="Filter by entity type: lead, call, agent"),
-    entity_id: uuid.UUID | None = Query(None, description="Filter by entity ID"),
+    entity_type: list[str] | None = Query(None, description="Repeatable; lead, call, agent"),
+    entity_id: list[uuid.UUID] | None = Query(None, description="Repeatable; any of these entity IDs"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
@@ -31,10 +32,12 @@ async def list_activities(
         .order_by(ActivityLog.created_at.desc())
     )
 
+    entity_type = clean_multi(entity_type)
+    entity_id = clean_multi(entity_id)
     if entity_type:
-        query = query.where(ActivityLog.entity_type == entity_type)
+        query = query.where(ActivityLog.entity_type.in_(entity_type))
     if entity_id:
-        query = query.where(ActivityLog.entity_id == entity_id)
+        query = query.where(ActivityLog.entity_id.in_(entity_id))
 
     # Count
     count_query = select(func.count()).select_from(query.subquery())
