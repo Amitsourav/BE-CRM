@@ -1,6 +1,11 @@
 # Wiring invoices to commission — research
 
-> Research, not a build. Written 2026-09-08 against live FMC data.
+> **STATUS 2026-09-08: the backend of steps 1-4 is BUILT AND LIVE.**
+> Step 5 (email) is not. No frontend exists for any of it, so none of it
+> is reachable by a human yet. Retro-linking the 27 historical invoices
+> remains optional and undone. Details in §5.
+>
+> Research, written 2026-09-08 against live FMC data.
 > Amit asked how to use the invoice section to its full potential and link
 > it to the commission page, with actions like "payment received".
 >
@@ -181,14 +186,25 @@ Retro-linking the 27 historical ones is welcome if it falls out, but is
 explicitly not required. That removes what I had called the blocker, and
 reorders everything:
 
-| | | Why |
+| | | Status |
 |---|---|---|
-| **1** | Bulk billing — raise one invoice from N releases | Real invoices bill 5-6 students. The single-tranche endpoint cannot express one |
-| **2** | Derived invoice status | Kills the contradiction between the two screens |
-| **3** | Record-payment with pro-rata allocation | The action Amit asked for |
-| **4** | "Ready to bill" panel | Turns the ₹7.78 L backlog into invoices |
-| **5** | Email to lender | Convenience, no reconciliation value |
-| — | Retro-link the 27 | Optional. Nice, not needed |
+| **1** | Bulk billing — `POST /reconciliation/invoices/bulk` | ✅ **live** |
+| **2** | Derived invoice status | ✅ **live** — `effective_status`, `billed_total`, `received_total`, `outstanding_total`, `linked_releases` on list and detail; manual `paid` refused |
+| **3** | Record payment — `POST /reconciliation/invoices/{id}/payment` | ✅ **live** — additive, pro-rata by what each release STILL OWES |
+| **4** | Ready to bill — `GET /reconciliation/ready-to-bill` | ✅ **endpoint live** — Rs 17.2 L across 127 releases. ❌ no screen |
+| **5** | Email to lender | ❌ not built |
+| — | Retro-link the 27 | ❌ not done. Still optional |
+| — | **Frontend for ANY of the above** | ❌ **nothing.** None of it is reachable by a human yet |
+
+### What §3c got wrong, and how the test caught it
+
+Pro-rata "by each tranche's share of the invoice" — recommended above —
+is WRONG, and only a live test showed it. Splitting by share sends money
+to releases that are already settled, so paying the exact outstanding
+leaves the invoice short: Rs 13,154.31 against Rs 13,154.31 owed left
+Rs 7,572.13 outstanding. It ships weighted by each release's REMAINING
+SHORTFALL instead, which clears exactly. The per-release override in
+§3c survives as `allocation`.
 
 ### ⚠️ The trap this scope creates
 
