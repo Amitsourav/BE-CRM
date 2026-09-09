@@ -287,8 +287,8 @@ async def list_bank_statuses(
     current_stage, and 'lost' here means that lender declined, not that
     the lead is lost.
     """
-    from app.core.constants import BANK_STATUS_OPTIONS
-    if await _company_slug(db, company_id) == "admitverse":
+    from app.core.constants import BANK_STATUS_OPTIONS, brand_has_lender_features
+    if not brand_has_lender_features(await _company_slug(db, company_id)):
         return []
     return [{"value": v, "label": lbl} for v, lbl in BANK_STATUS_OPTIONS]
 
@@ -303,7 +303,8 @@ async def list_banks(
     not in here on lead update. Admitverse has no banks → returns [].
     """
     from app.services.bank_registry import get_bank_names
-    if await _company_slug(db, company_id) == "admitverse":
+    from app.core.constants import brand_has_lender_features
+    if not brand_has_lender_features(await _company_slug(db, company_id)):
         return []
     return list(await get_bank_names(db))
 
@@ -525,6 +526,24 @@ async def list_universities(
     from app.core.constants import get_universities_for_brand
     slug = await _company_slug(db, company_id)
     return get_universities_for_brand(slug)
+
+
+@router.get("/industries", response_model=list[str])
+async def list_industries(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Options for Iconiq's "Application (industry)" field — what the
+    customer runs the system for. Other brands have no such field and
+    get [], which is the frontend's signal not to render it.
+
+    Not a locked list: application_industry is a plain column, so a
+    value outside this set still stores. These are suggestions, and the
+    list is provisional until Iconiq confirms it.
+    """
+    from app.core.constants import get_industries_for_brand
+    slug = await _company_slug(db, company_id)
+    return get_industries_for_brand(slug)
 
 
 @router.get("/search", response_model=PaginatedResponse[LeadOut])

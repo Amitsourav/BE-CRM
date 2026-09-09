@@ -43,16 +43,17 @@ router = APIRouter(prefix="/reconciliation", tags=["Commission"])
 
 
 async def _require_fmc(db: AsyncSession, company_id: uuid.UUID) -> None:
-    """Admitverse has no lenders, so it has no commission to reconcile.
+    """Only FundMyCampus has lenders, so only FMC has commission.
 
-    Same gate the bank features already use — stated here rather than
-    imported so this module doesn't depend on the leads router.
+    Shares the single brand rule in constants rather than re-asking
+    "is this Admitverse?", which silently admitted Iconiq.
     """
     from app.models.company import Company
+    from app.core.constants import brand_has_lender_features
     slug = (await db.execute(
         select(Company.slug).where(Company.id == company_id)
     )).scalar_one_or_none()
-    if (slug or "").lower() == "admitverse":
+    if not brand_has_lender_features(slug):
         raise BadRequestError(
             "Commission reconciliation is a lender feature and is not "
             "available for this tenant."

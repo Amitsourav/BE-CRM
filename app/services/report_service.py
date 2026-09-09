@@ -42,6 +42,10 @@ _BRAND_WON_STAGE = {
     "fundmycampus": LeadStage.DISBURSED,
     "default": LeadStage.DISBURSED,
     "admitverse": LeadStage.ENROLLED,
+    # Iconiq closes at `won`. Without this it would fall through to the
+    # FMC default of `disbursed`, a stage its board does not contain, so
+    # every conversion figure would read zero.
+    "iconiq": LeadStage.WON,
 }
 
 

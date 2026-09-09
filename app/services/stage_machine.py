@@ -181,9 +181,13 @@ class StageMachine:
                 raise BadRequestError("lost_reason is required when moving to 'lost'")
             allowed_reasons = get_lost_reasons_for_brand(slug)
             if allowed_reasons is not None and lost_reason not in allowed_reasons:
+                # Brand-neutral wording: each brand has its own list
+                # (FMC 21, Iconiq 6, Admitverse free text), so naming
+                # FMC here told an Iconiq user to check a list that is
+                # not theirs.
                 raise BadRequestError(
-                    f"lost_reason must be one of the canonical FMC values "
-                    f"(got '{lost_reason}'). See GET /leads/lost-reasons."
+                    f"lost_reason must be one of this brand's canonical "
+                    f"values (got '{lost_reason}'). See GET /leads/lost-reasons."
                 )
 
         # PF PAID names a lender and an amount, or it names nothing.

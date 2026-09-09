@@ -540,8 +540,8 @@ class LeadService:
         # Same rationale as lost_reason — free text was producing case/spelling
         # variants that broke reporting (sbi / SBI / Unicred / UniCred).
         if "bank_name" in data and data["bank_name"]:
-            slug = await self._get_slug()
-            if slug != "admitverse":
+            from app.core.constants import brand_has_lender_features
+            if brand_has_lender_features(await self._get_slug()):
                 from app.services.bank_registry import get_bank_names
                 if data["bank_name"] not in await get_bank_names(self.db):
                     raise BadRequestError(
@@ -2345,18 +2345,18 @@ class LeadService:
     # bank_status is the bank's decision and is never written here.
 
     async def _require_fmc_banks(self) -> None:
-        """Bank shares are a FundMyCampus concept — refuse on Admitverse.
+        """Bank shares are a FundMyCampus concept — refuse elsewhere.
 
-        One codebase serves both brands, so every bank-share endpoint has
-        to say so itself. Applied to the READS as well as the writes: the
-        grid's columns are the FMC lender list, and an AV user hitting it
-        would get a board of Indian lender columns that mean nothing for
-        study abroad. AV's equivalent is university applications.
+        One codebase serves several brands, so every bank-share endpoint
+        has to say so itself. Applied to the READS as well as the writes:
+        the grid's columns are the FMC lender list, and another tenant
+        hitting it would get a board of Indian lender columns that mean
+        nothing for study abroad or for selling inverters.
         """
-        if await self._get_slug() == "admitverse":
+        from app.core.constants import brand_has_lender_features
+        if not brand_has_lender_features(await self._get_slug()):
             raise BadRequestError(
-                "Bank tracking is not available for this tenant. "
-                "Use university applications (/leads/{id}/applications) instead."
+                "Bank tracking is not available for this tenant."
             )
 
     async def _get_lead_bank(self, lead_id: uuid.UUID, bank_name: str):
