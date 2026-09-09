@@ -17,6 +17,7 @@ Usage:
         --email you@admitverse.com \\
         --password "yourstrongpass" \\
         --company-name "Admitverse" \\
+        --slug admitverse \\
         --full-name "Admin" \\
         --env-file .env.admitverse
 
@@ -106,6 +107,7 @@ async def _seed_company_and_profile(
     email: str,
     full_name: str,
     company_name: str,
+    company_slug: str | None = None,
 ) -> None:
     """Connect to the DB and insert/upsert company + profile."""
     # Patch asyncpg statement names — required for Supabase pgbouncer.
@@ -133,8 +135,18 @@ async def _seed_company_and_profile(
 
     # URL-safe slug for the company (used as a unique key in companies).
     # Lowercased, alphanumerics + hyphens only.
+    #
+    # The slug is NOT cosmetic — it selects the brand at runtime, driving
+    # pipeline stages, valid transitions, lost reasons and dropdowns
+    # (see get_*_for_brand in app/core/constants.py). Deriving it from the
+    # display name is only right when the two happen to agree, and they
+    # often don't: FMC's company is named "FundMyCampus" but its slug is
+    # "default", and "Iconiq Energy" would derive "iconiq-energy" while
+    # the brand code looks for "iconiq". A wrong slug is silent — the
+    # tenant just quietly falls back to the FMC pipeline. Hence --slug.
     import re
-    company_slug = re.sub(r"[^a-z0-9]+", "-", company_name.lower()).strip("-")
+    if not company_slug:
+        company_slug = re.sub(r"[^a-z0-9]+", "-", company_name.lower()).strip("-")
 
     try:
         async with engine.begin() as conn:
@@ -201,6 +213,10 @@ async def main() -> None:
     parser.add_argument("--password", help="Admin password")
     parser.add_argument("--full-name", default="Admin", help="Display name (default: Admin)")
     parser.add_argument("--company-name", default="Admitverse", help="Company row name (default: Admitverse)")
+    parser.add_argument("--slug", default=None,
+                        help="Company slug — selects the brand at runtime "
+                             "(e.g. 'iconiq'). Defaults to a slugified "
+                             "company name, which is often NOT what you want.")
     parser.add_argument("--env-file", default=".env", help="Path to env file (default: .env)")
     args = parser.parse_args()
 
@@ -224,6 +240,7 @@ async def main() -> None:
         email=email,
         full_name=args.full_name,
         company_name=args.company_name,
+        company_slug=args.slug,
     )
     print()
 
