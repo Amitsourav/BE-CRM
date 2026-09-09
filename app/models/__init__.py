@@ -23,6 +23,16 @@ from app.models.invoice import Invoice
 from app.models.bank_disbursement import BankDisbursement
 from app.models.website_submission import WebsiteSubmission
 from app.models.api_key import ApiKey
+# Meta Lead Ads gateway. These two were never imported here, so they were
+# absent from Base.metadata — with two consequences, both real:
+#   1. A fresh database never got the tables (create_all only emits what
+#      is in the metadata), and the Meta retry worker runs every 20s on
+#      EVERY deployment regardless of brand, so a new tenant threw
+#      UndefinedTableError forever. Found standing up Iconiq, Sep 2026.
+#   2. alembic autogenerate compares metadata against the database, so a
+#      generated migration could propose dropping them on FMC.
+from app.models.meta_form_routing import MetaFormRouting
+from app.models.meta_webhook_event import MetaWebhookEvent
 
 __all__ = [
     "Base",
@@ -50,4 +60,6 @@ __all__ = [
     "BankDisbursement",
     "WebsiteSubmission",
     "ApiKey",
+    "MetaFormRouting",
+    "MetaWebhookEvent",
 ]
