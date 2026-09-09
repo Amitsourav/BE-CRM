@@ -168,6 +168,38 @@ class Lead(Base, TimestampMixin):
         nullable=True,
     )
 
+    # ── Iconiq Energy tile (Sep 2026) ─────────────────────────────────
+    # Iconiq sells hybrid inverters, Li-ion batteries and BESS to
+    # businesses, so the lead is an organisation with a site and a load,
+    # not a student. Real columns rather than custom_fields because CSV
+    # import, list filters and search only see columns.
+    #
+    # The other brands leave every one of these NULL, the same way Iconiq
+    # leaves the loan and university tiles NULL.
+    organization: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    website: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # What the customer runs the system for — factory, hospital, data
+    # centre. Free-form String, not an ENUM: the option list
+    # (ICONIQ_INDUSTRIES) is provisional and Iconiq will edit it, and a
+    # constant is a one-line change where an ENUM is a migration.
+    application_industry: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # Load / capacity the site needs, i.e. PCS sizing, in kW.
+    load_capacity_kw: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    # How long the customer needs to run on battery, in hours. Fractional
+    # by design — a 30-minute UPS-style backup is 0.5.
+    backup_duration_hours: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 2), nullable=True)
+    # Existing solar on site, and its size. Capacity stays NULL when
+    # solar_present is false or simply unanswered — the two are stored
+    # independently so a half-filled enquiry can still be saved, and the
+    # conditional show/hide lives in the frontend.
+    solar_present: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    solar_capacity_kw: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    # Diesel generator on site, and its rating. Note the unit is kVA, not
+    # kW — DG sets are rated in kVA and that is what the customer will
+    # quote back, so converting on entry would only invite errors.
+    dg_available: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    dg_capacity_kva: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+
     # Relationships
     company = relationship("Company", back_populates="leads")
     assigned_agent = relationship("Profile", back_populates="assigned_leads", foreign_keys=[assigned_agent_id])

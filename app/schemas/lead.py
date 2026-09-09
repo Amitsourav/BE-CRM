@@ -37,6 +37,20 @@ class LeadCreate(BaseModel):
     tags: list[str] | None = None
     notes: str | None = None
 
+    # ── Iconiq Energy capture fields ──────────────────────────────
+    # The site and its load. Every one is optional: an enquiry off the
+    # website contact form arrives with a name and a phone number and
+    # nothing else, and must still be saveable.
+    organization: str | None = None
+    website: str | None = None
+    application_industry: str | None = None
+    load_capacity_kw: Decimal | None = None
+    backup_duration_hours: Decimal | None = None
+    solar_present: bool | None = None
+    solar_capacity_kw: Decimal | None = None
+    dg_available: bool | None = None
+    dg_capacity_kva: Decimal | None = None
+
 
 class LeadUpdate(BaseModel):
     full_name: str | None = None
@@ -98,6 +112,22 @@ class LeadUpdate(BaseModel):
     # requirements, and lost_reason gating actually run. Without these
     # accompanying fields the FE can't pass a remark on stage change
     # via PUT /leads/{id} — it had to call the separate /stage endpoint.
+    # ── Iconiq Energy capture fields ──────────────────────────────
+    # The site and its load. Every one is optional: an enquiry off the
+    # website contact form arrives with a name and a phone number and
+    # nothing else, and must still be saveable.
+    organization: str | None = None
+    website: str | None = None
+    application_industry: str | None = None
+    load_capacity_kw: Decimal | None = None
+    backup_duration_hours: Decimal | None = None
+    solar_present: bool | None = None
+    solar_capacity_kw: Decimal | None = None
+    dg_available: bool | None = None
+    dg_capacity_kva: Decimal | None = None
+    # When current_stage is included, the service routes the change
+    # through StageMachine.transition() so transition validity, notes
+    # requirements, and lost_reason gating actually run.
     conversation_notes: str | None = None
     agent_agenda: str | None = None
     lost_reason: str | None = None
@@ -174,6 +204,20 @@ class LeadOut(BaseModel):
     # Admitverse university-application rollups (analog of bank_count/top_banks).
     primary_university: str | None = None
     application_status: str | None = None
+
+    # ── Iconiq Energy capture fields ──────────────────────────────
+    # The site and its load. Every one is optional: an enquiry off the
+    # website contact form arrives with a name and a phone number and
+    # nothing else, and must still be saveable.
+    organization: str | None = None
+    website: str | None = None
+    application_industry: str | None = None
+    load_capacity_kw: Decimal | None = None
+    backup_duration_hours: Decimal | None = None
+    solar_present: bool | None = None
+    solar_capacity_kw: Decimal | None = None
+    dg_available: bool | None = None
+    dg_capacity_kva: Decimal | None = None
     application_count: int = 0
     top_applications: list[dict] = []
     # Activity rollups (computed in service, not on the model)
@@ -260,6 +304,20 @@ class LeadCardOut(BaseModel):
     # Admitverse per-university application rollups (analog of bank_count/top_banks).
     primary_university: str | None = None
     application_status: str | None = None
+
+    # ── Iconiq Energy capture fields ──────────────────────────────
+    # The site and its load. Every one is optional: an enquiry off the
+    # website contact form arrives with a name and a phone number and
+    # nothing else, and must still be saveable.
+    organization: str | None = None
+    website: str | None = None
+    application_industry: str | None = None
+    load_capacity_kw: Decimal | None = None
+    backup_duration_hours: Decimal | None = None
+    solar_present: bool | None = None
+    solar_capacity_kw: Decimal | None = None
+    dg_available: bool | None = None
+    dg_capacity_kva: Decimal | None = None
     application_count: int = 0
     top_applications: list[dict] = []
 

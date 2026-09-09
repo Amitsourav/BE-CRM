@@ -48,6 +48,49 @@ LEAD_FIELD_ALIASES: dict[str, list[str]] = {
         "budget", "study budget", "education budget", "budget amount",
         "annual budget", "fees budget",
     ],
+    # ── Iconiq Energy: the site and its load ──────────────────────────
+    # Iconiq's leads are businesses, so the company name is a first-class
+    # column rather than something buried in notes.
+    "organization": [
+        "organization", "organisation", "company", "company name",
+        "firm", "business name", "account", "client", "customer",
+    ],
+    "website": ["website", "web site", "url", "site", "company website"],
+    # "Application" in Iconiq's own words means the use case — factory,
+    # hospital, data centre — not a job application. Both spellings of
+    # that idea are aliased because a spreadsheet will use either.
+    "application_industry": [
+        "application", "application (industry)", "industry", "segment",
+        "sector", "vertical", "use case",
+    ],
+    # PCS sizing. Plain "kw" and "capacity" are ambiguous with the solar
+    # figure below, so they are deliberately NOT aliased here — an
+    # ambiguous header should stay unmapped and be picked by hand in the
+    # import preview rather than silently land in the wrong column.
+    "load_capacity_kw": [
+        "load", "load capacity", "load / capacity", "load capacity (kw)",
+        "pcs sizing", "pcs sizing (kw)", "load kw", "connected load",
+    ],
+    "backup_duration_hours": [
+        "backup", "backup required", "backup duration", "backup hours",
+        "backup (hours)", "backup required (duration)", "autonomy",
+    ],
+    "solar_present": [
+        "solar present", "solar", "existing solar", "solar available",
+        "solar (y/n)", "has solar",
+    ],
+    "solar_capacity_kw": [
+        "solar plant capacity", "solar capacity", "solar capacity (kw)",
+        "solar plant capacity (kw)", "solar kw", "existing solar capacity",
+    ],
+    "dg_available": [
+        "dg available", "dg", "dg (y/n)", "diesel generator",
+        "generator available", "has dg",
+    ],
+    "dg_capacity_kva": [
+        "dg capacity", "dg capacity (kva)", "dg kva", "generator capacity",
+        "diesel generator capacity", "dg rating",
+    ],
 }
 
 
