@@ -106,6 +106,12 @@ LOST_REASONS: tuple[str, ...] = (
 )
 
 
+# Company slugs that select a brand at runtime. FMC is the fallback and
+# is deliberately not listed: an unknown or missing slug lands there.
+BRAND_ADMITVERSE = "admitverse"
+BRAND_ICONIQ = "iconiq"
+
+
 class LeadStage(str, enum.Enum):
     # FMC pipeline (original 6)
     LEAD = "lead"
@@ -144,6 +150,14 @@ class LeadStage(str, enum.Enum):
     SANCTIONED = "sanctioned"
     PF_PAID = "pf_paid"
     DISBURSED = "disbursed"
+
+    # Iconiq Energy pipeline (Sep 2026). CREATED, CONTACTED and LOST are
+    # reused from above, and so is WON — it is one of the original six
+    # and no other brand uses it, so Iconiq adopts it as its won stage
+    # rather than minting a synonym.
+    NOT_INTERESTED = "not_interested"
+    INTERESTED = "interested"
+    QUOTED = "quoted"
 
 
 # All 23 enum string values, in the order they appear in the DB type.
@@ -289,8 +303,11 @@ def get_stages_for_pipeline(pipeline: str | None, slug: str | None = None) -> li
     else gets the brand's full funnel."""
     if pipeline == PIPELINE_AI:
         return list(AI_PIPELINE_STAGES)
-    if (slug or "").lower() == "admitverse":
+    brand = (slug or "").lower()
+    if brand == BRAND_ADMITVERSE:
         return list(ADMITVERSE_STAGES)
+    if brand == BRAND_ICONIQ:
+        return list(ICONIQ_STAGES)
     return list(FMC_STAGES)
 
 
@@ -356,20 +373,120 @@ def _build_admitverse_transitions() -> dict[LeadStage, list[LeadStage]]:
 ADMITVERSE_VALID_TRANSITIONS: dict[LeadStage, list[LeadStage]] = _build_admitverse_transitions()
 
 
+# ── Iconiq Energy pipeline (Sep 2026) ──────────────────────────────────
+# Iconiq manufactures hybrid inverters, Li-ion batteries and BESS. The
+# sale is a straight B2B enquiry-to-order run, so the board is short:
+# reach them, find out whether they are interested, send a quote, win or
+# lose it.
+#
+# NOT_INTERESTED sits deliberately BEFORE the interested branch and is
+# deliberately NOT terminal. In this market it almost always means "not
+# this quarter" rather than "never" — a factory that has just bought a
+# DG set is a live lead again in eighteen months. Making it terminal
+# would need an admin to reopen every revival.
+ICONIQ_STAGES: list[LeadStage] = [
+    LeadStage.CREATED,
+    LeadStage.CONTACTED,
+    LeadStage.NOT_INTERESTED,
+    LeadStage.INTERESTED,
+    LeadStage.QUOTED,
+    LeadStage.WON,
+    LeadStage.LOST,
+]
+
+ICONIQ_TERMINAL: set[LeadStage] = {LeadStage.WON, LeadStage.LOST}
+
+
+def _build_iconiq_transitions() -> dict[LeadStage, list[LeadStage]]:
+    table: dict[LeadStage, list[LeadStage]] = {}
+    for src in ICONIQ_STAGES:
+        if src in ICONIQ_TERMINAL:
+            table[src] = []
+        else:
+            table[src] = [s for s in ICONIQ_STAGES if s != src]
+    return table
+
+
+ICONIQ_VALID_TRANSITIONS: dict[LeadStage, list[LeadStage]] = _build_iconiq_transitions()
+
+# Free movement, same as the other two brands — only `lost` keeps its
+# lost_reason gate, which is enforced separately.
+ICONIQ_STAGES_REQUIRING_NOTES: set[LeadStage] = set()
+
+# A locked list rather than free text, so the reports Amit deferred stay
+# comparable across reps when they arrive. Provisional — Iconiq has not
+# confirmed these yet; edit the tuple, no migration needed.
+ICONIQ_LOST_REASONS: tuple[str, ...] = (
+    "Price / too expensive",
+    "Competitor won",
+    "Project shelved or deferred",
+    "No budget",
+    "Went with DG instead",
+    "No response after quote",
+)
+
+# "Application" on the lead form — what the customer runs the system for.
+# Provisional, same as the lost reasons.
+ICONIQ_INDUSTRIES: tuple[str, ...] = (
+    "Manufacturing",
+    "Hospital",
+    "Hotel",
+    "Data Centre",
+    "Commercial Building",
+    "Warehouse",
+    "Telecom",
+    "EV Charging",
+    "Utility / Grid",
+    "Residential",
+    "Other",
+)
+
+
+def brand_has_lender_features(slug: str | None) -> bool:
+    """True when this brand tracks lenders — banks, sanctions, tranches,
+    commission, bank shares.
+
+    Deliberately a DENY-list of the brands that don't, not an allow-list
+    of the one that does, because an unknown or missing slug falls back
+    to FundMyCampus everywhere else in this module and this must not be
+    the one place that disagrees.
+
+    It exists because the original gates each asked `slug ==
+    "admitverse"`. That is not "is this FMC?" — it is "is this the other
+    one?", and the moment a third brand appeared (Iconiq, Sep 2026) every
+    such gate silently let it through to the loan features. Asking the
+    question in one place is what stops a fourth brand repeating it.
+    """
+    return (slug or "").lower() not in (BRAND_ADMITVERSE, BRAND_ICONIQ)
+
+
+def get_industries_for_brand(slug: str | None) -> list[str]:
+    """Iconiq's 'Application (industry)' dropdown. Empty elsewhere."""
+    if (slug or "").lower() == BRAND_ICONIQ:
+        return list(ICONIQ_INDUSTRIES)
+    return []
+
+
 def get_transitions_for_brand(slug: str | None) -> dict[LeadStage, list[LeadStage]]:
     """Return the valid-transitions table for a given company slug.
 
     Unknown / missing slugs fall back to the FMC table so any new tenant
     works out of the box with the simple 6-stage flow.
     """
-    if (slug or "").lower() == "admitverse":
+    brand = (slug or "").lower()
+    if brand == BRAND_ADMITVERSE:
         return ADMITVERSE_VALID_TRANSITIONS
+    if brand == BRAND_ICONIQ:
+        return ICONIQ_VALID_TRANSITIONS
     return FMC_VALID_TRANSITIONS
 
 
 def get_terminal_stages_for_brand(slug: str | None) -> set[LeadStage]:
-    if (slug or "").lower() == "admitverse":
+    brand = (slug or "").lower()
+    if brand == BRAND_ADMITVERSE:
         return ADMITVERSE_TERMINAL
+    if brand == BRAND_ICONIQ:
+        return ICONIQ_TERMINAL
     return FMC_TERMINAL
 
 
@@ -392,8 +509,11 @@ STAGES_REQUIRING_NOTES = FMC_STAGES_REQUIRING_NOTES
 
 
 def get_notes_required_for_brand(slug: str | None) -> set[LeadStage]:
-    if (slug or "").lower() == "admitverse":
+    brand = (slug or "").lower()
+    if brand == BRAND_ADMITVERSE:
         return ADMITVERSE_STAGES_REQUIRING_NOTES
+    if brand == BRAND_ICONIQ:
+        return ICONIQ_STAGES_REQUIRING_NOTES
     return FMC_STAGES_REQUIRING_NOTES
 
 
@@ -403,8 +523,13 @@ def get_lost_reasons_for_brand(slug: str | None) -> tuple[str, ...] | None:
     # list yet (Phase 5 pipeline customization still open), so FE renders
     # a free-text field. Returning None tells stage_machine to skip the
     # membership check and only require a non-empty string.
-    if (slug or "").lower() == "admitverse":
+    brand = (slug or "").lower()
+    if brand == BRAND_ADMITVERSE:
         return None
+    # Iconiq gets a locked list of its own, for the same reason FMC has
+    # one: free text cannot be counted.
+    if brand == BRAND_ICONIQ:
+        return ICONIQ_LOST_REASONS
     return LOST_REASONS
 
 
@@ -451,14 +576,22 @@ AV_DOC_KEYS: frozenset[str] = frozenset(d["key"] for d in AV_DOC_CHECKLIST)
 
 
 def get_doc_checklist_for_brand(slug: str | None) -> list[dict[str, str]]:
-    if (slug or "").lower() == "admitverse":
+    brand = (slug or "").lower()
+    if brand == BRAND_ADMITVERSE:
         return AV_DOC_CHECKLIST
+    # Iconiq collects no documents — there is no loan file and no visa
+    # paperwork. An empty checklist is what hides the widget entirely.
+    if brand == BRAND_ICONIQ:
+        return []
     return FMC_DOC_CHECKLIST
 
 
 def get_doc_keys_for_brand(slug: str | None) -> frozenset[str]:
-    if (slug or "").lower() == "admitverse":
+    brand = (slug or "").lower()
+    if brand == BRAND_ADMITVERSE:
         return AV_DOC_KEYS
+    if brand == BRAND_ICONIQ:
+        return frozenset()
     return FMC_DOC_KEYS
 
 
@@ -528,7 +661,7 @@ AV_UNIVERSITIES: list[str] = [
 def get_universities_for_brand(slug: str | None) -> list[str]:
     """Suggestion list for the university autocomplete. Admitverse only —
     FMC has no university field (returns [])."""
-    if (slug or "").lower() == "admitverse":
+    if (slug or "").lower() == BRAND_ADMITVERSE:
         return AV_UNIVERSITIES
     return []
 
