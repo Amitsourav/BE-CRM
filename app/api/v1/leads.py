@@ -893,6 +893,7 @@ async def add_bank_share_message(
 async def add_lead_remark(
     lead_id: uuid.UUID,
     body: LeadRemarkCreate,
+    response: Response,
     current_user: Profile = Depends(get_current_user),
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_db),
@@ -902,9 +903,13 @@ async def add_lead_remark(
     Captures author identity + role at write time.
     """
     service = LeadService(db, company_id)
-    return await service.add_remark(
+    created, remark = await service.add_remark(
         lead_id, body.body, current_user, wa_message_id=body.wa_message_id,
     )
+    # A repeat created nothing, so it must not claim 201. Automated
+    # writers branch on the status code.
+    response.status_code = 201 if created else 200
+    return remark
 
 
 @router.get("/{lead_id}/remarks", response_model=list[LeadRemarkOut])

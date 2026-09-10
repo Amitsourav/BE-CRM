@@ -2096,6 +2096,20 @@ class LeadService:
                 LeadMessage.created_at.label("created_at"),
                 LeadMessage.is_our_team.label("is_our_team"),
                 LeadMessage.sender_phone.label("sender_phone"),
+                # The COUNTERPARTY's number, not the last sender's.
+                # Ordering by is_our_team ASC puts their messages first
+                # (false sorts before true), then newest first — so
+                # first_value is the most recent number THEY wrote from.
+                # Without this the inbox showed our own number on every
+                # row where we happened to reply last, which is every
+                # healthy conversation.
+                func.first_value(LeadMessage.sender_phone).over(
+                    partition_by=LeadMessage.lead_id,
+                    order_by=[
+                        LeadMessage.is_our_team.asc(),
+                        desc(LeadMessage.created_at),
+                    ],
+                ).label("counterparty_phone"),
                 func.row_number().over(
                     partition_by=LeadMessage.lead_id,
                     order_by=desc(LeadMessage.created_at),
@@ -2113,7 +2127,8 @@ class LeadService:
                 Lead.id, Lead.serial_no, Lead.full_name, Lead.organization,
                 Lead.phone, Lead.current_stage,
                 ranked.c.body, ranked.c.created_at, ranked.c.is_our_team,
-                ranked.c.sender_phone, ranked.c.message_count,
+                func.coalesce(ranked.c.counterparty_phone, Lead.phone).label("counterparty_phone"),
+                ranked.c.message_count,
             )
             .join(ranked, ranked.c.lead_id == Lead.id)
             .where(ranked.c.rn == 1, Lead.is_deleted.is_(False))
@@ -2127,7 +2142,7 @@ class LeadService:
                     Lead.full_name.ilike(like),
                     Lead.phone.ilike(like),
                     Lead.organization.ilike(like),
-                    ranked.c.sender_phone.ilike(like),
+                    ranked.c.counterparty_phone.ilike(like),
                 )
             )
 
@@ -2137,7 +2152,7 @@ class LeadService:
                 "lead_id": r[0], "serial_no": r[1], "full_name": r[2],
                 "organization": r[3], "phone": r[4], "current_stage": r[5],
                 "last_message": r[6], "last_message_at": r[7],
-                "last_from_us": r[8], "sender_phone": r[9],
+                "last_from_us": r[8], "counterparty_phone": r[9],
                 "message_count": r[10],
             }
             for r in rows
@@ -2146,7 +2161,7 @@ class LeadService:
     async def add_remark(
         self, lead_id: uuid.UUID, body: str, user: Profile,
         wa_message_id: str | None = None,
-    ) -> dict:
+    ) -> tuple[bool, dict]:
         """Add a free-form remark to a lead. Access gated by get_lead
         (which enforces the assigned-agent / pre-counsellor / admin rules).
         Returns a dict matching LeadRemarkOut shape, with enriched author_name.
@@ -2170,7 +2185,7 @@ class LeadService:
                 author = (await self.db.execute(
                     select(Profile).where(Profile.id == existing.author_id)
                 )).scalar_one_or_none() if existing.author_id else None
-                return {
+                return False, {
                     "id": existing.id,
                     "lead_id": existing.lead_id,
                     "author_id": existing.author_id,
@@ -2191,7 +2206,7 @@ class LeadService:
         self.db.add(remark)
         await self.db.flush()
         await self.db.commit()
-        return {
+        return True, {
             "id": remark.id,
             "lead_id": remark.lead_id,
             "author_id": remark.author_id,
