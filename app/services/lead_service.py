@@ -7,6 +7,7 @@ import logging
 from datetime import date
 from decimal import Decimal
 from sqlalchemy import select, func, or_, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -1987,7 +1988,165 @@ class LeadService:
         await self._resync_primary_application(lead)
         await self.db.commit()
 
-    async def add_remark(self, lead_id: uuid.UUID, body: str, user: Profile) -> dict:
+    # ── WhatsApp conversation on the lead ─────────────────────────────
+
+    async def add_lead_message(
+        self, lead_id: uuid.UUID, payload: dict, user: Profile,
+    ) -> tuple[object, bool]:
+        """Append one message to a lead's WhatsApp thread.
+
+        Returns (row, created). Idempotent on wa_message_id, scoped to
+        the lead: re-posting the same id returns the stored row instead
+        of a second copy. That is the whole point — when the bot's
+        request times out it cannot know whether the write landed, so it
+        retries, and without this the conversation appears twice.
+
+        The uniqueness is also enforced by a partial unique index, so two
+        retries racing each other cannot both insert. The IntegrityError
+        that loses the race is caught and turned into the same "already
+        there" answer, because from the caller's side it is.
+        """
+        from app.models.lead_message import LeadMessage
+
+        await self.get_lead(lead_id, user)
+
+        wa_id = payload.get("wa_message_id")
+        if wa_id:
+            existing = (await self.db.execute(
+                select(LeadMessage).where(
+                    LeadMessage.lead_id == lead_id,
+                    LeadMessage.wa_message_id == wa_id,
+                )
+            )).scalar_one_or_none()
+            if existing is not None:
+                return existing, False
+
+        msg = LeadMessage(
+            company_id=self.company_id,
+            lead_id=lead_id,
+            body=payload["body"],
+            sender_phone=payload.get("sender_phone"),
+            sender_name=payload.get("sender_name"),
+            is_our_team=bool(payload.get("is_our_team", False)),
+            wa_message_id=wa_id,
+            sent_at=payload.get("sent_at"),
+        )
+        self.db.add(msg)
+        try:
+            await self.db.flush()
+            await self.db.commit()
+        except IntegrityError:
+            # Lost a race with a concurrent retry of the same message.
+            await self.db.rollback()
+            if not wa_id:
+                raise
+            existing = (await self.db.execute(
+                select(LeadMessage).where(
+                    LeadMessage.lead_id == lead_id,
+                    LeadMessage.wa_message_id == wa_id,
+                )
+            )).scalar_one_or_none()
+            if existing is None:
+                raise
+            return existing, False
+
+        # A chat is contact. Keeping last_contacted_at honest here means
+        # the "not touched in N days" views count WhatsApp too, instead
+        # of showing a lead as cold while the bot is mid-conversation.
+        await self.db.execute(
+            update(Lead)
+            .where(Lead.id == lead_id, Lead.company_id == self.company_id)
+            .values(last_contacted_at=now_utc())
+        )
+        await self.db.commit()
+        return msg, True
+
+    async def list_lead_messages(
+        self, lead_id: uuid.UUID, user: Profile, limit: int = 200,
+    ) -> list:
+        """The thread for one lead, oldest first — chat reading order."""
+        from app.models.lead_message import LeadMessage
+
+        await self.get_lead(lead_id, user)
+        rows = (await self.db.execute(
+            select(LeadMessage)
+            .where(LeadMessage.lead_id == lead_id)
+            .order_by(LeadMessage.created_at.asc())
+            .limit(limit)
+        )).scalars().all()
+        return list(rows)
+
+    async def list_conversations(
+        self, user: Profile, limit: int = 50, offset: int = 0, q: str | None = None,
+    ) -> list[dict]:
+        """One row per lead that has a WhatsApp thread, newest first.
+
+        This is the WhatsApp page. Built as a single window-function pass
+        rather than "list leads, then a query per lead for its last
+        message" — the latter is the N+1 that makes an inbox slow, and
+        Supabase Korea/Mumbai latency turns that into seconds.
+        """
+        from app.models.lead_message import LeadMessage
+        from sqlalchemy import func, desc
+
+        ranked = (
+            select(
+                LeadMessage.lead_id.label("lead_id"),
+                LeadMessage.body.label("body"),
+                LeadMessage.created_at.label("created_at"),
+                LeadMessage.is_our_team.label("is_our_team"),
+                LeadMessage.sender_phone.label("sender_phone"),
+                func.row_number().over(
+                    partition_by=LeadMessage.lead_id,
+                    order_by=desc(LeadMessage.created_at),
+                ).label("rn"),
+                func.count().over(
+                    partition_by=LeadMessage.lead_id
+                ).label("message_count"),
+            )
+            .where(LeadMessage.company_id == self.company_id)
+            .subquery()
+        )
+
+        stmt = (
+            select(
+                Lead.id, Lead.serial_no, Lead.full_name, Lead.organization,
+                Lead.phone, Lead.current_stage,
+                ranked.c.body, ranked.c.created_at, ranked.c.is_our_team,
+                ranked.c.sender_phone, ranked.c.message_count,
+            )
+            .join(ranked, ranked.c.lead_id == Lead.id)
+            .where(ranked.c.rn == 1, Lead.is_deleted.is_(False))
+            .order_by(desc(ranked.c.created_at))
+            .limit(limit).offset(offset)
+        )
+        if q:
+            like = f"%{q}%"
+            stmt = stmt.where(
+                or_(
+                    Lead.full_name.ilike(like),
+                    Lead.phone.ilike(like),
+                    Lead.organization.ilike(like),
+                    ranked.c.sender_phone.ilike(like),
+                )
+            )
+
+        rows = (await self.db.execute(stmt)).all()
+        return [
+            {
+                "lead_id": r[0], "serial_no": r[1], "full_name": r[2],
+                "organization": r[3], "phone": r[4], "current_stage": r[5],
+                "last_message": r[6], "last_message_at": r[7],
+                "last_from_us": r[8], "sender_phone": r[9],
+                "message_count": r[10],
+            }
+            for r in rows
+        ]
+
+    async def add_remark(
+        self, lead_id: uuid.UUID, body: str, user: Profile,
+        wa_message_id: str | None = None,
+    ) -> dict:
         """Add a free-form remark to a lead. Access gated by get_lead
         (which enforces the assigned-agent / pre-counsellor / admin rules).
         Returns a dict matching LeadRemarkOut shape, with enriched author_name.
@@ -1996,12 +2155,38 @@ class LeadService:
         # get_lead enforces permission — re-use it.
         await self.get_lead(lead_id, user)
 
+        # Idempotency for automated writers. The bot cannot tell whether
+        # a request that timed out actually landed, so it retries; without
+        # this the same chat transcript lands on the lead twice and a
+        # counsellor reads the conversation duplicated.
+        if wa_message_id:
+            existing = (await self.db.execute(
+                select(LeadRemark).where(
+                    LeadRemark.lead_id == lead_id,
+                    LeadRemark.wa_message_id == wa_message_id,
+                )
+            )).scalar_one_or_none()
+            if existing is not None:
+                author = (await self.db.execute(
+                    select(Profile).where(Profile.id == existing.author_id)
+                )).scalar_one_or_none() if existing.author_id else None
+                return {
+                    "id": existing.id,
+                    "lead_id": existing.lead_id,
+                    "author_id": existing.author_id,
+                    "author_name": author.full_name if author else None,
+                    "author_role": existing.author_role,
+                    "body": existing.body,
+                    "created_at": existing.created_at,
+                }
+
         remark = LeadRemark(
             company_id=self.company_id,
             lead_id=lead_id,
             author_id=user.id,
             author_role=user.role,
             body=body,
+            wa_message_id=wa_message_id,
         )
         self.db.add(remark)
         await self.db.flush()

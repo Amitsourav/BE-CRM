@@ -17,6 +17,7 @@ from app.schemas.lead import (
     LeadCardOut, LeadsByStageOut,
     LeadDistributeRangeRequest, LeadDistributeRangeResponse,
     LeadImportantToggle, LeadRemarkCreate, LeadRemarkOut,
+    LeadMessageCreate, LeadMessageOut, ConversationOut,
     LeadBankCreate, LeadBankUpdate, LeadBankOut,
     LeadApplicationCreate, LeadApplicationUpdate, LeadApplicationOut,
     LeadReassign,
@@ -901,7 +902,9 @@ async def add_lead_remark(
     Captures author identity + role at write time.
     """
     service = LeadService(db, company_id)
-    return await service.add_remark(lead_id, body.body, current_user)
+    return await service.add_remark(
+        lead_id, body.body, current_user, wa_message_id=body.wa_message_id,
+    )
 
 
 @router.get("/{lead_id}/remarks", response_model=list[LeadRemarkOut])
@@ -1012,6 +1015,72 @@ async def reassign_lead(
         updates=updates,
         reason=body.reason,
     )
+
+
+@router.get("/messages/conversations", response_model=list[ConversationOut],
+            tags=["WhatsApp"])
+async def list_conversations(
+    q: str | None = Query(None, description="Search name, organization or number"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """The WhatsApp page: one row per lead that has a thread, newest
+    first, with its latest message — an inbox.
+
+    Built in a single pass rather than a query per lead, so the page
+    does not slow down linearly as conversations accumulate.
+    """
+    service = LeadService(db, company_id)
+    return await service.list_conversations(
+        current_user, limit=limit, offset=offset, q=q,
+    )
+
+
+@router.get("/{lead_id}/messages", response_model=list[LeadMessageOut],
+            tags=["WhatsApp"])
+async def list_lead_messages(
+    lead_id: uuid.UUID,
+    limit: int = Query(200, ge=1, le=500),
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """One lead's WhatsApp thread, oldest first — chat reading order."""
+    service = LeadService(db, company_id)
+    return await service.list_lead_messages(lead_id, current_user, limit=limit)
+
+
+@router.post("/{lead_id}/messages", response_model=LeadMessageOut,
+             tags=["WhatsApp"])
+async def add_lead_message(
+    lead_id: uuid.UUID,
+    body: LeadMessageCreate,
+    response: Response,
+    current_user: Profile = Depends(get_current_user),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Append a message to a lead's WhatsApp thread.
+
+    **Idempotent on `wa_message_id`.** Posting the same id twice on the
+    same lead returns the stored message with **200** instead of creating
+    a second one; a genuinely new message returns **201**. That is what
+    makes the bot's retry-after-timeout safe — it cannot tell whether a
+    request that timed out actually landed, and without this every such
+    retry duplicates the conversation on the lead.
+
+    Send `is_our_team: true` for messages we sent. The CRM does not try
+    to infer direction — only the bot knows the team's numbers.
+    """
+    service = LeadService(db, company_id)
+    msg, created = await service.add_lead_message(
+        lead_id, body.model_dump(exclude_unset=True), current_user,
+    )
+    response.status_code = 201 if created else 200
+    return msg
 
 
 @router.post("/{lead_id}/pipeline", response_model=LeadOut, tags=["Pipelines"])

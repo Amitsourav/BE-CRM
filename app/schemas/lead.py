@@ -581,6 +581,11 @@ class LeadApplicationOut(BaseModel):
 
 class LeadRemarkCreate(BaseModel):
     body: str = Field(min_length=1, max_length=5000)
+    #: Optional idempotency key for automated writers. Re-posting the
+    #: same id on the same lead returns the existing remark instead of
+    #: adding a duplicate, which is what makes a retry-after-timeout
+    #: safe. Humans never send it.
+    wa_message_id: str | None = None
 
 
 class LeadRemarkOut(BaseModel):
@@ -593,6 +598,57 @@ class LeadRemarkOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class LeadMessageCreate(BaseModel):
+    """One WhatsApp message written by the bot (or typed by a human)."""
+    body: str
+    #: The WhatsApp number the message came from. Shown as the thread's
+    #: identity, because a lead may chat from a different number than the
+    #: one it was created with.
+    sender_phone: str | None = None
+    sender_name: str | None = None
+    #: True when WE sent it, false when the lead did. The bot decides
+    #: this from the sending number — the CRM does not infer it.
+    is_our_team: bool = False
+    #: WhatsApp's own message id. THE IDEMPOTENCY KEY: re-posting the
+    #: same id on the same lead returns the existing message with 200
+    #: instead of creating a second one, so a retry after a timeout is
+    #: safe. Omit it for a hand-typed message.
+    wa_message_id: str | None = None
+    #: When WhatsApp says it was sent, if known. Falls back to now().
+    sent_at: datetime | None = None
+
+
+class LeadMessageOut(BaseModel):
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    body: str
+    sender_phone: str | None = None
+    sender_name: str | None = None
+    is_our_team: bool
+    wa_message_id: str | None = None
+    sent_at: datetime | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ConversationOut(BaseModel):
+    """One row of the WhatsApp page — a lead and its latest message."""
+    lead_id: uuid.UUID
+    serial_no: int | None = None
+    full_name: str
+    organization: str | None = None
+    phone: str | None = None
+    current_stage: str
+    #: The number actually used in the chat, which may differ from
+    #: lead.phone.
+    sender_phone: str | None = None
+    last_message: str
+    last_message_at: datetime
+    last_from_us: bool
+    message_count: int
 
 
 class LeadSourceCreate(BaseModel):

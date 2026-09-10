@@ -18,6 +18,12 @@ class LeadRemark(Base):
     author_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)
     author_role: Mapped[str] = mapped_column(String(50), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    # Idempotency key for automated writers (the WhatsApp bot). A retry
+    # after a timeout re-sends the same remark; without this the same
+    # text lands on the lead twice and a counsellor sees the chat
+    # duplicated. UNIQUE per (lead_id, wa_message_id), partial so
+    # human-written remarks are unaffected.
+    wa_message_id: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
     author = relationship("Profile", foreign_keys=[author_id])

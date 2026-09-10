@@ -8,6 +8,7 @@ from app.models.lead_remark import LeadRemark
 from app.models.bank import Bank
 from app.models.lead_bank import LeadBank
 from app.models.lead_bank_message import LeadBankMessage
+from app.models.lead_message import LeadMessage
 from app.models.lead_application import LeadApplication
 from app.models.call_attempt import CallAttempt
 from app.models.task import Task
@@ -45,6 +46,7 @@ __all__ = [
     "Bank",
     "LeadBank",
     "LeadBankMessage",
+    "LeadMessage",
     "LeadApplication",
     "CallAttempt",
     "Task",
