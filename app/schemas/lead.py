@@ -642,9 +642,11 @@ class ConversationOut(BaseModel):
     organization: str | None = None
     phone: str | None = None
     current_stage: str
-    #: The number actually used in the chat, which may differ from
-    #: lead.phone.
-    sender_phone: str | None = None
+    #: The number the LEAD chats from, which may differ from lead.phone.
+    #: Deliberately NOT "whoever sent last" — an inbox must show the
+    #: person you are talking to, and in a healthy thread the last
+    #: sender is us.
+    counterparty_phone: str | None = None
     last_message: str
     last_message_at: datetime
     last_from_us: bool

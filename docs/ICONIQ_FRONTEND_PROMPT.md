@@ -58,6 +58,7 @@ it just has to actually happen.
 |---|---|
 | Main | Leads |
 | Main | Calls |
+| Main | **WhatsApp** (new — §6a) |
 | Main | Pipeline (Kanban) |
 | Main | Tasks |
 | Main | Notifications |
@@ -259,6 +260,103 @@ backend rejects empty strings. Label them plainly ("What happened" /
 
 ---
 
+## 6a. WhatsApp — the bot's conversations
+
+**New, 2026-09-10.** Iconiq runs a WhatsApp bot that chats with
+prospects directly. Every message is stored against the lead and this
+page is where a human reads it.
+
+> **Naming:** Amit asked for this to replace the "Calls" label. My advice
+> is to add **WhatsApp** as its own nav item and *keep* Calls — a B2B
+> solar team still phones people, and that logging already works. If you
+> do fold them together, keep both feeds; don't drop call logging.
+
+### The inbox
+
+```http
+GET /api/v1/leads/messages/conversations?limit=50&q=menon
+```
+
+One row per lead that has a thread, newest first:
+
+```jsonc
+{
+  "lead_id": "…", "serial_no": 3,
+  "full_name": "Suresh Menon",
+  "organization": "Menon Textiles",
+  "phone": "+919845567788",          // the lead's stored number
+  "counterparty_phone": "+919845567788",  // the number they CHAT from
+  "current_stage": "interested",
+  "last_message": "Understood. I'll send a BESS proposal by Friday.",
+  "last_message_at": "2026-09-10T09:14:22Z",
+  "last_from_us": true,
+  "message_count": 4
+}
+```
+
+Render it like any messaging inbox: name + organization, the number,
+the last message greyed, a timestamp, and the count. `last_from_us`
+tells you whether to prefix "You: ".
+
+> **Use `counterparty_phone`, not `phone`.** A lead created from a CSV
+> with one number often chats from another, and this is the number the
+> conversation actually happened on. (`phone` is the CRM's record of
+> them; the two differ more often than you'd expect.)
+>
+> It is deliberately **not** "whoever sent last" — the first version was,
+> and every healthy thread showed Iconiq's own number because we replied
+> last. Fixed, but worth knowing why the field is named this way.
+
+`q` searches name, organization and both numbers.
+
+### One thread
+
+```http
+GET /api/v1/leads/{lead_id}/messages
+```
+
+Oldest first — chat reading order, ready to render top to bottom.
+
+```jsonc
+{
+  "id": "…", "lead_id": "…",
+  "body": "4 hours minimum. We already have 150 kW solar on the roof.",
+  "sender_phone": "+919845567788",
+  "sender_name": "Suresh Menon",
+  "is_our_team": false,      // false = them (left),  true = us (right)
+  "wa_message_id": "wamid.…",
+  "sent_at": null,
+  "created_at": "2026-09-10T09:12:03Z"
+}
+```
+
+`is_our_team` is the only thing you need for bubble alignment. Use
+`sent_at` when present and fall back to `created_at` — a backfilled or
+retried message would otherwise sort wrongly.
+
+### Posting a message
+
+```http
+POST /api/v1/leads/{lead_id}/messages
+```
+
+Mostly the bot's job, but the same endpoint works if you ever add a
+"reply from the CRM" box. Omit `wa_message_id` for a hand-typed one.
+
+**Status codes matter here:** **201** = stored, **200** = this message
+was already recorded and nothing was written. That is the idempotency
+that stops a bot retry duplicating a conversation. Don't treat 200 as an
+error, and don't count it as a new message.
+
+### Where this page fits
+
+The conversation is **not** in `/leads/{id}/remarks`. Remarks are
+counsellor notes — one author who is a CRM user, no direction, no phone
+number. Chats live in `/messages`. Both can appear on the lead detail
+page; just don't expect one to contain the other.
+
+---
+
 ## 7. The other pages
 
 **Tasks** — `GET /tasks`, `/tasks/today`, `/tasks/overdue`,
@@ -333,7 +431,9 @@ Bank-share, application, disbursement and commission endpoints return
    link to the lead that already exists.
 8. **kVA vs kW** — DG is kVA, load and solar are kW.
 9. `NEXT_PUBLIC_APP_NAME` — set it correctly.
-10. **No reports page.** It is coming later; `won_time` and `lost_time`
+10. **WhatsApp: `counterparty_phone`, not `phone`** — and 200 from a
+    message POST means "already had it", not an error.
+11. **No reports page.** It is coming later; `won_time` and `lost_time`
     are already being recorded so nothing needs backfilling.
 
 ---
