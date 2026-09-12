@@ -102,6 +102,35 @@ async def auto_complete_stale_call_tasks(
     return closed
 
 
+def loan_amount_required(from_stage, target, slug) -> bool:
+    """True when this transition may not proceed without a loan amount.
+
+    Leaving CREATED means somebody has actually spoken to this student,
+    and the first thing that conversation establishes is how much they
+    need. Without it the lead is invisible to every loan-size filter,
+    sorts last on the Kanban, and contributes nothing to any
+    pipeline-value figure.
+
+    DNP and LOST are exempt on purpose. A lead who never answered has no
+    amount to give, and demanding one there would stop a telecaller
+    recording what actually happened — which is the one thing that must
+    never be blocked.
+
+    FMC only: Admitverse tracks a budget in its own currency, not a loan.
+    The slug test matches every other brand gate in constants.py — an
+    unknown or missing slug falls back to FMC, so a new tenant is gated
+    like FMC rather than silently exempt.
+
+    Pure and side-effect free so the rule can be tested exhaustively
+    without a database — see tests/test_loan_amount_required.py.
+    """
+    return (
+        from_stage == LeadStage.CREATED
+        and target not in (LeadStage.DNP, LeadStage.LOST)
+        and (slug or "").lower() != "admitverse"
+    )
+
+
 class StageMachine:
     def __init__(self, db: AsyncSession, company_id: uuid.UUID):
         self.db = db
@@ -133,6 +162,7 @@ class StageMachine:
         disbursed_on=None,
         sanctioned_amount_lakh=None,
         sanction_date=None,
+        loan_amount_lakh=None,
     ) -> Lead:
         result = await self.db.execute(
             select(Lead).where(
@@ -184,6 +214,38 @@ class StageMachine:
                 raise BadRequestError(
                     f"lost_reason must be one of the canonical FMC values "
                     f"(got '{lost_reason}'). See GET /leads/lost-reasons."
+                )
+
+        # Rule + rationale live on loan_amount_required() above.
+        if loan_amount_required(from_stage, target, slug):
+            if loan_amount_lakh is not None:
+                if Decimal(loan_amount_lakh) <= 0:
+                    raise BadRequestError(
+                        "loan_amount_lakh must be greater than 0."
+                    )
+                # Both columns, together. loan_amount is the free text the
+                # tile shows; loan_amount_lakh is what every filter, sort
+                # and report actually reads. Writing one without the other
+                # is how a lead ends up looking filled in while being
+                # unfilterable.
+                lead.loan_amount_lakh = Decimal(loan_amount_lakh)
+                # format(..., "f") and not str(): Decimal.normalize()
+                # renders whole numbers in scientific notation, so a
+                # 30-lakh loan became the string "3E+1" and 100 became
+                # "1E+2" — the two commonest amounts there are. That is
+                # not the bare number in lakhs the FMC tile expects, and
+                # the CRM-UI amount input rejects every keystroke on a
+                # non-numeric value, so the lead could never be edited
+                # back into shape by hand.
+                lead.loan_amount = format(
+                    Decimal(loan_amount_lakh).normalize(), "f"
+                )
+            if not lead.loan_amount_lakh or lead.loan_amount_lakh <= 0:
+                raise BadRequestError(
+                    "Loan amount is required before a lead can leave "
+                    "'created'. Send loan_amount_lakh (in lakhs) with this "
+                    "stage change, or set it on the lead first. Only 'dnp' "
+                    "and 'lost' are exempt."
                 )
 
         # PF PAID names a lender and an amount, or it names nothing.

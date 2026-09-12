@@ -494,6 +494,16 @@ class LeadService:
         transition_lost_reason = data.pop("lost_reason", None)
         transition_due_date = data.get("due_date")  # peek; let normal path also apply it
 
+        # Peek the incoming loan amount and hand it to the transition.
+        # The stage change runs BEFORE the rest of `data` is applied, so
+        # without this a single PATCH that both sets the amount and moves
+        # the lead off "created" would be rejected for a missing amount
+        # that is sitting right there in the same request body.
+        transition_loan_lakh = data.get("loan_amount_lakh")
+        if transition_loan_lakh is None and data.get("loan_amount") is not None:
+            from app.utils.loan_parser import parse_loan_amount
+            transition_loan_lakh = parse_loan_amount(data["loan_amount"])
+
         if new_stage and new_stage != prev_stage:
             from app.services.stage_machine import StageMachine
             machine = StageMachine(self.db, self.company_id)
@@ -505,6 +515,7 @@ class LeadService:
                 agent_agenda=transition_agenda,
                 due_date=transition_due_date,
                 lost_reason=transition_lost_reason,
+                loan_amount_lakh=transition_loan_lakh,
             )
             # StageMachine.transition() commits internally — re-fetch so
             # we apply the rest of the user's edits to the latest row.

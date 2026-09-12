@@ -37,6 +37,7 @@ async def transition_stage(
         disbursed_on=body.disbursed_on,
         sanctioned_amount_lakh=body.sanctioned_amount_lakh,
         sanction_date=body.sanction_date,
+        loan_amount_lakh=body.loan_amount_lakh,
     )
 
 

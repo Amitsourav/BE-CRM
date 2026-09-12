@@ -47,6 +47,12 @@ class StageTransitionRequest(BaseModel):
     sanctioned_amount_lakh: Decimal | None = Field(default=None, gt=0)
     sanction_date: date | None = None
 
+    # ── Required when LEAVING "created", except to dnp or lost ────────
+    # The student's overall requirement, in LAKHS. Send it with the stage
+    # change and it is written to the lead; omit it and the lead must
+    # already carry one. Lender brands only.
+    loan_amount_lakh: Decimal | None = Field(default=None, gt=0)
+
 
 class StageLogOut(BaseModel):
     id: uuid.UUID
